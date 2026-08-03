@@ -42,6 +42,7 @@ const chessCellSchema = z.union([
 
 const stoneSchema = z.enum(["white", "black"]).nullable();
 const goBoardSizeSchema = z.union([z.literal(9), z.literal(13), z.literal(19)]);
+const ticTacToeCoordinateSchema = z.string().regex(/^[A-C][1-3]$/);
 
 function goSnapshotSchema(boardSize: GoBoardSize) {
   const rowSchema = z.array(stoneSchema).length(boardSize);
@@ -60,6 +61,11 @@ export const gameSnapshotSchema = z.union([
   goSnapshotSchema(9),
   goSnapshotSchema(13),
   goSnapshotSchema(19),
+  baseSnapshotSchema.extend({
+    kind: z.literal("tic-tac-toe"),
+    board: z.array(z.array(stoneSchema).length(3)).length(3),
+    winningLine: z.tuple([ticTacToeCoordinateSchema, ticTacToeCoordinateSchema, ticTacToeCoordinateSchema]).optional(),
+  }).strict(),
 ]);
 
 const generatedSnapshotSchema = toJsonSchemaCompat(
@@ -94,7 +100,7 @@ export const mcpGameSnapshotSchema = z4.object({}).passthrough().superRefine((va
 
 export const toolInputSchemas = {
   create_game: z.object({
-    game: z.enum(["chess", "go"]),
+    game: z.enum(["chess", "go", "tic-tac-toe"]),
     playerColor: z.enum(["white", "black"]),
     boardSize: goBoardSizeSchema.optional(),
     difficulty: difficultySchema.default("medium"),

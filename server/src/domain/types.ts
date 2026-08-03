@@ -1,4 +1,4 @@
-export type GameKind = "chess" | "go";
+export type GameKind = "chess" | "go" | "tic-tac-toe";
 export type StoneColor = "white" | "black";
 export type GameActor = "player" | "gpt";
 export type GameStatus = "active" | "finished";
@@ -50,4 +50,13 @@ export interface GoGameSnapshot extends BaseGameSnapshot {
   score?: { black: number; white: number; komi: 6.5 };
 }
 
-export type GameSnapshot = ChessGameSnapshot | GoGameSnapshot;
+export type TicTacToeCoordinate = "A1" | "A2" | "A3" | "B1" | "B2" | "B3" | "C1" | "C2" | "C3";
+
+export interface TicTacToeGameSnapshot extends BaseGameSnapshot {
+  kind: "tic-tac-toe";
+  /** Rows descend from rank 3 to 1; columns run A through C. */
+  board: (StoneColor | null)[][];
+  winningLine?: [TicTacToeCoordinate, TicTacToeCoordinate, TicTacToeCoordinate];
+}
+
+export type GameSnapshot = ChessGameSnapshot | GoGameSnapshot | TicTacToeGameSnapshot;

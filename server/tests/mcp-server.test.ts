@@ -87,7 +87,7 @@ describe("MCP game arena server", () => {
         };
         required: string[];
       }> }).oneOf;
-      expect(branches.map((branch) => branch.properties.kind.const).sort()).toEqual(["chess", "go", "go", "go"]);
+      expect(branches.map((branch) => branch.properties.kind.const).sort()).toEqual(["chess", "go", "go", "go", "tic-tac-toe"]);
       for (const branch of branches) {
         expect(branch.required).toEqual(expect.arrayContaining(["board", "difficulty"]));
       }
@@ -105,6 +105,8 @@ describe("MCP game arena server", () => {
           items: { minItems: boardSize, maxItems: boardSize },
         });
       }
+      const ticTacToeBranch = branches.find((branch) => branch.properties.kind.const === "tic-tac-toe");
+      expect(ticTacToeBranch?.properties.board).toMatchObject({ minItems: 3, maxItems: 3, items: { minItems: 3, maxItems: 3 } });
     }
 
     const created = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
@@ -120,11 +122,15 @@ describe("MCP game arena server", () => {
     expect(goSnapshot.boardSize).toBe(19);
     expect(goSnapshot.board).toHaveLength(19);
     const goBoard = goSnapshot.board as unknown[][];
+    const ticTacToeCreated = await client.callTool({ name: "create_game", arguments: { game: "tic-tac-toe", playerColor: "black" } });
+    const ticTacToeSnapshot = ticTacToeCreated.structuredContent as Record<string, unknown>;
+    expect(ticTacToeSnapshot).toMatchObject({ kind: "tic-tac-toe", difficulty: "medium" });
     const ajv = new Ajv({ strict: false });
     for (const tool of tools.tools) {
       const validate = ajv.compile(tool.outputSchema as object);
       expect(validate(snapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate(goSnapshot), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate(ticTacToeSnapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate({ ...snapshot, kind: "go" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, internalSecret: "SECRET" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, difficulty: undefined }), JSON.stringify(validate.errors)).toBe(false);

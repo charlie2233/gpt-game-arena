@@ -91,6 +91,17 @@ describe("ToolService", () => {
     expect(service.getGameState({ gameId: created.gameId })).toEqual(reset);
   });
 
+  it("creates and resets Tic-Tac-Toe without losing difficulty", () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({ game: "tic-tac-toe", playerColor: "black", difficulty: "hard" });
+    const moved = service.playGameMove({ gameId: created.gameId, actor: "player", move: "B2", expectedVersion: 0 });
+    expect(moved).toMatchObject({ kind: "tic-tac-toe", stateVersion: 1 });
+
+    const reset = service.resetGame({ gameId: created.gameId });
+    expect(reset).toMatchObject({ gameId: created.gameId, kind: "tic-tac-toe", playerColor: "black", difficulty: "hard", stateVersion: 0 });
+    expect(reset.legalMoves).toHaveLength(9);
+  });
+
   it("returns not_found for unknown IDs", () => {
     const service = new ToolService(new GameStore());
 
@@ -102,7 +113,7 @@ describe("ToolService", () => {
   });
 
   it("exposes game kind and stone color as narrow TypeScript inputs", () => {
-    expectTypeOf<GameKind>().toEqualTypeOf<"chess" | "go">();
+    expectTypeOf<GameKind>().toEqualTypeOf<"chess" | "go" | "tic-tac-toe">();
     expectTypeOf<GameDifficulty>().toEqualTypeOf<"easy" | "medium" | "hard">();
     expectTypeOf<StoneColor>().toEqualTypeOf<"white" | "black">();
     expectTypeOf<GoBoardSize>().toEqualTypeOf<9 | 13 | 19>();
