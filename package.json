@@ -10,11 +10,12 @@
     "web"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build --workspace web && npm run build --workspace server",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "dev": "npm run dev --workspace server",
     "dev:server": "npm run dev --workspace server",
-    "dev:web": "node -e \"console.error('The web development runtime arrives in Task 4. Use npm run test, npm run typecheck, or npm run build today.'); process.exit(1)\""
+    "dev:web": "npm run dev --workspace web",
+    "preview": "npm run preview --workspace web"
   }
 }
