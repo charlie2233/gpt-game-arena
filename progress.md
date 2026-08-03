@@ -1,6 +1,6 @@
 Original prompt: also implement select difficuktuy
 
-## Goal
+## Goal (prior difficulty work; historical)
 
 - Add Easy, Medium, and Hard difficulty selection to game creation.
 - Preserve difficulty across reset and expose it to the ChatGPT move loop.
@@ -18,7 +18,7 @@ Original prompt: also implement select difficuktuy
 - Levels are Easy, Medium, and Hard; omitted difficulty defaults to Medium.
 - Difficulty is immutable game metadata, preserved by reset and included in every snapshot.
 - Changing difficulty takes effect when Start game creates a new game.
-- The widget resource URI will move to v2 so ChatGPT does not reuse the prior strict snapshot schema from cache.
+- The widget resource URI moved to v2 for that prior difficulty-only schema change; the current expanded release supersedes it with v3.
 
 ## Verification log
 
@@ -32,5 +32,38 @@ Original prompt: also implement select difficuktuy
 
 ## Next release gates
 
-- Deploy the v2 widget over public HTTPS and refresh ChatGPT app metadata.
+- Historical gate: deploy the then-current v2 widget over public HTTPS and refresh ChatGPT app metadata.
 - Run an actual ChatGPT-host smoke test and the documented Node 18 compatibility smoke.
+
+## Add more games
+
+### Objective
+
+- Expand the authoritative game arena to seven accessible presets while retaining one MCP/widget integration surface.
+
+### Completed
+
+- [x] Added and reviewed three authoritative engines: Tic-Tac-Toe, Connect Four, and Reversi.
+- [x] Extended create/reset schemas and snapshots for all game kinds, board sizes, and difficulty metadata.
+- [x] Made Chess, Tic-Tac-Toe, Connect Four, Reversi, and Go 9×9/13×13/19×19 accessible in the widget.
+- [x] Added Easy, Medium, and game-aware Hard strategies.
+- [x] Continued GPT turns when Reversi automatic skipping leaves GPT with the next turn.
+- [x] Completed server and widget test/review coverage for the expanded arena.
+
+### Key decisions
+
+- Black moves first; a new player is assigned Black so the opening state is immediately playable.
+- Board moves use each engine's displayed uppercase coordinate format; Chess remains long algebraic coordinates.
+- Reversi passes are automatic when the side to move has no legal move; they are not player-entered moves.
+- The material widget/schema expansion uses `ui://gpt-game-arena/v3/widget.html` to avoid a stale host cache.
+
+### Current automated evidence
+
+- 92 server tests plus 46 web tests pass: 138 tests total.
+- Server and web typechecks, production builds, and scoped diff checks pass.
+
+### Pending release gates
+
+- Run browser and Playwright smoke tests for the expanded widget.
+- Deploy the v3 widget over public HTTPS and refresh metadata.
+- Complete actual hosted ChatGPT acceptance and the separate Node 18 built-server smoke.

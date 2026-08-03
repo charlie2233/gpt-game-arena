@@ -12,7 +12,12 @@ import { ToolService } from "../src/tool-service.js";
 
 describe("MCP game arena server", () => {
   it("registers five game tools and the widget resource", async () => {
-    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v2/widget.html");
+    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v3/widget.html");
+    expect(WIDGET_DESCRIPTION).toContain("chess");
+    expect(WIDGET_DESCRIPTION).toContain("Reversi");
+    expect(WIDGET_DESCRIPTION).toContain("Tic-Tac-Toe");
+    expect(WIDGET_DESCRIPTION).toContain("Connect Four");
+    expect(WIDGET_DESCRIPTION).toContain("9x9, 13x13, or 19x19 Go");
     const server = createMcpServer(new ToolService(new GameStore()), {
       loadWidgetHtml: () => "<!doctype html><title>fixture</title>",
     });
@@ -49,6 +54,9 @@ describe("MCP game arena server", () => {
     expect(tools.tools.find((tool) => tool.name === "play_game_move")?.title).toBe("Play game move");
     expect(tools.tools.find((tool) => tool.name === "reset_game")?.title).toBe("Reset game");
     const createTool = tools.tools.find((tool) => tool.name === "create_game");
+    for (const game of ["chess", "Reversi", "Tic-Tac-Toe", "Connect Four", "Go"]) {
+      expect(createTool?.description).toContain(game);
+    }
     expect(createTool?.description).toContain("omitted difficulty defaults to medium");
     expect(createTool?.inputSchema).toMatchObject({
       properties: {
