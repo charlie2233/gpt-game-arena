@@ -10,6 +10,7 @@ export class GameBridge {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private initialized = false;
+  private disposed = false;
   private capabilities: { serverTools?: unknown; message?: unknown } = {};
   private initPromise?: Promise<void>;
   private listeners = new Set<ToolNotification>();
@@ -29,7 +30,7 @@ export class GameBridge {
       this.capabilities = host?.hostCapabilities ?? {}; this.applyHostContext(host?.hostContext);
       this.initialized = true;
       this.notify("ui/notifications/initialized", {});
-    });
+    }).catch((error: unknown) => { this.initPromise = undefined; throw error; });
     return this.initPromise;
   }
 
@@ -50,9 +51,10 @@ export class GameBridge {
 
   onToolResult(listener: ToolNotification): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   onHostContext(listener: HostContextNotification): () => void { this.contextListeners.add(listener); return () => this.contextListeners.delete(listener); }
-  dispose(): void { window.removeEventListener("message", this.onMessage); for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error("Bridge disposed.")); } this.pending.clear(); this.listeners.clear(); this.contextListeners.clear(); }
+  dispose(): void { this.disposed = true; window.removeEventListener("message", this.onMessage); for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error("Bridge disposed.")); } this.pending.clear(); this.listeners.clear(); this.contextListeners.clear(); }
 
   private request(method: string, params: unknown): Promise<unknown> {
+    if (this.disposed) return Promise.reject(new Error("Bridge disposed."));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => { this.pending.delete(id); reject(new Error("Host request timed out.")); }, this.timeoutMs);
@@ -66,7 +68,7 @@ export class GameBridge {
     const data = event.data;
     if (data.method === "ui/notifications/tool-result") { for (const listener of this.listeners) listener((data.params as { result?: ToolResult })?.result ?? data.params as ToolResult); return; }
     if (data.method === "ui/notifications/host-context-changed") { this.applyHostContext(data.params); return; }
-    if (typeof data.id !== "number") return;
+    if (data.method !== undefined || typeof data.id !== "number") return;
     const pending = this.pending.get(data.id); if (!pending) return;
     this.pending.delete(data.id); clearTimeout(pending.timer);
     if (data.error) pending.reject(new Error(data.error.message || "Host request failed.")); else pending.resolve(data.result);

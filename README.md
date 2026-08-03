@@ -18,8 +18,8 @@ npm test
 npm run typecheck
 npm run build
 npm run dev       # Node server, then visit /preview
-npm run dev:web   # Vite widget development
-npm run preview   # Vite built-widget preview
+npm run dev:web   # Vite widget development; run npm run dev:server alongside it
+npm run preview   # Vite built-widget preview; run npm run dev:server alongside it
 ```
 
 For MCP Inspector, build first, start `npm run dev`, and connect the inspector to `http://localhost:8000/mcp` using Streamable HTTP.
