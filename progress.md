@@ -59,7 +59,7 @@ Original prompt: also implement select difficuktuy
 
 ### Current verification evidence
 
-- 92 server tests plus 46 web tests pass: 138 tests total.
+- 94 server tests plus 47 web tests pass: 141 tests total.
 - Server and web typechecks, production builds, and scoped diff checks pass.
 - In-app browser playthroughs pass for Tic-Tac-Toe, Connect Four, and Reversi on Hard; Easy Tic-Tac-Toe produces a distinct legal reply and reset preserves Easy.
 - The skill-provided Playwright client returns a valid `render_game_to_text` snapshot with no console-error artifact.
