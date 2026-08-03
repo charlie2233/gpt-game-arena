@@ -35,5 +35,10 @@ describe("authoritative snapshot validation", () => {
     expect(isSnapshot({ ...reversi(), score: { black: -1, white: 2 } })).toBe(false);
     expect(isSnapshot({ ...reversi(), moveHistory: [{ actor: "player", color: "black", notation: "pass", ply: 1 }] })).toBe(false);
     expect(isSnapshot({ ...reversi(), lastMove: { actor: "player", color: "black", notation: "A9", ply: 1 } })).toBe(false);
+    expect(isSnapshot({ ...tic(), boardSize: 9 })).toBe(false);
+    expect(isSnapshot({ ...connect(), score: { black: 1, white: 1 } })).toBe(false);
+    expect(isSnapshot({ ...reversi(), winningLine: ["A1", "B1", "C1"] })).toBe(false);
+    expect(isSnapshot({ ...reversi(), score: { black: 2, white: 2, extra: true } })).toBe(false);
+    expect(isSnapshot({ ...reversi(), moveHistory: [{ actor: "player", color: "black", notation: "C4", ply: 1, extra: true }] })).toBe(false);
   });
 });
