@@ -38,7 +38,7 @@ export function createMcpServer(service: ToolService, options: McpServerOptions 
     }],
   }));
 
-  registerTool(server, service, "create_game", "Create game", "Use this when starting a new chess or 9x9, 13x13, or 19x19 Go game.", {
+  registerTool(server, service, "create_game", "Create game", "Use this when starting chess or Go. For Go, set boardSize to 9, 13, or 19; an omitted boardSize defaults to 9.", {
     readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false,
   }, { ui: { visibility: ["model", "app"] } });
   registerTool(server, service, "get_game_state", "Get game state", "Use this when you need the authoritative current game state.", {
