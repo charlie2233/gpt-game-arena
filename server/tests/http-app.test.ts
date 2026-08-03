@@ -1,9 +1,15 @@
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 
-import { createHttpApp } from "../src/http-app.js";
+import { createHttpApp, FixedWindowLimiter } from "../src/http-app.js";
 import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
+
+class ExplodingToolService extends ToolService {
+  override getGameState(): never {
+    throw new Error("SECRET_SERVICE_VALUE");
+  }
+}
 
 describe("HTTP game arena app", () => {
   it("serves health and a fixture preview", async () => {
@@ -52,6 +58,7 @@ describe("HTTP game arena app", () => {
     expect(invalid.body.error).toEqual({ code: "invalid_input", message: "Invalid tool input." });
     const missing = await request(app).post("/api/tools/get_game_state").send({ gameId: "missing" });
     expect(missing.status).toBe(409);
+    expect(missing.body).toEqual({ error: { code: "not_found", message: "The requested game operation could not be completed." } });
     const unknown = await request(app).post("/api/tools/nope").send({});
     expect(unknown.status).toBe(429);
     expect(unknown.headers["retry-after"]).toBe("1");
@@ -95,5 +102,48 @@ describe("HTTP game arena app", () => {
     expect(limited.status).toBe(429);
     expect(limited.headers["retry-after"]).toBeDefined();
     expect(limited.body).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32029, message: "Too many requests." } });
+  });
+
+  it("uses protocol-specific safe parse and size error envelopes", async () => {
+    const app = createHttpApp(new ToolService(new GameStore()));
+    const restMalformed = await request(app).post("/api/tools/get_game_state").set("Content-Type", "application/json").send("{");
+    expect(restMalformed.status).toBe(400);
+    expect(restMalformed.body).toEqual({ error: { code: "invalid_json", message: "Invalid JSON request body." } });
+    const mcpMalformed = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").set("Content-Type", "application/json").send("{");
+    expect(mcpMalformed.status).toBe(400);
+    expect(mcpMalformed.body).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error." } });
+    const mcpOversized = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").set("Content-Type", "application/json").send(JSON.stringify({ payload: "x".repeat(33 * 1024) }));
+    expect(mcpOversized.status).toBe(413);
+    expect(mcpOversized.body).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error." } });
+  });
+
+  it("keeps generic REST failures and MCP resource loader errors secret-safe", async () => {
+    const failingApp = createHttpApp(new ExplodingToolService(new GameStore()));
+    const generic = await request(failingApp).post("/api/tools/get_game_state").send({ gameId: "game" });
+    expect(generic.status).toBe(500);
+    expect(generic.body).toEqual({ error: { code: "internal_error", message: "Internal server error." } });
+    expect(generic.text).not.toContain("SECRET_SERVICE_VALUE");
+
+    const app = createHttpApp(new ToolService(new GameStore()), {
+      loadWidgetHtml: () => { throw new Error("SECRET_LOADER_VALUE"); },
+    });
+    const resource = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
+      jsonrpc: "2.0", id: 4, method: "resources/read", params: { uri: "ui://gpt-game-arena/v1/widget.html" },
+    });
+    expect(resource.status).toBe(200);
+    expect(resource.text).not.toContain("SECRET_LOADER_VALUE");
+    expect(resource.body.result.contents[0].text).toContain("npm run build --workspace web");
+  });
+
+  it("bounds limiter buckets and releases expired capacity", () => {
+    let now = 0;
+    const limiter = new FixedWindowLimiter({ limit: 1, windowMs: 1_000, maxBuckets: 2 }, () => now);
+    expect(limiter.consume("a").allowed).toBe(true);
+    expect(limiter.consume("b").allowed).toBe(true);
+    expect(limiter.bucketCount()).toBe(2);
+    expect(limiter.consume("c").allowed).toBe(false);
+    now = 1_000;
+    expect(limiter.consume("c").allowed).toBe(true);
+    expect(limiter.bucketCount()).toBe(1);
   });
 });

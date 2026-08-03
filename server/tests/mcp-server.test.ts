@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Ajv } from "ajv";
 import { describe, expect, it } from "vitest";
 
 import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
@@ -38,16 +39,45 @@ describe("MCP game arena server", () => {
       });
     }
     const rendered = tools.tools.find((tool) => tool.name === "render_game");
-    expect(rendered?._meta).toMatchObject({ ui: { resourceUri: WIDGET_RESOURCE_URI } });
+    expect(rendered).toMatchObject({
+      title: "Render game",
+      _meta: { ui: { resourceUri: WIDGET_RESOURCE_URI, visibility: ["model"] }, "openai/outputTemplate": WIDGET_RESOURCE_URI },
+    });
+    expect(tools.tools.find((tool) => tool.name === "create_game")?.title).toBe("Create game");
+    expect(tools.tools.find((tool) => tool.name === "get_game_state")?.title).toBe("Get game state");
+    expect(tools.tools.find((tool) => tool.name === "play_game_move")?.title).toBe("Play game move");
+    expect(tools.tools.find((tool) => tool.name === "reset_game")?.title).toBe("Reset game");
     expect(tools.tools.filter((tool) => tool.name !== "render_game").every((tool) => {
-      return (tool._meta as { ui?: { resourceUri?: string } } | undefined)?.ui?.resourceUri === undefined;
+      const meta = tool._meta as { ui?: { resourceUri?: string; visibility?: string[] }; "openai/outputTemplate"?: string } | undefined;
+      return meta?.ui?.resourceUri === undefined
+        && meta?.["openai/outputTemplate"] === undefined
+        && JSON.stringify(meta?.ui?.visibility) === JSON.stringify(["model", "app"]);
     })).toBe(true);
+    for (const tool of tools.tools) {
+      expect(tool.outputSchema).toMatchObject({ oneOf: expect.any(Array) });
+      const branches = (tool.outputSchema as unknown as { oneOf: Array<{ properties: { kind: { const: string } }; required: string[] }> }).oneOf;
+      expect(branches.map((branch) => branch.properties.kind.const).sort()).toEqual(["chess", "go"]);
+      expect(branches.find((branch) => branch.properties.kind.const === "chess")?.required).toContain("board");
+      expect(branches.find((branch) => branch.properties.kind.const === "go")?.required).toEqual(expect.arrayContaining([
+        "board", "boardSize", "captures", "consecutivePasses",
+      ]));
+    }
 
     const created = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
     expect(created.isError, JSON.stringify(created)).not.toBe(true);
     const snapshot = created.structuredContent as { gameId: string; kind: string };
     expect(snapshot.kind).toBe("chess");
     expect(gameSnapshotSchema.safeParse(snapshot).success).toBe(true);
+    const goCreated = await client.callTool({ name: "create_game", arguments: { game: "go", playerColor: "black" } });
+    const goSnapshot = goCreated.structuredContent as Record<string, unknown>;
+    expect(goSnapshot.kind).toBe("go");
+    const ajv = new Ajv({ strict: false });
+    for (const tool of tools.tools) {
+      const validate = ajv.compile(tool.outputSchema as object);
+      expect(validate(snapshot), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate(goSnapshot), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...snapshot, kind: "go" }), JSON.stringify(validate.errors)).toBe(false);
+    }
     const render = await client.callTool({ name: "render_game", arguments: { gameId: snapshot.gameId } });
     expect(render.structuredContent).toEqual(snapshot);
     const played = await client.callTool({ name: "play_game_move", arguments: {
@@ -68,16 +98,25 @@ describe("MCP game arena server", () => {
     expect(invalid.isError).toBe(true);
 
     const resource = await client.readResource({ uri: WIDGET_RESOURCE_URI });
-    expect(resource.contents[0]).toMatchObject({
-      uri: WIDGET_RESOURCE_URI,
-      mimeType: RESOURCE_MIME_TYPE,
-      text: "<!doctype html><title>fixture</title>",
-      _meta: {
-        ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
-        "openai/widgetDescription": WIDGET_DESCRIPTION,
-      },
+    expect(resource.contents[0]).toMatchObject({ uri: WIDGET_RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: "<!doctype html><title>fixture</title>" });
+    expect((resource.contents[0] as { _meta?: unknown })._meta).toEqual({
+      ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
+      "openai/widgetDescription": WIDGET_DESCRIPTION,
     });
 
+    await Promise.all([client.close(), server.close()]);
+  });
+
+  it("never exposes widget loader failures through resource reads", async () => {
+    const server = createMcpServer(new ToolService(new GameStore()), {
+      loadWidgetHtml: () => { throw new Error("SECRET_LOADER_VALUE"); },
+    });
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const resource = await client.readResource({ uri: WIDGET_RESOURCE_URI });
+    expect(JSON.stringify(resource)).not.toContain("SECRET_LOADER_VALUE");
+    expect(resource.contents[0]).toMatchObject({ text: expect.stringContaining("npm run build --workspace web") });
     await Promise.all([client.close(), server.close()]);
   });
 });

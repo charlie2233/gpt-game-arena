@@ -4,7 +4,7 @@ import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from "@model
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AnySchema } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 
-import { executeTool, gameSnapshotOutputSchema, isGameRuleError, toolInputSchemas, toToolFailure } from "./tool-contracts.js";
+import { executeTool, isGameRuleError, mcpGameSnapshotSchema, toolInputSchemas, toToolFailure } from "./tool-contracts.js";
 import { ToolService } from "./tool-service.js";
 
 export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v1/widget.html";
@@ -23,7 +23,7 @@ export function createMcpServer(service: ToolService, options: McpServerOptions 
     contents: [{
       uri: WIDGET_RESOURCE_URI,
       mimeType: RESOURCE_MIME_TYPE,
-      text: (await loadWidgetHtml()) ?? missingWidgetHtml(),
+      text: await loadWidgetHtmlSafely(loadWidgetHtml),
       _meta: {
         ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
         "openai/widgetDescription": WIDGET_DESCRIPTION,
@@ -66,7 +66,7 @@ function registerTool(
     title,
     description,
     inputSchema: toolInputSchemas[name] as unknown as AnySchema,
-    outputSchema: gameSnapshotOutputSchema as unknown as AnySchema,
+    outputSchema: mcpGameSnapshotSchema as unknown as AnySchema,
     annotations,
     _meta: {
       ...meta,
@@ -93,4 +93,12 @@ export async function defaultWidgetLoader(): Promise<string | undefined> {
 
 export function missingWidgetHtml(): string {
   return "<!doctype html><html><body><p>Build the widget first with npm run build --workspace web.</p></body></html>";
+}
+
+async function loadWidgetHtmlSafely(loadWidgetHtml: WidgetLoader): Promise<string> {
+  try {
+    return (await loadWidgetHtml()) ?? missingWidgetHtml();
+  } catch {
+    return missingWidgetHtml();
+  }
 }

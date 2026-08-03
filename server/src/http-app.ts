@@ -21,7 +21,7 @@ export interface HttpAppOptions {
 
 interface RateBucket { windowStart: number; count: number }
 
-class FixedWindowLimiter {
+export class FixedWindowLimiter {
   private readonly buckets = new Map<string, RateBucket>();
   private readonly limit: number;
   private readonly windowMs: number;
@@ -52,6 +52,10 @@ class FixedWindowLimiter {
     return { allowed: true, retryAfterSeconds: 0 };
   }
 
+  bucketCount(): number {
+    return this.buckets.size;
+  }
+
   private prune(now: number): void {
     for (const [ip, bucket] of this.buckets) {
       if (now >= bucket.windowStart + this.windowMs) this.buckets.delete(ip);
@@ -80,7 +84,12 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
 
   app.get("/health", (_, response) => response.status(200).json({ ok: true }));
   app.get("/preview", async (_, response) => {
-    const html = await loadWidgetHtml();
+    let html: string | undefined;
+    try {
+      html = await loadWidgetHtml();
+    } catch {
+      html = undefined;
+    }
     if (html === undefined) {
       response.status(503).type("text/plain").send("Widget build is unavailable. Run npm run build --workspace web.");
       return;
@@ -138,8 +147,16 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
     }
   });
 
-  app.use((error: unknown, _: Request, response: Response, next: NextFunction) => {
+  app.use((error: unknown, request: Request, response: Response, next: NextFunction) => {
     if (response.headersSent) return next(error);
+    if (request.path === "/mcp") {
+      response.status(isPayloadTooLarge(error) ? 413 : 400).json({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: "Parse error." },
+      });
+      return;
+    }
     if (isPayloadTooLarge(error)) {
       response.status(413).json({ error: { code: "payload_too_large", message: "Request body is too large." } });
       return;

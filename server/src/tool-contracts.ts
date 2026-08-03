@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { z as z4 } from "zod/v4";
+import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
+import type { AnySchema } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 
 import { GameRuleError } from "./domain/errors.js";
 import type { GameSnapshot } from "./domain/types.js";
@@ -47,18 +50,34 @@ export const gameSnapshotSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
-// MCP tool output schemas must be JSON Schema objects. This object is the
-// protocol-compatible form of the discriminated runtime schema above.
-export const gameSnapshotOutputSchema = baseSnapshotSchema.extend({
-  kind: z.enum(["chess", "go"]),
-  board: z.union([
-    z.array(chessCellSchema),
-    z.array(z.array(z.enum(["white", "black"]).nullable())),
-  ]),
-  boardSize: z.literal(9).optional(),
-  captures: z.object({ black: z.number().int().nonnegative(), white: z.number().int().nonnegative() }).optional(),
-  consecutivePasses: z.number().int().nonnegative().optional(),
-  score: z.object({ black: z.number(), white: z.number(), komi: z.literal(6.5) }).optional(),
+const generatedSnapshotSchema = toJsonSchemaCompat(
+  gameSnapshotSchema as unknown as AnySchema,
+  { strictUnions: true, pipeStrategy: "output" },
+) as { anyOf?: unknown[]; [key: string]: unknown };
+const publishedSnapshotSchemaJson = JSON.parse(
+  JSON.stringify(generatedSnapshotSchema).replaceAll("#/anyOf/", "#/oneOf/"),
+) as { anyOf?: unknown[]; [key: string]: unknown };
+export const publishedGameSnapshotSchema = {
+  ...publishedSnapshotSchemaJson,
+  type: "object",
+  oneOf: publishedSnapshotSchemaJson.anyOf,
+  anyOf: undefined,
+};
+
+/**
+ * The installed MCP SDK only calls its JSON Schema converter for object Zod
+ * schemas. This object bridge validates with the actual discriminated union
+ * above and supplies that union's generated JSON Schema to the SDK converter.
+ */
+export const mcpGameSnapshotSchema = z4.object({}).passthrough().superRefine((value, context) => {
+  const parsed = gameSnapshotSchema.safeParse(value);
+  if (!parsed.success) {
+    context.addIssue({ code: "custom", message: "Invalid game snapshot." });
+  }
+});
+(mcpGameSnapshotSchema as unknown as { _zod: { toJSONSchema?: () => unknown } })._zod.toJSONSchema = () => ({
+  ...publishedGameSnapshotSchema,
+  oneOf: [...(publishedGameSnapshotSchema.oneOf ?? [])],
 });
 
 export const toolInputSchemas = {
