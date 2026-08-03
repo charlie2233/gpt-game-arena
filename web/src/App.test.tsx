@@ -21,7 +21,7 @@ function reversiFixturePlay(game: ReversiSnapshot, move: ReversiCoordinate): Rev
   return { ...game, board, turn: nextTurn, legalMoves, moveHistory: [...game.moveHistory, record], lastMove: record, stateVersion: game.stateVersion + 1, message: opponentMoves.length ? `${nextTurn === "black" ? "Black" : "White"} to move.` : `${opponent === "black" ? "Black" : "White"} has no legal move; ${game.turn === "black" ? "Black" : "White"} moves again.`, score: { black, white } };
 }
 describe("App", () => {
-  afterEach(() => { cleanup(); vi.useRealTimers(); });
+  afterEach(() => { cleanup(); vi.useRealTimers(); Reflect.deleteProperty(window, "openai"); });
   beforeEach(() => { vi.stubGlobal("fetch", vi.fn()); });
   it("selects a legal chess destination then plays a deterministic standalone GPT reply", async () => {
     const reply = { ...chess(1), turn: "black", legalMoves: ["a7a5", "a7a6"] }; const gpt = { ...chess(2), turn: "white", legalMoves: ["d2d4"] };
@@ -80,6 +80,59 @@ describe("App", () => {
     const user = userEvent.setup(); const start = { ...go(9, "hard"), stateVersion: 5 }; const afterPass = { ...start, stateVersion: 6, turn: "white", legalMoves: ["B9"] }; const reset = { ...start, stateVersion: 0 };
     vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterPass }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: { ...afterPass, stateVersion: 7, turn: "black", legalMoves: ["A9"] } }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reset }) } as Response);
     render(<App initialGame={start}/>); expect(screen.getByText("Hard difficulty")).toBeVisible(); await user.click(screen.getByRole("button", { name: /pass/i })); await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/tools/play_game_move", expect.objectContaining({ body: expect.stringContaining('"move":"pass"') }))); await user.click(screen.getByRole("button", { name: /reset/i })); await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Choose a piece")); expect(screen.getByText("Hard difficulty")).toBeVisible(); expect(fetch).toHaveBeenLastCalledWith("/api/tools/reset_game", expect.objectContaining({ body: '{"gameId":"go-9"}' }));
+  });
+  it("waits for the embedded host result instead of creating a fallback chess game", async () => {
+    const postMessage = vi.fn();
+    const target = { postMessage } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    render(<App bridge={bridge}/>);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading game…");
+    expect(screen.queryByRole("combobox", { name: "NEW GAME" })).not.toBeInTheDocument();
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ method: "ui/initialize" }), "*"));
+    const createCalls = () => postMessage.mock.calls.filter(([request]) => {
+      const value = request as { method?: string; params?: { name?: string } };
+      return value.method === "tools/call" && value.params?.name === "create_game";
+    });
+    expect(createCalls()).toHaveLength(0);
+
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: { hostCapabilities: { serverTools: {}, message: {} } } } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { result: { structuredContent: go(9, "hard") } } } }));
+
+    expect(await screen.findByRole("group", { name: "9 by 9 Go board" })).toBeVisible();
+    expect(screen.getByText("Hard difficulty")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toHaveValue("go-9");
+    expect(screen.getByRole("combobox", { name: "DIFFICULTY" })).toHaveValue("hard");
+    expect(screen.queryByText("Loading game…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Chess board" })).not.toBeInTheDocument();
+    expect(createCalls()).toHaveLength(0);
+    bridge.dispose();
+  });
+  it("restores an embedded game from ChatGPT widget state after reload", async () => {
+    const setWidgetState = vi.fn();
+    Object.defineProperty(window, "openai", { configurable: true, value: { toolOutput: chess(), widgetState: { game: go(9, "hard") }, setWidgetState } });
+    const target = { postMessage: vi.fn() } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+
+    render(<App bridge={bridge}/>);
+
+    expect(screen.getByRole("group", { name: "9 by 9 Go board" })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toHaveValue("go-9");
+    expect(screen.getByRole("combobox", { name: "DIFFICULTY" })).toHaveValue("hard");
+    expect(screen.queryByText("Loading game…")).not.toBeInTheDocument();
+    await waitFor(() => expect(setWidgetState).toHaveBeenCalledWith({ game: go(9, "hard") }));
+    bridge.dispose();
+  });
+  it("replaces embedded loading with an initialization error", async () => {
+    const target = { postMessage: vi.fn() } as unknown as Window;
+    const bridge = new GameBridge(target, 1);
+
+    render(<App bridge={bridge}/>);
+
+    expect(screen.getByText("Loading game…")).toBeVisible();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not initialize the game host.");
+    expect(screen.queryByText("Loading game…")).not.toBeInTheDocument();
+    bridge.dispose();
   });
   it("uses ui/message then polls an iframe host and disables player squares while GPT owns the turn", async () => {
     vi.useFakeTimers(); const target = { postMessage: vi.fn() } as unknown as Window; const bridge = new GameBridge(target, 100_000); const start = chess(0, "hard"); const after = { ...chess(1, "hard"), turn: "black", legalMoves: ["a7a6"] }; const newer = { ...chess(2, "hard"), turn: "white", legalMoves: ["e2e4"] };

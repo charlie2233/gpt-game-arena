@@ -1,6 +1,6 @@
 # GPT Game Arena
 
-GPT Game Arena is a ChatGPT plugin/MCP app with a standalone preview. It offers seven presets: Chess, Tic-Tac-Toe, Connect Four, Reversi, and Go on 9×9, 13×13, or 19×19 boards. The React widget is a self-contained `web/dist/index.html`; the Node MCP server serves it at `ui://gpt-game-arena/v3/widget.html`, while `/preview` provides the same UI locally.
+GPT Game Arena is a ChatGPT plugin/MCP app with a standalone preview. It offers seven presets: Chess, Tic-Tac-Toe, Connect Four, Reversi, and Go on 9×9, 13×13, or 19×19 boards. The React widget is a self-contained `web/dist/index.html`; the Node MCP server serves it at `ui://gpt-game-arena/v6/widget.html`, while `/preview` provides the same UI locally.
 
 ## Architecture
 
