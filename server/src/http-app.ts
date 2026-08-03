@@ -21,6 +21,8 @@ export interface HttpAppOptions {
 
 interface RateBucket { windowStart: number; count: number }
 
+const UNSUPPORTED_MEDIA_ERROR_CODE = -32015;
+
 export class FixedWindowLimiter {
   private readonly buckets = new Map<string, RateBucket>();
   private readonly limit: number;
@@ -144,6 +146,18 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
 
   app.use((error: unknown, request: Request, response: Response, next: NextFunction) => {
     if (response.headersSent) return next(error);
+    if (isUnsupportedMediaError(error)) {
+      if (request.path === "/mcp") {
+        response.status(415).json({
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: UNSUPPORTED_MEDIA_ERROR_CODE, message: "Unsupported JSON media type." },
+        });
+        return;
+      }
+      response.status(415).json({ error: { code: "unsupported_media_type", message: "Unsupported JSON media type." } });
+      return;
+    }
     if (request.path === "/mcp" && (isPayloadTooLarge(error) || isJsonParseError(error))) {
       response.status(isPayloadTooLarge(error) ? 413 : 400).json({
         jsonrpc: "2.0",
@@ -208,4 +222,13 @@ function isPayloadTooLarge(error: unknown): boolean {
 
 function isJsonParseError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "type" in error && error.type === "entity.parse.failed";
+}
+
+function isUnsupportedMediaError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "type" in error
+    && "status" in error
+    && error.status === 415
+    && (error.type === "charset.unsupported" || error.type === "encoding.unsupported");
 }

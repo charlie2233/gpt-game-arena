@@ -1,7 +1,8 @@
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createHttpApp, FixedWindowLimiter } from "../src/http-app.js";
+import { toolInputSchemas } from "../src/tool-contracts.js";
 import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
 
@@ -83,6 +84,27 @@ describe("HTTP game arena app", () => {
     expect(oversized.body).toEqual({ error: { code: "payload_too_large", message: "Request body is too large." } });
   });
 
+  it("rejects unexpected fields in every tool input without invoking service methods", async () => {
+    const validInputs = {
+      create_game: { game: "chess", playerColor: "white" },
+      get_game_state: { gameId: "game" },
+      play_game_move: { gameId: "game", actor: "player", move: "e2e4", expectedVersion: 0 },
+      reset_game: { gameId: "game" },
+      render_game: { gameId: "game" },
+    } as const;
+    for (const [name, schema] of Object.entries(toolInputSchemas)) {
+      expect(schema.safeParse({ ...validInputs[name as keyof typeof validInputs], unexpected: "SECRET" }).success).toBe(false);
+    }
+
+    const service = new ToolService(new GameStore());
+    const create = vi.spyOn(service, "createGame");
+    const app = createHttpApp(service);
+    const rest = await request(app).post("/api/tools/create_game").send({ ...validInputs.create_game, unexpected: "SECRET" });
+    expect(rest.status).toBe(400);
+    expect(rest.body).toEqual({ error: { code: "invalid_input", message: "Invalid tool input." } });
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("serves stateless MCP initialize, list, and tool-call requests", async () => {
     const app = createHttpApp(new ToolService(new GameStore()), { loadWidgetHtml: () => "<!doctype html>" });
     const initialize = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
@@ -138,6 +160,31 @@ describe("HTTP game arena app", () => {
     const mcpLimited = await request(mcp).post("/mcp").set("Accept", "application/json, text/event-stream").set("Content-Type", "application/json").send(JSON.stringify({ payload: "x".repeat(33 * 1024) }));
     expect(mcpLimited.status).toBe(429);
     expect(mcpLimited.body).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32029, message: "Too many requests." } });
+  });
+
+  it("treats unsupported media as safe client errors that consume quota", async () => {
+    const media = createHttpApp(new ToolService(new GameStore()));
+    const restEncoding = await request(media).post("/api/tools/create_game").set("Content-Type", "application/json").set("Content-Encoding", "x-secret").send("{}");
+    expect(restEncoding.status).toBe(415);
+    expect(restEncoding.body).toEqual({ error: { code: "unsupported_media_type", message: "Unsupported JSON media type." } });
+    const mcpCharset = await request(media).post("/mcp").set("Accept", "application/json, text/event-stream").set("Content-Type", "application/json; charset=x-secret").send("{}");
+    expect(mcpCharset.status).toBe(415);
+    expect(mcpCharset.body).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32015, message: "Unsupported JSON media type." } });
+
+    const rest = createHttpApp(new ToolService(new GameStore()), { apiToolsRateLimit: { limit: 1 } });
+    const restCharset = await request(rest).post("/api/tools/create_game").set("Content-Type", "application/json; charset=x-secret").send("{}");
+    expect(restCharset.status).toBe(415);
+    expect(restCharset.body).toEqual({ error: { code: "unsupported_media_type", message: "Unsupported JSON media type." } });
+    const restLimited = await request(rest).post("/api/tools/create_game").set("Content-Type", "application/json").set("Content-Encoding", "x-secret").send("{}");
+    expect(restLimited.status).toBe(429);
+
+    const mcp = createHttpApp(new ToolService(new GameStore()), { mcpRateLimit: { limit: 1 } });
+    const mcpEncoding = await request(mcp).post("/mcp").set("Accept", "application/json, text/event-stream").set("Content-Type", "application/json").set("Content-Encoding", "x-secret").send("{}");
+    expect(mcpEncoding.status).toBe(415);
+    expect(mcpEncoding.body).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32015, message: "Unsupported JSON media type." } });
+    expect(mcpEncoding.text).not.toContain("x-secret");
+    const mcpLimited = await request(mcp).post("/mcp").set("Accept", "application/json, text/event-stream").set("Content-Type", "application/json; charset=x-secret").send("{}");
+    expect(mcpLimited.status).toBe(429);
   });
 
   it("keeps generic REST failures and MCP resource loader errors secret-safe", async () => {

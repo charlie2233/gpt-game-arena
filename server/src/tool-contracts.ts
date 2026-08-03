@@ -81,16 +81,16 @@ export const mcpGameSnapshotSchema = z4.object({}).passthrough().superRefine((va
 });
 
 export const toolInputSchemas = {
-  create_game: z.object({ game: z.enum(["chess", "go"]), playerColor: z.enum(["white", "black"]) }),
-  get_game_state: z.object({ gameId: boundedString }),
+  create_game: z.object({ game: z.enum(["chess", "go"]), playerColor: z.enum(["white", "black"]) }).strict(),
+  get_game_state: z.object({ gameId: boundedString }).strict(),
   play_game_move: z.object({
     gameId: boundedString,
     actor: z.enum(["player", "gpt"]),
     move: boundedString,
     expectedVersion: z.number().int().nonnegative(),
-  }),
-  reset_game: z.object({ gameId: boundedString }),
-  render_game: z.object({ gameId: boundedString }),
+  }).strict(),
+  reset_game: z.object({ gameId: boundedString }).strict(),
+  render_game: z.object({ gameId: boundedString }).strict(),
 } as const;
 
 export type ToolName = keyof typeof toolInputSchemas;

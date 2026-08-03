@@ -149,4 +149,21 @@ describe("MCP game arena server", () => {
     expect(JSON.stringify(result)).not.toContain("SECRET");
     await Promise.all([client.close(), server.close()]);
   });
+
+  it("rejects unexpected tool arguments before executing the handler", async () => {
+    const service = new ToolService(new GameStore());
+    const create = vi.spyOn(service, "createGame");
+    const server = createMcpServer(service);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const rejected = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white", unexpected: "SECRET" } });
+    expect(rejected.isError).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+    expect(JSON.stringify(rejected)).not.toContain("SECRET");
+    const valid = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
+    expect(valid.isError).not.toBe(true);
+    expect(JSON.stringify(valid)).not.toContain("unexpected");
+    await Promise.all([client.close(), server.close()]);
+  });
 });
