@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Ajv } from "ajv";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 
@@ -117,6 +117,19 @@ describe("MCP game arena server", () => {
     const resource = await client.readResource({ uri: WIDGET_RESOURCE_URI });
     expect(JSON.stringify(resource)).not.toContain("SECRET_LOADER_VALUE");
     expect(resource.contents[0]).toMatchObject({ text: expect.stringContaining("npm run build --workspace web") });
+    await Promise.all([client.close(), server.close()]);
+  });
+
+  it("returns a safe MCP error for unexpected tool-service failures", async () => {
+    const service = new ToolService(new GameStore());
+    vi.spyOn(service, "createGame").mockImplementation(() => { throw new Error("SECRET_SERVICE_VALUE"); });
+    const server = createMcpServer(service);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const result = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "internal_error: Internal server error." }] });
+    expect(JSON.stringify(result)).not.toContain("SECRET_SERVICE_VALUE");
     await Promise.all([client.close(), server.close()]);
   });
 });

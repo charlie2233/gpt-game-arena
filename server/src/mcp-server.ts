@@ -78,7 +78,7 @@ function registerTool(
       return executeTool(service, name, input);
     } catch (error) {
       if (isGameRuleError(error)) return toToolFailure(error);
-      throw error;
+      return { isError: true, content: [{ type: "text" as const, text: "internal_error: Internal server error." }] };
     }
   });
 }

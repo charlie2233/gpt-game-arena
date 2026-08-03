@@ -6,6 +6,10 @@ import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
 
 class ExplodingToolService extends ToolService {
+  override createGame(): never {
+    throw new Error("SECRET_SERVICE_VALUE");
+  }
+
   override getGameState(): never {
     throw new Error("SECRET_SERVICE_VALUE");
   }
@@ -124,7 +128,7 @@ describe("HTTP game arena app", () => {
     expect(generic.body).toEqual({ error: { code: "internal_error", message: "Internal server error." } });
     expect(generic.text).not.toContain("SECRET_SERVICE_VALUE");
 
-    const app = createHttpApp(new ToolService(new GameStore()), {
+    const app = createHttpApp(new ExplodingToolService(new GameStore()), {
       loadWidgetHtml: () => { throw new Error("SECRET_LOADER_VALUE"); },
     });
     const resource = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
@@ -133,6 +137,13 @@ describe("HTTP game arena app", () => {
     expect(resource.status).toBe(200);
     expect(resource.text).not.toContain("SECRET_LOADER_VALUE");
     expect(resource.body.result.contents[0].text).toContain("npm run build --workspace web");
+
+    const mcpTool = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
+      jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "create_game", arguments: { game: "chess", playerColor: "white" } },
+    });
+    expect(mcpTool.status).toBe(200);
+    expect(mcpTool.body.result).toEqual({ isError: true, content: [{ type: "text", text: "internal_error: Internal server error." }] });
+    expect(mcpTool.text).not.toContain("SECRET_SERVICE_VALUE");
   });
 
   it("bounds limiter buckets and releases expired capacity", () => {
