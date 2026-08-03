@@ -14,8 +14,14 @@ function playSequence(game: TicTacToeGame, moves: string[]): ReturnType<TicTacTo
 }
 
 function expectRuleError(action: () => unknown, code: GameRuleError["code"]): void {
-  expect(action).toThrow(GameRuleError);
-  try { action(); } catch (error) { expect((error as GameRuleError).code).toBe(code); }
+  let error: unknown;
+  try {
+    action();
+  } catch (caught) {
+    error = caught;
+  }
+  expect(error).toBeInstanceOf(GameRuleError);
+  expect((error as GameRuleError).code).toBe(code);
 }
 
 describe("TicTacToeGame", () => {
