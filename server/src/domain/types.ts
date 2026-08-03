@@ -52,22 +52,34 @@ export interface GoGameSnapshot extends BaseGameSnapshot {
 
 export type TicTacToeCoordinate = "A1" | "A2" | "A3" | "B1" | "B2" | "B3" | "C1" | "C2" | "C3";
 
+export interface TicTacToeMoveRecord extends MoveRecord {
+  notation: TicTacToeCoordinate;
+}
+
 export interface TicTacToeGameSnapshot extends BaseGameSnapshot {
   kind: "tic-tac-toe";
   /** Rows descend from rank 3 to 1; columns run A through C. */
   board: (StoneColor | null)[][];
   legalMoves: TicTacToeCoordinate[];
+  moveHistory: TicTacToeMoveRecord[];
+  lastMove?: TicTacToeMoveRecord;
   winningLine?: [TicTacToeCoordinate, TicTacToeCoordinate, TicTacToeCoordinate];
 }
 
 export type ConnectFourColumn = "A" | "B" | "C" | "D" | "E" | "F" | "G";
 export type ConnectFourCoordinate = `${ConnectFourColumn}${1 | 2 | 3 | 4 | 5 | 6}`;
 
+export interface ConnectFourMoveRecord extends MoveRecord {
+  notation: ConnectFourColumn;
+}
+
 export interface ConnectFourGameSnapshot extends BaseGameSnapshot {
   kind: "connect-four";
   /** Row 0 is rank 6 (top); row 5 is rank 1 (bottom). */
   board: (StoneColor | null)[][];
   legalMoves: ConnectFourColumn[];
+  moveHistory: ConnectFourMoveRecord[];
+  lastMove?: ConnectFourMoveRecord;
   winningLine?: [ConnectFourCoordinate, ConnectFourCoordinate, ConnectFourCoordinate, ConnectFourCoordinate];
 }
 

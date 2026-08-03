@@ -2,10 +2,10 @@ import { GameRuleError } from "./errors.js";
 import type {
   GameActor,
   GameDifficulty,
-  MoveRecord,
   StoneColor,
   TicTacToeCoordinate,
   TicTacToeGameSnapshot,
+  TicTacToeMoveRecord,
 } from "./types.js";
 
 type Board = (StoneColor | null)[][];
@@ -26,13 +26,17 @@ function colorOwner(playerColor: StoneColor, color: StoneColor): GameActor {
   return playerColor === color ? "player" : "gpt";
 }
 
+function isTicTacToeCoordinate(move: string): move is TicTacToeCoordinate {
+  return /^[A-C][1-3]$/.test(move);
+}
+
 export class TicTacToeGame {
   private board: Board = Array.from({ length: 3 }, () => Array<StoneColor | null>(3).fill(null));
   private turn: StoneColor = "black";
   private status: "active" | "finished" = "active";
   private winner: StoneColor | "draw" | undefined;
   private winningLine: [TicTacToeCoordinate, TicTacToeCoordinate, TicTacToeCoordinate] | undefined;
-  private readonly moveHistory: MoveRecord[] = [];
+  private readonly moveHistory: TicTacToeMoveRecord[] = [];
   private stateVersion = 0;
 
   private constructor(
@@ -69,13 +73,13 @@ export class TicTacToeGame {
     if (this.status === "finished") throw new GameRuleError("game_finished", "This game has already finished.");
     if (colorOwner(this.playerColor, this.turn) !== actor) throw new GameRuleError("wrong_actor", "This actor does not own the current turn.");
 
-    const point = this.parsePoint(move);
-    if (point === undefined || this.board[point.row][point.column] !== null) {
+    const parsedMove = this.parsePoint(move);
+    if (parsedMove === undefined || this.board[parsedMove.point.row][parsedMove.point.column] !== null) {
       throw new GameRuleError("illegal_move", "That move is not legal in the current position.");
     }
     const color = this.turn;
-    this.board[point.row][point.column] = color;
-    this.moveHistory.push({ actor, color, notation: move, ply: this.moveHistory.length + 1 });
+    this.board[parsedMove.point.row][parsedMove.point.column] = color;
+    this.moveHistory.push({ actor, color, notation: parsedMove.notation, ply: this.moveHistory.length + 1 });
     this.stateVersion += 1;
     const winningLine = this.findWinningLine(color);
     if (winningLine !== undefined) {
@@ -101,10 +105,10 @@ export class TicTacToeGame {
     return moves.sort();
   }
 
-  private parsePoint(move: string): Point | undefined {
-    const match = /^([A-C])([1-3])$/.exec(move);
-    if (match === null) return undefined;
-    return { row: 3 - Number(match[2]), column: COLUMNS.indexOf(match[1]) };
+  private parsePoint(move: string): { point: Point; notation: TicTacToeCoordinate } | undefined {
+    if (!isTicTacToeCoordinate(move)) return undefined;
+    const match = /^([A-C])([1-3])$/.exec(move)!;
+    return { point: { row: 3 - Number(match[2]), column: COLUMNS.indexOf(match[1]) }, notation: move };
   }
 
   private formatPoint({ row, column }: Point): TicTacToeCoordinate {
@@ -114,7 +118,7 @@ export class TicTacToeGame {
   private findWinningLine(color: StoneColor): [TicTacToeCoordinate, TicTacToeCoordinate, TicTacToeCoordinate] | undefined {
     for (const line of WIN_LINES) {
       if (line.every((coordinate) => {
-        const point = this.parsePoint(coordinate)!;
+        const point = this.parsePoint(coordinate)!.point;
         return this.board[point.row][point.column] === color;
       })) return [...line] as [TicTacToeCoordinate, TicTacToeCoordinate, TicTacToeCoordinate];
     }

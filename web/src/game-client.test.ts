@@ -23,15 +23,21 @@ describe("authoritative snapshot validation", () => {
     expect(isSnapshot({ ...tic(), winningLine: ["A3", "B2", "C1"] })).toBe(true);
     expect(isSnapshot(connect())).toBe(true);
     expect(isSnapshot({ ...connect(), winningLine: ["A1", "B1", "C1", "D1"] })).toBe(true);
+    expect(isSnapshot({ ...tic(), moveHistory: [{ actor: "player", color: "black", notation: "A1", ply: 1 }], lastMove: { actor: "player", color: "black", notation: "A1", ply: 1 } })).toBe(true);
+    expect(isSnapshot({ ...connect(), moveHistory: [{ actor: "player", color: "black", notation: "A", ply: 1 }], lastMove: { actor: "player", color: "black", notation: "A", ply: 1 } })).toBe(true);
     expect(isSnapshot({ ...reversi(), moveHistory: [{ actor: "player", color: "black", notation: "C4", ply: 1 }], lastMove: { actor: "player", color: "black", notation: "C4", ply: 1 } })).toBe(true);
   });
   it("rejects malformed dimensions, coordinates, winner lines, and Reversi records", () => {
     expect(isSnapshot({ ...tic(), board: tic().board.slice(1) })).toBe(false);
     expect(isSnapshot({ ...tic(), legalMoves: ["D1"] })).toBe(false);
     expect(isSnapshot({ ...tic(), winningLine: ["A1", "B1"] })).toBe(false);
+    expect(isSnapshot({ ...tic(), moveHistory: [{ actor: "player", color: "black", notation: "a1", ply: 1 }] })).toBe(false);
+    expect(isSnapshot({ ...tic(), lastMove: { actor: "player", color: "black", notation: "D1", ply: 1 } })).toBe(false);
     expect(isSnapshot({ ...connect(), board: connect().board.map(row => row.slice(1)) })).toBe(false);
     expect(isSnapshot({ ...connect(), legalMoves: ["H"] })).toBe(false);
     expect(isSnapshot({ ...connect(), winningLine: ["A1", "B1", "C1", "D7"] })).toBe(false);
+    expect(isSnapshot({ ...connect(), moveHistory: [{ actor: "player", color: "black", notation: "a", ply: 1 }] })).toBe(false);
+    expect(isSnapshot({ ...connect(), lastMove: { actor: "player", color: "black", notation: "H", ply: 1 } })).toBe(false);
     expect(isSnapshot({ ...reversi(), score: { black: 2.5, white: 2 } })).toBe(false);
     expect(isSnapshot({ ...reversi(), score: { black: -1, white: 2 } })).toBe(false);
     expect(isSnapshot({ ...reversi(), moveHistory: [{ actor: "player", color: "black", notation: "pass", ply: 1 }] })).toBe(false);

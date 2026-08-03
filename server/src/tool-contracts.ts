@@ -8,6 +8,7 @@ import type { GameSnapshot, GoBoardSize } from "./domain/types.js";
 import { ToolService } from "./tool-service.js";
 
 const boundedString = z.string().trim().min(1).max(128);
+const boundedMoveString = z.string().min(1).max(128);
 const difficultySchema = z.enum(["easy", "medium", "hard"]);
 const moveRecordSchema = z.object({
   actor: z.enum(["player", "gpt"]),
@@ -47,6 +48,8 @@ const connectFourColumnSchema = z.string().regex(/^[A-G]$/);
 const connectFourCoordinateSchema = z.string().regex(/^[A-G][1-6]$/);
 const reversiCoordinateSchema = z.string().regex(/^[A-H][1-8]$/);
 const reversiMoveRecordSchema = moveRecordSchema.extend({ notation: reversiCoordinateSchema }).strict();
+const ticTacToeMoveRecordSchema = moveRecordSchema.extend({ notation: ticTacToeCoordinateSchema }).strict();
+const connectFourMoveRecordSchema = moveRecordSchema.extend({ notation: connectFourColumnSchema }).strict();
 
 function goSnapshotSchema(boardSize: GoBoardSize) {
   const rowSchema = z.array(stoneSchema).length(boardSize);
@@ -69,6 +72,8 @@ export const gameSnapshotSchema = z.union([
     kind: z.literal("tic-tac-toe"),
     board: z.array(z.array(stoneSchema).length(3)).length(3),
     legalMoves: z.array(ticTacToeCoordinateSchema),
+    moveHistory: z.array(ticTacToeMoveRecordSchema),
+    lastMove: ticTacToeMoveRecordSchema.optional(),
     winningLine: z.tuple([ticTacToeCoordinateSchema, ticTacToeCoordinateSchema, ticTacToeCoordinateSchema]).optional(),
   }).strict(),
   baseSnapshotSchema.extend({
@@ -83,6 +88,8 @@ export const gameSnapshotSchema = z.union([
     kind: z.literal("connect-four"),
     board: z.array(z.array(stoneSchema).length(7)).length(6),
     legalMoves: z.array(connectFourColumnSchema),
+    moveHistory: z.array(connectFourMoveRecordSchema),
+    lastMove: connectFourMoveRecordSchema.optional(),
     winningLine: z.tuple([connectFourCoordinateSchema, connectFourCoordinateSchema, connectFourCoordinateSchema, connectFourCoordinateSchema]).optional(),
   }).strict(),
 ]);
@@ -128,7 +135,7 @@ export const toolInputSchemas = {
   play_game_move: z.object({
     gameId: boundedString,
     actor: z.enum(["player", "gpt"]),
-    move: boundedString,
+    move: boundedMoveString,
     expectedVersion: z.number().int().nonnegative(),
   }).strict(),
   reset_game: z.object({ gameId: boundedString }).strict(),

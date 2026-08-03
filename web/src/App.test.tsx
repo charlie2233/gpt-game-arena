@@ -159,6 +159,15 @@ describe("App", () => {
     expect(JSON.parse((vi.mocked(fetch).mock.calls[1][1] as RequestInit).body as string)).toEqual({ gameId: "rev", actor: "gpt", move: "C3", expectedVersion: 1 });
     expect(screen.queryByRole("button", { name: /pass/i })).not.toBeInTheDocument();
   });
+  it("renders each Reversi history entry from its authoritative actor and color", () => {
+    const skipped: ReversiSnapshot = { ...reversi(), moveHistory: [{ actor: "gpt", color: "white", notation: "C4", ply: 8 }, { actor: "gpt", color: "white", notation: "A3", ply: 9 }], lastMove: { actor: "gpt", color: "white", notation: "A3", ply: 9 }, stateVersion: 9 };
+    render(<App initialGame={skipped}/>);
+    expect(screen.getByText("8.")).toBeVisible();
+    expect(screen.getByText("C4 · GPT (White)")).toBeVisible();
+    expect(screen.getByText("9.")).toBeVisible();
+    expect(screen.getByText("A3 · GPT (White)")).toBeVisible();
+    expect(screen.queryByText("4…")).not.toBeInTheDocument();
+  });
   it("keeps standalone Reversi busy through a forced skipped-player GPT turn", async () => {
     const states = ["C4", "C3", "C2", "B2", "E6", "C1"].reduce<ReversiSnapshot>((game, move) => reversiFixturePlay(game, move as ReversiCoordinate), { ...reversi(), difficulty: "easy" });
     const afterPlayer = reversiFixturePlay(states, "A1");

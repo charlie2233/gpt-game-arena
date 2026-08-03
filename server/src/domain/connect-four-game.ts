@@ -3,9 +3,9 @@ import type {
   ConnectFourColumn,
   ConnectFourCoordinate,
   ConnectFourGameSnapshot,
+  ConnectFourMoveRecord,
   GameActor,
   GameDifficulty,
-  MoveRecord,
   StoneColor,
 } from "./types.js";
 
@@ -25,13 +25,17 @@ function colorOwner(playerColor: StoneColor, color: StoneColor): GameActor {
   return playerColor === color ? "player" : "gpt";
 }
 
+function isConnectFourColumn(move: string): move is ConnectFourColumn {
+  return /^[A-G]$/.test(move);
+}
+
 export class ConnectFourGame {
   private board: Board = Array.from({ length: ROWS }, () => Array<StoneColor | null>(WIDTH).fill(null));
   private turn: StoneColor = "black";
   private status: "active" | "finished" = "active";
   private winner: StoneColor | "draw" | undefined;
   private winningLine: [ConnectFourCoordinate, ConnectFourCoordinate, ConnectFourCoordinate, ConnectFourCoordinate] | undefined;
-  private readonly moveHistory: MoveRecord[] = [];
+  private readonly moveHistory: ConnectFourMoveRecord[] = [];
   private stateVersion = 0;
 
   private constructor(
@@ -61,16 +65,16 @@ export class ConnectFourGame {
     if (expectedVersion !== this.stateVersion) throw new GameRuleError("stale_version", "The supplied game version is stale.");
     if (this.status === "finished") throw new GameRuleError("game_finished", "This game has already finished.");
     if (colorOwner(this.playerColor, this.turn) !== actor) throw new GameRuleError("wrong_actor", "This actor does not own the current turn.");
-    const column = this.parseColumn(move);
-    if (column === undefined) throw new GameRuleError("illegal_move", "That move is not legal in the current position.");
-    const row = this.dropRow(column);
+    const parsedMove = this.parseColumn(move);
+    if (parsedMove === undefined) throw new GameRuleError("illegal_move", "That move is not legal in the current position.");
+    const row = this.dropRow(parsedMove.column);
     if (row === undefined) throw new GameRuleError("illegal_move", "That move is not legal in the current position.");
 
     const color = this.turn;
-    this.board[row][column] = color;
-    this.moveHistory.push({ actor, color, notation: move, ply: this.moveHistory.length + 1 });
+    this.board[row][parsedMove.column] = color;
+    this.moveHistory.push({ actor, color, notation: parsedMove.notation, ply: this.moveHistory.length + 1 });
     this.stateVersion += 1;
-    const winningLine = this.findWinningLine({ row, column }, color);
+    const winningLine = this.findWinningLine({ row, column: parsedMove.column }, color);
     if (winningLine !== undefined) {
       this.status = "finished";
       this.winner = color;
@@ -84,8 +88,8 @@ export class ConnectFourGame {
     return this.snapshot();
   }
 
-  private parseColumn(move: string): number | undefined {
-    return /^[A-G]$/.test(move) ? COLUMNS.indexOf(move) : undefined;
+  private parseColumn(move: string): { column: number; notation: ConnectFourColumn } | undefined {
+    return isConnectFourColumn(move) ? { column: COLUMNS.indexOf(move), notation: move } : undefined;
   }
 
   private dropRow(column: number): number | undefined {

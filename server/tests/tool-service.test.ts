@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import { GameRuleError } from "../src/domain/errors.js";
+import { executeTool, toolInputSchemas } from "../src/tool-contracts.js";
 import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
 import type { GameDifficulty, GameKind, GoBoardSize, StoneColor } from "../src/domain/types.js";
@@ -17,6 +18,15 @@ function expectRuleError(action: () => unknown, code: GameRuleError["code"]): vo
 }
 
 describe("ToolService", () => {
+  it("preserves whitespace-padded moves for domain rejection instead of normalizing them", () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({ game: "tic-tac-toe", playerColor: "black" });
+    expect(toolInputSchemas.play_game_move.parse({ gameId: created.gameId, actor: "player", move: " A1 ", expectedVersion: 0 }).move).toBe(" A1 ");
+    expectRuleError(() => executeTool(service, "play_game_move", { gameId: created.gameId, actor: "player", move: " A1 ", expectedVersion: 0 }), "illegal_move");
+    expect(service.getGameState({ gameId: created.gameId })).toMatchObject({ stateVersion: 0, moveHistory: [] });
+    expect(executeTool(service, "play_game_move", { gameId: created.gameId, actor: "player", move: "A1", expectedVersion: 0 }).structuredContent).toMatchObject({ stateVersion: 1, moveHistory: [{ notation: "A1" }] });
+  });
+
   it("creates chess and Go games with distinct generated IDs", () => {
     const service = new ToolService(new GameStore());
     const chess = service.createGame({ game: "chess", playerColor: "white" });

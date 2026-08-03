@@ -144,6 +144,10 @@ describe("MCP game arena server", () => {
     expect(ticTacToeSnapshot).toMatchObject({ kind: "tic-tac-toe", difficulty: "medium" });
     expect(gameSnapshotSchema.safeParse({ ...ticTacToeSnapshot, legalMoves: ["a1"] }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...ticTacToeSnapshot, legalMoves: ["D1"] }).success).toBe(false);
+    const ticMove = { actor: "player", color: "black", notation: "A1", ply: 1 };
+    expect(gameSnapshotSchema.safeParse({ ...ticTacToeSnapshot, moveHistory: [ticMove], lastMove: ticMove }).success).toBe(true);
+    expect(gameSnapshotSchema.safeParse({ ...ticTacToeSnapshot, moveHistory: [{ ...ticMove, notation: "a1" }] }).success).toBe(false);
+    expect(gameSnapshotSchema.safeParse({ ...ticTacToeSnapshot, lastMove: { ...ticMove, notation: "D1" } }).success).toBe(false);
     const connectFourCreated = await client.callTool({ name: "create_game", arguments: { game: "connect-four", playerColor: "black" } });
     const connectFourSnapshot = connectFourCreated.structuredContent as Record<string, unknown>;
     expect(connectFourSnapshot).toMatchObject({ kind: "connect-four", difficulty: "medium" });
@@ -151,6 +155,10 @@ describe("MCP game arena server", () => {
     expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, legalMoves: ["a"] }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, board: [] }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, winningLine: ["A1", "B1", "C1"] }).success).toBe(false);
+    const connectMove = { actor: "player", color: "black", notation: "A", ply: 1 };
+    expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, moveHistory: [connectMove], lastMove: connectMove }).success).toBe(true);
+    expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, moveHistory: [{ ...connectMove, notation: "a" }] }).success).toBe(false);
+    expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, lastMove: { ...connectMove, notation: "H" } }).success).toBe(false);
     const reversiCreated = await client.callTool({ name: "create_game", arguments: { game: "reversi", playerColor: "black" } });
     const reversiSnapshot = reversiCreated.structuredContent as Record<string, unknown>;
     expect(reversiCreated.isError, JSON.stringify(reversiCreated)).not.toBe(true);
@@ -166,7 +174,13 @@ describe("MCP game arena server", () => {
       expect(validate(reversiSnapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate({ ...ticTacToeSnapshot, legalMoves: ["a1"] }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...ticTacToeSnapshot, legalMoves: ["D1"] }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...ticTacToeSnapshot, moveHistory: [ticMove], lastMove: ticMove }), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...ticTacToeSnapshot, moveHistory: [{ ...ticMove, notation: "a1" }] }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...ticTacToeSnapshot, lastMove: { ...ticMove, notation: "D1" } }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...connectFourSnapshot, legalMoves: ["a"] }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...connectFourSnapshot, moveHistory: [connectMove], lastMove: connectMove }), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...connectFourSnapshot, moveHistory: [{ ...connectMove, notation: "a" }] }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...connectFourSnapshot, lastMove: { ...connectMove, notation: "H" } }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...connectFourSnapshot, board: connectFourBoard.slice(1) }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...connectFourSnapshot, board: connectFourBoard.map((row, index) => index === 0 ? row.slice(1) : row) }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...connectFourSnapshot, winningLine: ["A1", "B1", "C1"] }), JSON.stringify(validate.errors)).toBe(false);
@@ -195,6 +209,15 @@ describe("MCP game arena server", () => {
     expect(gameSnapshotSchema.safeParse({ ...goSnapshot, board: goBoard.map((row, index) => index === 0 ? row.slice(1) : row) }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...goSnapshot, boardSize: 13 }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...reversiSnapshot, moveHistory: [{ actor: "player", color: "black", notation: "", ply: 1 }] }).success).toBe(false);
+    const paddedTicMove = await client.callTool({ name: "play_game_move", arguments: {
+      gameId: ticTacToeSnapshot.gameId, actor: "player", move: " A1 ", expectedVersion: 0,
+    } });
+    expect(paddedTicMove.isError).toBe(true);
+    expect(JSON.stringify(paddedTicMove)).not.toContain(" A1 ");
+    const exactTicMove = await client.callTool({ name: "play_game_move", arguments: {
+      gameId: ticTacToeSnapshot.gameId, actor: "player", move: "A1", expectedVersion: 0,
+    } });
+    expect(exactTicMove.structuredContent).toMatchObject({ stateVersion: 1, moveHistory: [{ notation: "A1" }] });
     const invalidBoardSize = await client.callTool({ name: "create_game", arguments: {
       game: "go", playerColor: "black", boardSize: 10,
     } });

@@ -60,6 +60,20 @@ describe("HTTP game arena app", () => {
     expect(reset.body.structuredContent).toMatchObject({ gameId, difficulty: "medium", stateVersion: 0, moveHistory: [] });
   });
 
+  it("rejects whitespace-padded moves through REST without recording them", async () => {
+    const service = new ToolService(new GameStore());
+    const app = createHttpApp(service);
+    const created = await request(app).post("/api/tools/create_game").send({ game: "tic-tac-toe", playerColor: "black" });
+    const gameId = created.body.structuredContent.gameId as string;
+    const padded = await request(app).post("/api/tools/play_game_move").send({ gameId, actor: "player", move: " A1 ", expectedVersion: 0 });
+    expect(padded.status).toBe(409);
+    expect(JSON.stringify(padded.body)).not.toContain(" A1 ");
+    expect((await request(app).post("/api/tools/get_game_state").send({ gameId })).body.structuredContent).toMatchObject({ stateVersion: 0, moveHistory: [] });
+    const exact = await request(app).post("/api/tools/play_game_move").send({ gameId, actor: "player", move: "A1", expectedVersion: 0 });
+    expect(exact.status).toBe(200);
+    expect(exact.body.structuredContent).toMatchObject({ stateVersion: 1, moveHistory: [{ notation: "A1" }] });
+  });
+
   it("accepts supported Go board sizes through REST and rejects invalid sizes", async () => {
     const service = new ToolService(new GameStore());
     const create = vi.spyOn(service, "createGame");
