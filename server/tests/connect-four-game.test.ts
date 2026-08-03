@@ -38,6 +38,9 @@ describe("ConnectFourGame", () => {
     expectRuleError(() => game.play("gpt", "a", 0), "wrong_actor");
     expectRuleError(() => game.play("player", "a", 0), "illegal_move");
     expectRuleError(() => game.play("player", "H", 0), "illegal_move");
+    expectRuleError(() => game.play("player", "A1", 0), "illegal_move");
+    expectRuleError(() => game.play("player", "AA", 0), "illegal_move");
+    expectRuleError(() => game.play("player", "", 0), "illegal_move");
     let snapshot = game.snapshot();
     for (let index = 0; index < 6; index += 1) snapshot = game.play(snapshot.turn === "black" ? "player" : "gpt", "A", snapshot.stateVersion);
     expect(snapshot.legalMoves).not.toContain("A");
@@ -63,5 +66,18 @@ describe("ConnectFourGame", () => {
     snapshot.legalMoves.pop();
     expect(game.snapshot().board[5][0]).toBeNull();
     expect(game.snapshot().legalMoves).toHaveLength(7);
+  });
+
+  it("finishes a legal 42-ply board without an earlier four-in-a-row as a draw", () => {
+    const game = ConnectFourGame.create("cf-draw", "black");
+    const moves = "C B E C G E D G G C A C D E D F C C G F A D G F E E F D E F F G B D A B B B B A A A".split(" ");
+    const finished = play(game, moves);
+
+    expect(finished).toMatchObject({
+      status: "finished", winner: "draw", legalMoves: [], stateVersion: 42,
+      message: "The game is a draw.",
+    });
+    expect(finished.moveHistory).toHaveLength(42);
+    expect(finished.lastMove).toMatchObject({ notation: "A", ply: 42 });
   });
 });

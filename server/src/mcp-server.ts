@@ -15,7 +15,7 @@ import {
 import { ToolService } from "./tool-service.js";
 
 export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v2/widget.html";
-export const WIDGET_DESCRIPTION = "An interactive chess, Tic-Tac-Toe, or 9x9, 13x13, or 19x19 Go board for playing turn by turn against GPT.";
+export const WIDGET_DESCRIPTION = "An interactive chess, Tic-Tac-Toe, Connect Four, or 9x9, 13x13, or 19x19 Go board for playing turn by turn against GPT.";
 export type WidgetLoader = () => string | undefined | Promise<string | undefined>;
 
 export interface McpServerOptions {

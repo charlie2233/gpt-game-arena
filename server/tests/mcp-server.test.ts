@@ -138,6 +138,7 @@ describe("MCP game arena server", () => {
     const connectFourCreated = await client.callTool({ name: "create_game", arguments: { game: "connect-four", playerColor: "black" } });
     const connectFourSnapshot = connectFourCreated.structuredContent as Record<string, unknown>;
     expect(connectFourSnapshot).toMatchObject({ kind: "connect-four", difficulty: "medium" });
+    const connectFourBoard = connectFourSnapshot.board as unknown[][];
     expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, legalMoves: ["a"] }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, board: [] }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, winningLine: ["A1", "B1", "C1"] }).success).toBe(false);
@@ -151,6 +152,10 @@ describe("MCP game arena server", () => {
       expect(validate({ ...ticTacToeSnapshot, legalMoves: ["a1"] }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...ticTacToeSnapshot, legalMoves: ["D1"] }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...connectFourSnapshot, legalMoves: ["a"] }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...connectFourSnapshot, board: connectFourBoard.slice(1) }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...connectFourSnapshot, board: connectFourBoard.map((row, index) => index === 0 ? row.slice(1) : row) }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...connectFourSnapshot, winningLine: ["A1", "B1", "C1"] }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...connectFourSnapshot, winningLine: ["A1", "B1", "C1", "H1"] }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, kind: "go" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, internalSecret: "SECRET" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, difficulty: undefined }), JSON.stringify(validate.errors)).toBe(false);
