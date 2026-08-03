@@ -52,7 +52,7 @@ Original prompt: also implement select difficuktuy
 
 ### Key decisions
 
-- Black moves first; a new player is assigned Black so the opening state is immediately playable.
+- Chess creates the player as White; Go, Tic-Tac-Toe, Connect Four, and Reversi create the player as Black, and those four engines are black-first.
 - Board moves use each engine's displayed uppercase coordinate format; Chess remains long algebraic coordinates.
 - Reversi passes are automatic when the side to move has no legal move; they are not player-entered moves.
 - The material widget/schema expansion uses `ui://gpt-game-arena/v3/widget.html` to avoid a stale host cache.
