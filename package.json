@@ -2,7 +2,7 @@
   "name": "gpt-game-arena",
   "private": true,
   "engines": {
-    "node": ">=18.18"
+    "node": ">=20.19"
   },
   "packageManager": "npm@10.9.4",
   "workspaces": [

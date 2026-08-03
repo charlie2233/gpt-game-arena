@@ -3,6 +3,7 @@ import type { ToolInput, ToolName, ToolResult } from "./types";
 type RpcResponse = { jsonrpc: "2.0"; id?: number; result?: unknown; error?: { message?: string } ; method?: string; params?: unknown };
 type Pending = { resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: number };
 export type ToolNotification = (result: ToolResult) => void;
+export type HostContextNotification = (context: unknown) => void;
 
 /** Minimal host bridge: it deliberately uses postMessage rather than the optional window.openai shortcut. */
 export class GameBridge {
@@ -12,6 +13,7 @@ export class GameBridge {
   private capabilities: { serverTools?: unknown; message?: unknown } = {};
   private initPromise?: Promise<void>;
   private listeners = new Set<ToolNotification>();
+  private contextListeners = new Set<HostContextNotification>();
   private readonly onMessage = (event: MessageEvent) => this.receive(event);
   readonly embedded: boolean;
 
@@ -23,7 +25,8 @@ export class GameBridge {
   async initialize(): Promise<void> {
     if (!this.embedded || this.initialized) return;
     this.initPromise ??= this.request("ui/initialize", { protocolVersion: "2026-01-26", appInfo: { name: "gpt-game-arena", version: "0.1.0" }, appCapabilities: {} }).then((result) => {
-      this.capabilities = (result as { hostCapabilities?: { serverTools?: unknown; message?: unknown } })?.hostCapabilities ?? {};
+      const host = result as { hostCapabilities?: { serverTools?: unknown; message?: unknown }; hostContext?: unknown };
+      this.capabilities = host?.hostCapabilities ?? {}; this.applyHostContext(host?.hostContext);
       this.initialized = true;
       this.notify("ui/notifications/initialized", {});
     });
@@ -41,11 +44,13 @@ export class GameBridge {
     if (!this.embedded) return;
     await this.initialize();
     if (this.capabilities.message === undefined) throw new Error("This host does not support messages.");
-    await this.request("ui/message", { role: "user", content: [{ type: "text", text }] });
+    const acknowledgement = await this.request("ui/message", { role: "user", content: [{ type: "text", text }] }) as ToolResult;
+    if (acknowledgement?.isError) throw new Error(acknowledgement.content?.[0]?.text || "The host could not send the message.");
   }
 
   onToolResult(listener: ToolNotification): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-  dispose(): void { window.removeEventListener("message", this.onMessage); for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error("Bridge disposed.")); } this.pending.clear(); this.listeners.clear(); }
+  onHostContext(listener: HostContextNotification): () => void { this.contextListeners.add(listener); return () => this.contextListeners.delete(listener); }
+  dispose(): void { window.removeEventListener("message", this.onMessage); for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error("Bridge disposed.")); } this.pending.clear(); this.listeners.clear(); this.contextListeners.clear(); }
 
   private request(method: string, params: unknown): Promise<unknown> {
     const id = this.nextId++;
@@ -60,11 +65,13 @@ export class GameBridge {
     if (event.source !== this.target || !isRpc(event.data)) return;
     const data = event.data;
     if (data.method === "ui/notifications/tool-result") { for (const listener of this.listeners) listener((data.params as { result?: ToolResult })?.result ?? data.params as ToolResult); return; }
+    if (data.method === "ui/notifications/host-context-changed") { this.applyHostContext(data.params); return; }
     if (typeof data.id !== "number") return;
     const pending = this.pending.get(data.id); if (!pending) return;
     this.pending.delete(data.id); clearTimeout(pending.timer);
     if (data.error) pending.reject(new Error(data.error.message || "Host request failed.")); else pending.resolve(data.result);
   }
+  private applyHostContext(context: unknown): void { const c = context as { theme?: unknown; styles?: { variables?: Record<string, unknown> }; style?: Record<string, unknown> }; const theme = c?.theme; if (theme === "light" || theme === "dark") { document.documentElement.dataset.theme = theme; document.documentElement.style.colorScheme = theme; } const variables = c?.styles?.variables ?? c?.style; if (variables && typeof variables === "object") for (const [key, value] of Object.entries(variables)) if (/^--[a-z0-9-]+$/i.test(key) && typeof value === "string") document.documentElement.style.setProperty(key, value); for (const listener of this.contextListeners) listener(context); }
   private async rest<N extends ToolName>(name: N, input: ToolInput[N]): Promise<ToolResult> {
     let response: Response;
     try { response = await fetch(`/api/tools/${name}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) }); } catch { throw new Error("Could not reach the local game service."); }

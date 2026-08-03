@@ -30,4 +30,8 @@ describe("GameBridge", () => {
     const bridge = new GameBridge(window); await expect(bridge.callTool("get_game_state", { gameId: "x" })).resolves.toEqual({ structuredContent: { gameId: "x" } });
     expect(fetch).toHaveBeenCalledWith("/api/tools/get_game_state", expect.objectContaining({ method: "POST" })); await bridge.sendMessage("never"); bridge.dispose();
   });
+  it("applies host context and rejects message error acknowledgements", async () => {
+    const target = host(); const bridge = new GameBridge(target); const sent = bridge.sendMessage("move"); reply(target, 1, { hostCapabilities: { serverTools: {}, message: {} }, hostContext: { theme: "light", styles: { variables: { "--color-text": "rgb(1,2,3)" } } } }); await new Promise<void>(resolve => window.setTimeout(resolve, 0)); reply(target, 2, { isError: true, content: [{ type: "text", text: "Denied" }] }); await expect(sent).rejects.toThrow("Denied"); expect(document.documentElement.dataset.theme).toBe("light"); expect(document.documentElement.style.getPropertyValue("--color-text")).toBe("rgb(1,2,3)"); window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "dark", styles: { variables: { "--color-border": "red" } } } } })); expect(document.documentElement.dataset.theme).toBe("dark"); bridge.dispose();
+  });
+  it("rejects and clears pending requests on disposal", async () => { const target = host(); const bridge = new GameBridge(target); const pending = bridge.initialize(); bridge.dispose(); await expect(pending).rejects.toThrow("disposed"); });
 });
