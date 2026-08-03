@@ -57,13 +57,15 @@ Original prompt: also implement select difficuktuy
 - Reversi passes are automatic when the side to move has no legal move; they are not player-entered moves.
 - The material widget/schema expansion uses `ui://gpt-game-arena/v3/widget.html` to avoid a stale host cache.
 
-### Current automated evidence
+### Current verification evidence
 
 - 92 server tests plus 46 web tests pass: 138 tests total.
 - Server and web typechecks, production builds, and scoped diff checks pass.
+- In-app browser playthroughs pass for Tic-Tac-Toe, Connect Four, and Reversi on Hard; Easy Tic-Tac-Toe produces a distinct legal reply and reset preserves Easy.
+- The skill-provided Playwright client returns a valid `render_game_to_text` snapshot with no console-error artifact.
+- A 320×844 Reversi playthrough has zero horizontal overflow or browser errors; Connect Four exposes 7 actions, 6 rows, and 42 square cells after visual correction.
 
 ### Pending release gates
 
-- Run browser and Playwright smoke tests for the expanded widget.
 - Deploy the v3 widget over public HTTPS and refresh metadata.
 - Complete actual hosted ChatGPT acceptance and the separate Node 18 built-server smoke.
