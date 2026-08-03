@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { chooseStandaloneMove, embeddedMovePrompt } from "./move-strategy";
-import type { ChessCell, ChessSnapshot, GameDifficulty, GoBoardSize, GoSnapshot } from "./types";
+import type { ChessCell, ChessSnapshot, ConnectFourSnapshot, GameDifficulty, GoBoardSize, GoSnapshot, ReversiSnapshot, TicTacToeSnapshot } from "./types";
 
 const emptyChessBoard = (): ChessCell[] => Array.from({ length: 8 }, (_, row) => Array.from({ length: 8 }, (_, column) => ({ square: `${"abcdefgh"[column]}${8 - row}` as ChessCell["square"] }))).flat();
 function chess(difficulty: GameDifficulty, legalMoves: string[], pieces: Array<{ square: string; color: "white" | "black"; piece: "p" | "n" | "b" | "r" | "q" | "k" }> = []): ChessSnapshot {
@@ -8,6 +8,9 @@ function chess(difficulty: GameDifficulty, legalMoves: string[], pieces: Array<{
   const board = emptyChessBoard().map((cell) => occupied.get(cell.square) ?? cell) as ChessSnapshot["board"];
   return { gameId: "chess-strategy", kind: "chess", difficulty, playerColor: "white", turn: "black", status: "active", legalMoves, moveHistory: [], stateVersion: 4, message: "Black to move.", board };
 }
+const tic = (difficulty: GameDifficulty, legalMoves: TicTacToeSnapshot["legalMoves"], board = Array.from({ length: 3 }, () => Array<"white" | "black" | null>(3).fill(null))): TicTacToeSnapshot => ({ gameId: "tic", kind: "tic-tac-toe", difficulty, playerColor: "white", turn: "black", status: "active", legalMoves, moveHistory: [], stateVersion: 0, message: "", board });
+const connect = (difficulty: GameDifficulty, legalMoves: ConnectFourSnapshot["legalMoves"], board = Array.from({ length: 6 }, () => Array<"white" | "black" | null>(7).fill(null))): ConnectFourSnapshot => ({ gameId: "four", kind: "connect-four", difficulty, playerColor: "white", turn: "black", status: "active", legalMoves, moveHistory: [], stateVersion: 0, message: "", board });
+const reversi = (difficulty: GameDifficulty, legalMoves: ReversiSnapshot["legalMoves"], board = Array.from({ length: 8 }, () => Array<"white" | "black" | null>(8).fill(null))): ReversiSnapshot => ({ gameId: "rev", kind: "reversi", difficulty, playerColor: "white", turn: "black", status: "active", legalMoves, moveHistory: [], stateVersion: 0, message: "", board, score: { black: 2, white: 2 } });
 function go(difficulty: GameDifficulty, legalMoves: string[], boardSize: GoBoardSize = 9): GoSnapshot {
   return { gameId: "go-strategy", kind: "go", difficulty, playerColor: "white", turn: "black", status: "active", legalMoves, moveHistory: [], stateVersion: 4, message: "Black to move.", boardSize, board: Array.from({ length: boardSize }, () => Array<"white" | "black" | null>(boardSize).fill(null)), captures: { black: 0, white: 0 }, consecutivePasses: 0 };
 }
@@ -79,5 +82,29 @@ describe("standalone move strategy", () => {
     expect(prompt).toContain("exactly one string");
     expect(prompt).toContain("expectedVersion from that same freshly fetched snapshot");
     expect(prompt).toContain("Do not call create_game or reset_game");
+  });
+  it("makes Hard Tic-Tac-Toe take a win then block a forced loss", () => {
+    const win = tic("hard", ["C3", "C1"]); win.board[0][0] = "black"; win.board[0][1] = "black";
+    expect(chooseStandaloneMove(win)).toBe("C3");
+    const block = tic("hard", ["C3", "C1"]); block.board[2][0] = "white"; block.board[2][1] = "white";
+    expect(chooseStandaloneMove(block)).toBe("C1");
+  });
+  it("makes Hard Connect Four win, block, and prefer the central column", () => {
+    const win = connect("hard", ["A", "D"]); win.board[5][0] = win.board[5][1] = win.board[5][2] = "black";
+    expect(chooseStandaloneMove(win)).toBe("D");
+    const block = connect("hard", ["A", "D"]); block.board[5][0] = block.board[5][1] = block.board[5][2] = "white";
+    expect(chooseStandaloneMove(block)).toBe("D");
+    expect(chooseStandaloneMove(connect("hard", ["A", "C", "D", "G"]))).toBe("D");
+  });
+  it("makes Hard Reversi prefer a corner, then a larger safe flip", () => {
+    expect(chooseStandaloneMove(reversi("hard", ["A8", "D3"]))).toBe("A8");
+    const board = Array.from({ length: 8 }, () => Array<"white" | "black" | null>(8).fill(null));
+    board[3][4] = "white"; board[3][5] = "white"; board[3][6] = "black"; board[4][3] = "white"; board[4][4] = "black";
+    expect(chooseStandaloneMove(reversi("hard", ["D5", "C4", "B1"], board))).toBe("D5");
+  });
+  it("keeps every difficulty exact-legal and deterministic for the new kinds", () => {
+    for (const difficulty of ["easy", "medium", "hard"] as const) for (const game of [tic(difficulty, ["A1", "B2", "C3"]), connect(difficulty, ["A", "D", "G"]), reversi(difficulty, ["C4", "D3", "F5"])]) {
+      const move = chooseStandaloneMove(game); expect(game.legalMoves).toContain(move); expect(chooseStandaloneMove(game)).toBe(move);
+    }
   });
 });
