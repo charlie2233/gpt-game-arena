@@ -1,4 +1,4 @@
-export type GameKind = "chess" | "go" | "tic-tac-toe" | "connect-four";
+export type GameKind = "chess" | "go" | "tic-tac-toe" | "connect-four" | "reversi";
 export type StoneColor = "white" | "black";
 export type GameActor = "player" | "gpt";
 export type GameStatus = "active" | "finished";
@@ -71,4 +71,14 @@ export interface ConnectFourGameSnapshot extends BaseGameSnapshot {
   winningLine?: [ConnectFourCoordinate, ConnectFourCoordinate, ConnectFourCoordinate, ConnectFourCoordinate];
 }
 
-export type GameSnapshot = ChessGameSnapshot | GoGameSnapshot | TicTacToeGameSnapshot | ConnectFourGameSnapshot;
+export type ReversiCoordinate = `${"A" | "B" | "C" | "D" | "E" | "F" | "G" | "H"}${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8}`;
+
+export interface ReversiGameSnapshot extends BaseGameSnapshot {
+  kind: "reversi";
+  /** Row 0 is rank 8 (top); row 7 is rank 1 (bottom). */
+  board: (StoneColor | null)[][];
+  legalMoves: ReversiCoordinate[];
+  score: { black: number; white: number };
+}
+
+export type GameSnapshot = ChessGameSnapshot | GoGameSnapshot | TicTacToeGameSnapshot | ConnectFourGameSnapshot | ReversiGameSnapshot;

@@ -52,14 +52,14 @@ describe("MCP game arena server", () => {
     expect(createTool?.description).toContain("omitted difficulty defaults to medium");
     expect(createTool?.inputSchema).toMatchObject({
       properties: {
-        game: { enum: ["chess", "go", "tic-tac-toe", "connect-four"] },
+        game: { enum: ["chess", "go", "tic-tac-toe", "connect-four", "reversi"] },
         boardSize: { enum: [9, 13, 19] },
         difficulty: { enum: ["easy", "medium", "hard"], default: "medium" },
       },
     });
     expect((createTool?.inputSchema as { required?: string[] }).required).not.toContain("difficulty");
     const validateCreateInput = new Ajv({ strict: false }).compile(createTool?.inputSchema as object);
-    expect(toolInputSchemas.create_game.shape.game.options).toEqual(["chess", "go", "tic-tac-toe", "connect-four"]);
+    expect(toolInputSchemas.create_game.shape.game.options).toEqual(["chess", "go", "tic-tac-toe", "connect-four", "reversi"]);
     expect(toolInputSchemas.create_game.safeParse({ game: "tic-tac-toe", playerColor: "black" }).success).toBe(true);
     expect(toolInputSchemas.create_game.safeParse({ game: "connect-four", playerColor: "black" }).success).toBe(true);
     expect(validateCreateInput({ game: "go", playerColor: "black" })).toBe(true);
@@ -75,6 +75,7 @@ describe("MCP game arena server", () => {
     }
     expect(validateCreateInput({ game: "go", playerColor: "black", boardSize: 10 })).toBe(false);
     expect(validateCreateInput({ game: "connect-four", playerColor: "black" })).toBe(true);
+    expect(validateCreateInput({ game: "reversi", playerColor: "black" })).toBe(true);
     expect(validateCreateInput({ game: "go", playerColor: "black", boardSize: 19, secret: "SECRET" })).toBe(false);
     expect(tools.tools.filter((tool) => tool.name !== "render_game").every((tool) => {
       const meta = tool._meta as { ui?: { resourceUri?: string; visibility?: string[] }; "openai/outputTemplate"?: string } | undefined;
@@ -93,7 +94,7 @@ describe("MCP game arena server", () => {
         };
         required: string[];
       }> }).oneOf;
-      expect(branches.map((branch) => branch.properties.kind.const).sort()).toEqual(["chess", "connect-four", "go", "go", "go", "tic-tac-toe"]);
+      expect(branches.map((branch) => branch.properties.kind.const).sort()).toEqual(["chess", "connect-four", "go", "go", "go", "reversi", "tic-tac-toe"]);
       for (const branch of branches) {
         expect(branch.required).toEqual(expect.arrayContaining(["board", "difficulty"]));
       }

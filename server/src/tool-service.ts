@@ -4,6 +4,7 @@ import { ChessGame } from "./domain/chess-game.js";
 import { ConnectFourGame } from "./domain/connect-four-game.js";
 import { GoGame } from "./domain/go-game.js";
 import { TicTacToeGame } from "./domain/tic-tac-toe-game.js";
+import { ReversiGame } from "./domain/reversi-game.js";
 import type { GameActor, GameDifficulty, GameKind, GameSnapshot, GoBoardSize, StoneColor } from "./domain/types.js";
 import { GameStore, type GameSession } from "./game-store.js";
 
@@ -58,6 +59,8 @@ export class ToolService {
         return TicTacToeGame.create(gameId, playerColor, difficulty);
       case "connect-four":
         return ConnectFourGame.create(gameId, playerColor, difficulty);
+      case "reversi":
+        return ReversiGame.create(gameId, playerColor, difficulty);
       default:
         return this.unhandledGameKind(kind);
     }
