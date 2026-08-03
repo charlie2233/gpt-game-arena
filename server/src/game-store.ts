@@ -9,8 +9,8 @@ export interface GameSession {
 export class GameStore {
   private readonly sessions = new Map<string, GameSession>();
 
-  put(gameId: string, session: GameSession): void {
-    this.sessions.set(gameId, session);
+  put(session: GameSession): void {
+    this.sessions.set(session.snapshot().gameId, session);
   }
 
   get(gameId: string): GameSession {
@@ -21,7 +21,8 @@ export class GameStore {
     return session;
   }
 
-  replace(gameId: string, session: GameSession): void {
+  replace(session: GameSession): void {
+    const gameId = session.snapshot().gameId;
     if (!this.sessions.has(gameId)) {
       throw new GameRuleError("not_found", `Game ${gameId} was not found.`);
     }

@@ -1,6 +1,10 @@
 {
   "name": "gpt-game-arena",
   "private": true,
+  "engines": {
+    "node": ">=18.18"
+  },
+  "packageManager": "npm@10.9.4",
   "workspaces": [
     "server",
     "web"
@@ -9,8 +13,8 @@
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "dev": "npm run dev:server",
-    "dev:server": "npm run dev --workspace server",
-    "dev:web": "npm run dev --workspace web --if-present"
+    "dev": "node -e \"console.error('Development runtimes arrive in Tasks 3 and 4. Use npm run test, npm run typecheck, or npm run build today.'); process.exit(1)\"",
+    "dev:server": "node -e \"console.error('The server development runtime arrives in Task 3. Use npm run test, npm run typecheck, or npm run build today.'); process.exit(1)\"",
+    "dev:web": "node -e \"console.error('The web development runtime arrives in Task 4. Use npm run test, npm run typecheck, or npm run build today.'); process.exit(1)\""
   }
 }

@@ -10,6 +10,7 @@ describe("ChessGame", () => {
 
     expect(snapshot.turn).toBe("white");
     expect(snapshot.legalMoves).toHaveLength(20);
+    expect(snapshot.legalMoves).toEqual([...snapshot.legalMoves].sort());
     expect(snapshot.stateVersion).toBe(0);
   });
 
@@ -37,6 +38,16 @@ describe("ChessGame", () => {
     expect(afterGpt.moveHistory.map((move) => move.notation)).toEqual(["e2e4", "e7e5"]);
   });
 
+  it("assigns white turns to GPT when the player chose black", () => {
+    const game = ChessGame.create("game-1", "black");
+
+    game.play("gpt", "e2e4", 0);
+    const afterPlayer = game.play("player", "e7e5", 1);
+
+    expect(afterPlayer.stateVersion).toBe(2);
+    expect(afterPlayer.turn).toBe("white");
+  });
+
   it("rejects an older version after state advances without mutating the board", () => {
     const game = ChessGame.create("game-1", "white");
     game.play("player", "e2e4", 0);
@@ -57,16 +68,33 @@ describe("ChessGame", () => {
 
   it("rejects an actor who does not own the current color", () => {
     const game = ChessGame.create("game-1", "white");
+    const before = game.snapshot();
+    let error: unknown;
 
-    expect(() => game.play("gpt", "e2e4", 0)).toThrow(GameRuleError);
-    expect(game.snapshot().stateVersion).toBe(0);
+    try {
+      game.play("gpt", "e2e4", 0);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(GameRuleError);
+    expect((error as GameRuleError).code).toBe("wrong_actor");
+    expect(game.snapshot()).toEqual(before);
   });
 
   it("rejects an illegal move without mutation", () => {
     const game = ChessGame.create("game-1", "white");
     const before = game.snapshot();
+    let error: unknown;
 
-    expect(() => game.play("player", "e2e5", 0)).toThrow(GameRuleError);
+    try {
+      game.play("player", "e2e5", 0);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(GameRuleError);
+    expect((error as GameRuleError).code).toBe("illegal_move");
     expect(game.snapshot()).toEqual(before);
   });
 
@@ -80,5 +108,17 @@ describe("ChessGame", () => {
 
     expect(finished.status).toBe("finished");
     expect(finished.winner).toBe("black");
+    const before = game.snapshot();
+    let error: unknown;
+
+    try {
+      game.play("player", "e2e4", 4);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(GameRuleError);
+    expect((error as GameRuleError).code).toBe("game_finished");
+    expect(game.snapshot()).toEqual(before);
   });
 });

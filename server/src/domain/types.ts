@@ -2,6 +2,10 @@ export type GameKind = "chess" | "go";
 export type StoneColor = "white" | "black";
 export type GameActor = "player" | "gpt";
 export type GameStatus = "active" | "finished";
+export type ChessFile = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h";
+export type ChessRank = "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8";
+export type ChessSquare = `${ChessFile}${ChessRank}`;
+export type ChessPiece = "p" | "n" | "b" | "r" | "q" | "k";
 
 export interface MoveRecord {
   actor: GameActor;
@@ -24,11 +28,9 @@ export interface BaseGameSnapshot {
   message: string;
 }
 
-export interface ChessCell {
-  square: string;
-  color?: StoneColor;
-  piece?: "p" | "n" | "b" | "r" | "q" | "k";
-}
+export type ChessCell =
+  | { square: ChessSquare; color: StoneColor; piece: ChessPiece }
+  | { square: ChessSquare; color?: never; piece?: never };
 
 export interface ChessGameSnapshot extends BaseGameSnapshot {
   kind: "chess";

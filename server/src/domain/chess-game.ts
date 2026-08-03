@@ -1,8 +1,9 @@
-import { Chess, type Color, type PieceSymbol, type Square } from "chess.js";
+import { Chess, type Color, type PieceSymbol } from "chess.js";
 
 import { GameRuleError } from "./errors.js";
 import type {
   ChessCell,
+  ChessSquare,
   ChessGameSnapshot,
   GameActor,
   MoveRecord,
@@ -13,10 +14,6 @@ const UCI_MOVE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
 
 function toStoneColor(color: Color): StoneColor {
   return color === "w" ? "white" : "black";
-}
-
-function toChessColor(color: StoneColor): Color {
-  return color === "white" ? "w" : "b";
 }
 
 function colorOwner(playerColor: StoneColor, color: StoneColor): GameActor {
@@ -118,7 +115,7 @@ export class ChessGame {
 
     for (let rank = 8; rank >= 1; rank -= 1) {
       for (const file of "abcdefgh") {
-        const square = `${file}${rank}` as Square;
+        const square = `${file}${rank}` as ChessSquare;
         const piece = this.chess.get(square);
         if (piece) {
           board.push({
