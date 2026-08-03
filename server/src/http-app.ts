@@ -3,7 +3,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { ZodError } from "zod";
 
 import { createMcpServer, defaultWidgetLoader, type WidgetLoader } from "./mcp-server.js";
-import { executeTool, isGameRuleError, toolInputSchemas, type ToolName } from "./tool-contracts.js";
+import { executeTool, isGameRuleError, isToolOutputError, toolInputSchemas, type ToolName } from "./tool-contracts.js";
 import { ToolService } from "./tool-service.js";
 
 interface RateLimitOptions {
@@ -29,14 +29,14 @@ export class FixedWindowLimiter {
   private readonly now: () => number;
 
   constructor(options: RateLimitOptions, now: () => number) {
-    this.limit = options.limit ?? 60;
-    this.windowMs = options.windowMs ?? 60_000;
-    this.maxBuckets = options.maxBuckets ?? 1_000;
+    this.limit = positiveSafeInteger(options.limit ?? 60, "limit");
+    this.windowMs = positiveSafeInteger(options.windowMs ?? 60_000, "windowMs");
+    this.maxBuckets = positiveSafeInteger(options.maxBuckets ?? 1_000, "maxBuckets");
     this.now = now;
   }
 
   consume(ip: string): { allowed: boolean; retryAfterSeconds: number } {
-    const now = this.now();
+    const now = nonnegativeSafeInteger(this.now(), "clock");
     this.prune(now);
     const windowStart = Math.floor(now / this.windowMs) * this.windowMs;
     const current = this.buckets.get(ip);
@@ -80,6 +80,8 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
     );
     next();
   });
+  app.use("/api/tools", rateLimitMiddleware(apiLimiter, "rest"));
+  app.use("/mcp", rateLimitMiddleware(mcpLimiter, "mcp"));
   app.use(express.json({ limit: "32kb" }));
 
   app.get("/health", (_, response) => response.status(200).json({ ok: true }));
@@ -98,12 +100,6 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
   });
 
   app.post("/api/tools/:name", (request, response) => {
-    const limit = apiLimiter.consume(request.ip ?? "unknown");
-    if (!limit.allowed) {
-      response.setHeader("Retry-After", String(limit.retryAfterSeconds));
-      response.status(429).json({ error: { code: "rate_limited", message: "Too many requests." } });
-      return;
-    }
     const name = request.params.name ?? "";
     if (!isToolName(name)) {
       response.status(404).json({ error: { code: "not_found", message: "Tool was not found." } });
@@ -113,6 +109,10 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
       const result = executeTool(service, name, request.body);
       response.status(200).json(result);
     } catch (error) {
+      if (isToolOutputError(error)) {
+        response.status(500).json({ error: { code: "internal_error", message: "Internal server error." } });
+        return;
+      }
       if (error instanceof ZodError) {
         response.status(400).json({ error: { code: "invalid_input", message: "Invalid tool input." } });
         return;
@@ -126,16 +126,11 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
   });
 
   app.all("/mcp", async (request, response) => {
-    const limit = mcpLimiter.consume(request.ip ?? "unknown");
-    if (!limit.allowed) {
-      response.setHeader("Retry-After", String(limit.retryAfterSeconds));
-      response.status(429).json({ jsonrpc: "2.0", id: null, error: { code: -32029, message: "Too many requests." } });
-      return;
-    }
     const server = createMcpServer(service, { loadWidgetHtml });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    const close = (): void => { void transport.close(); void server.close(); };
-    response.once("close", close);
+    let cleanupPromise: Promise<void> | undefined;
+    const close = (): Promise<void> => cleanupPromise ??= Promise.allSettled([transport.close(), server.close()]).then(() => undefined);
+    response.once("close", () => { void close(); });
     try {
       await server.connect(transport);
       await transport.handleRequest(request, response, request.body);
@@ -143,13 +138,13 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
       if (!response.headersSent) {
         response.status(500).json({ jsonrpc: "2.0", id: null, error: { code: -32603, message: "Internal server error." } });
       }
-      close();
+      await close();
     }
   });
 
   app.use((error: unknown, request: Request, response: Response, next: NextFunction) => {
     if (response.headersSent) return next(error);
-    if (request.path === "/mcp") {
+    if (request.path === "/mcp" && (isPayloadTooLarge(error) || isJsonParseError(error))) {
       response.status(isPayloadTooLarge(error) ? 413 : 400).json({
         jsonrpc: "2.0",
         id: null,
@@ -161,7 +156,15 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
       response.status(413).json({ error: { code: "payload_too_large", message: "Request body is too large." } });
       return;
     }
-    response.status(400).json({ error: { code: "invalid_json", message: "Invalid JSON request body." } });
+    if (isJsonParseError(error)) {
+      response.status(400).json({ error: { code: "invalid_json", message: "Invalid JSON request body." } });
+      return;
+    }
+    if (request.path === "/mcp") {
+      response.status(500).json({ jsonrpc: "2.0", id: null, error: { code: -32603, message: "Internal server error." } });
+      return;
+    }
+    response.status(500).json({ error: { code: "internal_error", message: "Internal server error." } });
   });
 
   return app;
@@ -175,6 +178,34 @@ function retryAfter(windowStart: number, windowMs: number, now: number): number 
   return Math.max(1, Math.ceil((windowStart + windowMs - now) / 1_000));
 }
 
+function rateLimitMiddleware(limiter: FixedWindowLimiter, kind: "rest" | "mcp") {
+  return (request: Request, response: Response, next: NextFunction): void => {
+    // Use the direct peer IP. Deployments behind proxies must configure an explicit trusted-proxy policy.
+    const limit = limiter.consume(request.ip ?? "unknown");
+    if (limit.allowed) return next();
+    response.setHeader("Retry-After", String(limit.retryAfterSeconds));
+    if (kind === "mcp") {
+      response.status(429).json({ jsonrpc: "2.0", id: null, error: { code: -32029, message: "Too many requests." } });
+      return;
+    }
+    response.status(429).json({ error: { code: "rate_limited", message: "Too many requests." } });
+  };
+}
+
+function positiveSafeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive safe integer.`);
+  return value;
+}
+
+function nonnegativeSafeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`${name} must be a nonnegative safe integer.`);
+  return value;
+}
+
 function isPayloadTooLarge(error: unknown): boolean {
   return typeof error === "object" && error !== null && "type" in error && error.type === "entity.too.large";
+}
+
+function isJsonParseError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "type" in error && error.type === "entity.parse.failed";
 }

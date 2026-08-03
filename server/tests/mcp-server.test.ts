@@ -77,7 +77,10 @@ describe("MCP game arena server", () => {
       expect(validate(snapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate(goSnapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate({ ...snapshot, kind: "go" }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...snapshot, internalSecret: "SECRET" }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...goSnapshot, captures: { ...(goSnapshot.captures as object), secret: "SECRET" } }), JSON.stringify(validate.errors)).toBe(false);
     }
+    expect(gameSnapshotSchema.safeParse({ ...goSnapshot, captures: { ...(goSnapshot.captures as object), secret: "SECRET" } }).success).toBe(false);
     const render = await client.callTool({ name: "render_game", arguments: { gameId: snapshot.gameId } });
     expect(render.structuredContent).toEqual(snapshot);
     const played = await client.callTool({ name: "play_game_move", arguments: {
@@ -130,6 +133,20 @@ describe("MCP game arena server", () => {
     const result = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
     expect(result).toEqual({ isError: true, content: [{ type: "text", text: "internal_error: Internal server error." }] });
     expect(JSON.stringify(result)).not.toContain("SECRET_SERVICE_VALUE");
+    await Promise.all([client.close(), server.close()]);
+  });
+
+  it("rejects unexpected extra fields in service snapshots", async () => {
+    const service = new ToolService(new GameStore());
+    const valid = service.createGame({ game: "chess", playerColor: "white" });
+    vi.spyOn(service, "createGame").mockReturnValue({ ...valid, internalSecret: "SECRET" } as unknown as typeof valid);
+    const server = createMcpServer(service);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const result = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "internal_error: Internal server error." }] });
+    expect(JSON.stringify(result)).not.toContain("SECRET");
     await Promise.all([client.close(), server.close()]);
   });
 });

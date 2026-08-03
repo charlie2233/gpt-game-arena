@@ -15,6 +15,12 @@ class ExplodingToolService extends ToolService {
   }
 }
 
+class LeakySnapshotToolService extends ToolService {
+  override createGame(input: { game: "chess" | "go"; playerColor: "white" | "black" }) {
+    return { ...super.createGame(input), internalSecret: "SECRET" };
+  }
+}
+
 describe("HTTP game arena app", () => {
   it("serves health and a fixture preview", async () => {
     const app = createHttpApp(new ToolService(new GameStore()), {
@@ -121,6 +127,19 @@ describe("HTTP game arena app", () => {
     expect(mcpOversized.body).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error." } });
   });
 
+  it("counts malformed and oversized requests before parsing their bodies", async () => {
+    const rest = createHttpApp(new ToolService(new GameStore()), { apiToolsRateLimit: { limit: 1 } });
+    expect((await request(rest).post("/api/tools/get_game_state").set("Content-Type", "application/json").send("{")).status).toBe(400);
+    const restLimited = await request(rest).post("/api/tools/get_game_state").set("Content-Type", "application/json").send(JSON.stringify({ payload: "x".repeat(33 * 1024) }));
+    expect(restLimited.status).toBe(429);
+
+    const mcp = createHttpApp(new ToolService(new GameStore()), { mcpRateLimit: { limit: 1 } });
+    expect((await request(mcp).post("/mcp").set("Content-Type", "application/json").send("{")).status).toBe(400);
+    const mcpLimited = await request(mcp).post("/mcp").set("Accept", "application/json, text/event-stream").set("Content-Type", "application/json").send(JSON.stringify({ payload: "x".repeat(33 * 1024) }));
+    expect(mcpLimited.status).toBe(429);
+    expect(mcpLimited.body).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32029, message: "Too many requests." } });
+  });
+
   it("keeps generic REST failures and MCP resource loader errors secret-safe", async () => {
     const failingApp = createHttpApp(new ExplodingToolService(new GameStore()));
     const generic = await request(failingApp).post("/api/tools/get_game_state").send({ gameId: "game" });
@@ -156,5 +175,38 @@ describe("HTTP game arena app", () => {
     now = 1_000;
     expect(limiter.consume("c").allowed).toBe(true);
     expect(limiter.bucketCount()).toBe(1);
+  });
+
+  it("rejects invalid limiter settings and clocks without mutating buckets", () => {
+    for (const value of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => new FixedWindowLimiter({ limit: value }, () => 0)).toThrow(RangeError);
+      expect(() => new FixedWindowLimiter({ windowMs: value }, () => 0)).toThrow(RangeError);
+      expect(() => new FixedWindowLimiter({ maxBuckets: value }, () => 0)).toThrow(RangeError);
+    }
+    let now = Number.NaN;
+    const limiter = new FixedWindowLimiter({}, () => now);
+    expect(() => limiter.consume("ip")).toThrow(RangeError);
+    expect(limiter.bucketCount()).toBe(0);
+    now = 0;
+    expect(limiter.consume("ip").allowed).toBe(true);
+    for (const invalidNow of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+      now = invalidNow;
+      expect(() => limiter.consume("another")).toThrow(RangeError);
+      expect(limiter.bucketCount()).toBe(1);
+    }
+    expect(() => createHttpApp(new ToolService(new GameStore()), { apiToolsRateLimit: { limit: 0 } })).toThrow(RangeError);
+  });
+
+  it("turns unexpected service output into safe REST and MCP failures", async () => {
+    const app = createHttpApp(new LeakySnapshotToolService(new GameStore()));
+    const rest = await request(app).post("/api/tools/create_game").send({ game: "chess", playerColor: "white" });
+    expect(rest.status).toBe(500);
+    expect(rest.body).toEqual({ error: { code: "internal_error", message: "Internal server error." } });
+    expect(rest.text).not.toContain("SECRET");
+    const mcp = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
+      jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "create_game", arguments: { game: "chess", playerColor: "white" } },
+    });
+    expect(mcp.body.result).toEqual({ isError: true, content: [{ type: "text", text: "internal_error: Internal server error." }] });
+    expect(JSON.stringify(mcp.body.result)).not.toContain("SECRET");
   });
 });

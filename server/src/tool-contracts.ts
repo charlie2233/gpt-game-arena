@@ -13,7 +13,7 @@ const moveRecordSchema = z.object({
   color: z.enum(["white", "black"]),
   notation: z.string(),
   ply: z.number().int().nonnegative(),
-});
+}).strict();
 const baseSnapshotSchema = z.object({
   gameId: boundedString,
   playerColor: z.enum(["white", "black"]),
@@ -25,29 +25,29 @@ const baseSnapshotSchema = z.object({
   lastMove: moveRecordSchema.optional(),
   stateVersion: z.number().int().nonnegative(),
   message: z.string(),
-});
+}).strict();
 
 const chessCellSchema = z.union([
   z.object({
     square: z.string().regex(/^[a-h][1-8]$/),
     color: z.enum(["white", "black"]),
     piece: z.enum(["p", "n", "b", "r", "q", "k"]),
-  }),
+  }).strict(),
   z.object({
     square: z.string().regex(/^[a-h][1-8]$/),
-  }),
+  }).strict(),
 ]);
 
 export const gameSnapshotSchema = z.discriminatedUnion("kind", [
-  baseSnapshotSchema.extend({ kind: z.literal("chess"), board: z.array(chessCellSchema) }),
+  baseSnapshotSchema.extend({ kind: z.literal("chess"), board: z.array(chessCellSchema) }).strict(),
   baseSnapshotSchema.extend({
     kind: z.literal("go"),
     board: z.array(z.array(z.enum(["white", "black"]).nullable())),
     boardSize: z.literal(9),
-    captures: z.object({ black: z.number().int().nonnegative(), white: z.number().int().nonnegative() }),
+    captures: z.object({ black: z.number().int().nonnegative(), white: z.number().int().nonnegative() }).strict(),
     consecutivePasses: z.number().int().nonnegative(),
-    score: z.object({ black: z.number(), white: z.number(), komi: z.literal(6.5) }).optional(),
-  }),
+    score: z.object({ black: z.number(), white: z.number(), komi: z.literal(6.5) }).strict().optional(),
+  }).strict(),
 ]);
 
 const generatedSnapshotSchema = toJsonSchemaCompat(
@@ -97,6 +97,17 @@ export type ToolName = keyof typeof toolInputSchemas;
 export type ToolSuccess = { structuredContent: GameSnapshot & Record<string, unknown>; content: [{ type: "text"; text: string }] };
 export type ToolFailure = { isError: true; content: [{ type: "text"; text: string }] };
 
+export class ToolOutputError extends Error {
+  constructor() {
+    super("Invalid tool output.");
+    this.name = "ToolOutputError";
+  }
+}
+
+export function isToolOutputError(error: unknown): error is ToolOutputError {
+  return error instanceof ToolOutputError;
+}
+
 export function executeTool(service: ToolService, name: ToolName, input: unknown): ToolSuccess {
   switch (name) {
     case "create_game":
@@ -128,5 +139,7 @@ export function isGameRuleError(error: unknown): error is GameRuleError {
 }
 
 function success(snapshot: GameSnapshot, text: string): ToolSuccess {
-  return { structuredContent: snapshot as GameSnapshot & Record<string, unknown>, content: [{ type: "text", text }] };
+  const parsed = gameSnapshotSchema.safeParse(snapshot);
+  if (!parsed.success) throw new ToolOutputError();
+  return { structuredContent: parsed.data as GameSnapshot & Record<string, unknown>, content: [{ type: "text", text }] };
 }
