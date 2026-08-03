@@ -46,6 +46,7 @@ const ticTacToeCoordinateSchema = z.string().regex(/^[A-C][1-3]$/);
 const connectFourColumnSchema = z.string().regex(/^[A-G]$/);
 const connectFourCoordinateSchema = z.string().regex(/^[A-G][1-6]$/);
 const reversiCoordinateSchema = z.string().regex(/^[A-H][1-8]$/);
+const reversiMoveRecordSchema = moveRecordSchema.extend({ notation: reversiCoordinateSchema }).strict();
 
 function goSnapshotSchema(boardSize: GoBoardSize) {
   const rowSchema = z.array(stoneSchema).length(boardSize);
@@ -74,6 +75,8 @@ export const gameSnapshotSchema = z.union([
     kind: z.literal("reversi"),
     board: z.array(z.array(stoneSchema).length(8)).length(8),
     legalMoves: z.array(reversiCoordinateSchema),
+    moveHistory: z.array(reversiMoveRecordSchema),
+    lastMove: reversiMoveRecordSchema.optional(),
     score: z.object({ black: z.number().int().nonnegative(), white: z.number().int().nonnegative() }).strict(),
   }).strict(),
   baseSnapshotSchema.extend({

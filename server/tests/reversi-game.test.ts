@@ -61,6 +61,16 @@ describe("ReversiGame", () => {
     expect(after.legalMoves).toEqual(["C5", "F6"]);
   });
 
+  it("does not report a skip just because the non-current side has no move later", () => {
+    const game = ReversiGame.create("r-late", "black");
+    const before = playMoves(game, "D3 C3 F5 E3 D2 C1 B3 D6 C4 F3 E2 D1 C5 B5 C7 G5 G3 H3 E1 A2 F4 C2 C6 B7 H2 G4 H6 G2 B2 A3 A6 C8 F6 H1 B4 A5 B6 F7 E6 A4 G7 A7 A8 H7 A1 B1 F2 E7 G1 H5 D7 F1 H4 B8 E8 F8 G6 D8".split(" "));
+    expect(before).toMatchObject({ stateVersion: 58, turn: "black" });
+    const after = game.play("player", "H8", before.stateVersion);
+    expect(after).toMatchObject({ stateVersion: 59, turn: "white", message: "White to move." });
+    expect(after.legalMoves).toContain("G8");
+    expect(after.message).not.toContain("moves again");
+  });
+
   it("checks stale version before all other errors and rejects invalid placements", () => {
     const game = ReversiGame.create("r-1", "black");
     expectRuleError(() => game.play("gpt", "c4", 1), "stale_version");
@@ -73,8 +83,8 @@ describe("ReversiGame", () => {
     let snapshot = game.snapshot();
     while (snapshot.status === "active") snapshot = game.play(actor(snapshot), snapshot.legalMoves[0], snapshot.stateVersion);
     expect(snapshot.legalMoves).toEqual([]);
-    expect(snapshot.score.black + snapshot.score.white).toBeGreaterThan(0);
-    expect(["black", "white", "draw"]).toContain(snapshot.winner);
+    expect(snapshot.score).toEqual({ black: 19, white: 45 });
+    expect(snapshot.winner).toBe("white");
     expectRuleError(() => game.play(actor(snapshot), "A1", snapshot.stateVersion), "game_finished");
   });
 

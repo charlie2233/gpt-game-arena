@@ -73,11 +73,17 @@ export interface ConnectFourGameSnapshot extends BaseGameSnapshot {
 
 export type ReversiCoordinate = `${"A" | "B" | "C" | "D" | "E" | "F" | "G" | "H"}${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8}`;
 
+export interface ReversiMoveRecord extends MoveRecord {
+  notation: ReversiCoordinate;
+}
+
 export interface ReversiGameSnapshot extends BaseGameSnapshot {
   kind: "reversi";
   /** Row 0 is rank 8 (top); row 7 is rank 1 (bottom). */
   board: (StoneColor | null)[][];
   legalMoves: ReversiCoordinate[];
+  moveHistory: ReversiMoveRecord[];
+  lastMove?: ReversiMoveRecord;
   score: { black: number; white: number };
 }
 

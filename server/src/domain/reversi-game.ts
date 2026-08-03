@@ -1,5 +1,5 @@
 import { GameRuleError } from "./errors.js";
-import type { GameActor, GameDifficulty, MoveRecord, ReversiCoordinate, ReversiGameSnapshot, StoneColor } from "./types.js";
+import type { GameActor, GameDifficulty, ReversiCoordinate, ReversiGameSnapshot, ReversiMoveRecord, StoneColor } from "./types.js";
 
 type Board = (StoneColor | null)[][];
 type Point = { row: number; column: number };
@@ -21,8 +21,9 @@ export class ReversiGame {
   private turn: StoneColor = "black";
   private status: "active" | "finished" = "active";
   private winner: StoneColor | "draw" | undefined;
-  private readonly moveHistory: MoveRecord[] = [];
+  private readonly moveHistory: ReversiMoveRecord[] = [];
   private stateVersion = 0;
+  private lastSkippedColor: StoneColor | undefined;
 
   private constructor(private readonly gameId: string, private readonly playerColor: StoneColor, private readonly difficulty: GameDifficulty) {
     this.board[3][3] = "black"; this.board[3][4] = "white";
@@ -48,27 +49,32 @@ export class ReversiGame {
     if (expectedVersion !== this.stateVersion) throw new GameRuleError("stale_version", "The supplied game version is stale.");
     if (this.status === "finished") throw new GameRuleError("game_finished", "This game has already finished.");
     if (owner(this.playerColor, this.turn) !== actor) throw new GameRuleError("wrong_actor", "This actor does not own the current turn.");
-    const point = this.parse(move);
-    if (!point) throw new GameRuleError("illegal_move", "That move is not legal in the current position.");
+    const parsedMove = this.parse(move);
+    if (!parsedMove) throw new GameRuleError("illegal_move", "That move is not legal in the current position.");
+    const { point, notation } = parsedMove;
     const flips = this.flipsAt(point, this.turn);
     if (!flips.length) throw new GameRuleError("illegal_move", "That move is not legal in the current position.");
     const color = this.turn;
     this.board[point.row][point.column] = color;
     for (const flip of flips) this.board[flip.row][flip.column] = color;
-    this.moveHistory.push({ actor, color, notation: move, ply: this.moveHistory.length + 1 });
+    this.moveHistory.push({ actor, color, notation, ply: this.moveHistory.length + 1 });
     this.stateVersion += 1;
+    this.lastSkippedColor = undefined;
     const opponent = other(color);
     if (this.boardFull() || (!this.legalMoves(opponent).length && !this.legalMoves(color).length)) {
       this.finish();
     } else if (this.legalMoves(opponent).length) {
       this.turn = opponent;
-    } // Otherwise the mover automatically retains the turn.
+    } else {
+      this.lastSkippedColor = opponent;
+    }
     return this.snapshot();
   }
 
-  private parse(move: string): Point | undefined {
+  private parse(move: string): { point: Point; notation: ReversiCoordinate } | undefined {
     if (!/^[A-H][1-8]$/.test(move)) return undefined;
-    return { column: FILES.indexOf(move[0]), row: SIZE - Number(move[1]) };
+    const point = { column: FILES.indexOf(move[0]), row: SIZE - Number(move[1]) };
+    return { point, notation: this.coordinate(point) };
   }
 
   private coordinate(point: Point): ReversiCoordinate { return `${FILES[point.column]}${SIZE - point.row}` as ReversiCoordinate; }
@@ -105,7 +111,7 @@ export class ReversiGame {
   private message(): string {
     if (this.winner === "draw") return "The game is a draw.";
     if (this.winner) return `${this.winner === "black" ? "Black" : "White"} wins.`;
-    const opponent = other(this.turn);
-    return this.legalMoves(opponent).length ? `${this.turn === "black" ? "Black" : "White"} to move.` : `${opponent === "black" ? "Black" : "White"} has no legal move; ${this.turn === "black" ? "Black" : "White"} moves again.`;
+    if (this.lastSkippedColor !== undefined) return `${this.lastSkippedColor === "black" ? "Black" : "White"} has no legal move; ${this.turn === "black" ? "Black" : "White"} moves again.`;
+    return `${this.turn === "black" ? "Black" : "White"} to move.`;
   }
 }
