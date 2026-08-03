@@ -126,6 +126,8 @@ export class ChessGame {
             color: toStoneColor(piece.color),
             piece: piece.type,
           });
+        } else {
+          board.push({ square });
         }
       }
     }

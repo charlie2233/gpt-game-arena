@@ -26,8 +26,8 @@ export interface BaseGameSnapshot {
 
 export interface ChessCell {
   square: string;
-  color: StoneColor;
-  piece: "p" | "n" | "b" | "r" | "q" | "k";
+  color?: StoneColor;
+  piece?: "p" | "n" | "b" | "r" | "q" | "k";
 }
 
 export interface ChessGameSnapshot extends BaseGameSnapshot {

@@ -13,6 +13,18 @@ describe("ChessGame", () => {
     expect(snapshot.stateVersion).toBe(0);
   });
 
+  it("serializes all 64 stable board squares, including empty cells", () => {
+    const snapshot = ChessGame.create("game-1", "white").snapshot();
+
+    expect(snapshot.board).toHaveLength(64);
+    expect(snapshot.board.find((cell) => cell.square === "e4")).toEqual({ square: "e4" });
+    expect(snapshot.board.find((cell) => cell.square === "e2")).toEqual({
+      square: "e2",
+      color: "white",
+      piece: "p",
+    });
+  });
+
   it("applies UCI moves only for the actor whose color owns the turn", () => {
     const game = ChessGame.create("game-1", "white");
 
@@ -25,11 +37,21 @@ describe("ChessGame", () => {
     expect(afterGpt.moveHistory.map((move) => move.notation)).toEqual(["e2e4", "e7e5"]);
   });
 
-  it("rejects a stale version without mutating the board", () => {
+  it("rejects an older version after state advances without mutating the board", () => {
     const game = ChessGame.create("game-1", "white");
+    game.play("player", "e2e4", 0);
     const before = game.snapshot();
+    let error: unknown;
 
-    expect(() => game.play("player", "e2e4", 1)).toThrow(GameRuleError);
+    try {
+      game.play("gpt", "e7e5", 0);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(GameRuleError);
+    expect((error as GameRuleError).code).toBe("stale_version");
+    expect(game.snapshot().stateVersion).toBe(1);
     expect(game.snapshot()).toEqual(before);
   });
 
