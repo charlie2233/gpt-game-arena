@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 
 import { createMcpServer, WIDGET_DESCRIPTION, WIDGET_RESOURCE_URI } from "../src/mcp-server.js";
-import { gameSnapshotSchema } from "../src/tool-contracts.js";
+import { gameSnapshotSchema, toolInputSchemas } from "../src/tool-contracts.js";
 import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
 
@@ -52,13 +52,18 @@ describe("MCP game arena server", () => {
     expect(createTool?.description).toContain("omitted difficulty defaults to medium");
     expect(createTool?.inputSchema).toMatchObject({
       properties: {
+        game: { enum: ["chess", "go", "tic-tac-toe"] },
         boardSize: { enum: [9, 13, 19] },
         difficulty: { enum: ["easy", "medium", "hard"], default: "medium" },
       },
     });
     expect((createTool?.inputSchema as { required?: string[] }).required).not.toContain("difficulty");
     const validateCreateInput = new Ajv({ strict: false }).compile(createTool?.inputSchema as object);
+    expect(toolInputSchemas.create_game.shape.game.options).toEqual(["chess", "go", "tic-tac-toe"]);
+    expect(toolInputSchemas.create_game.safeParse({ game: "tic-tac-toe", playerColor: "black" }).success).toBe(true);
+    expect(toolInputSchemas.create_game.safeParse({ game: "connect-four", playerColor: "black" }).success).toBe(false);
     expect(validateCreateInput({ game: "go", playerColor: "black" })).toBe(true);
+    expect(validateCreateInput({ game: "tic-tac-toe", playerColor: "black" })).toBe(true);
     for (const difficulty of ["easy", "medium", "hard"]) {
       expect(validateCreateInput({ game: "chess", playerColor: "white", difficulty })).toBe(true);
     }
@@ -69,6 +74,7 @@ describe("MCP game arena server", () => {
       expect(validateCreateInput({ game: "chess", playerColor: "white", difficulty })).toBe(false);
     }
     expect(validateCreateInput({ game: "go", playerColor: "black", boardSize: 10 })).toBe(false);
+    expect(validateCreateInput({ game: "connect-four", playerColor: "black" })).toBe(false);
     expect(validateCreateInput({ game: "go", playerColor: "black", boardSize: 19, secret: "SECRET" })).toBe(false);
     expect(tools.tools.filter((tool) => tool.name !== "render_game").every((tool) => {
       const meta = tool._meta as { ui?: { resourceUri?: string; visibility?: string[] }; "openai/outputTemplate"?: string } | undefined;
@@ -125,12 +131,16 @@ describe("MCP game arena server", () => {
     const ticTacToeCreated = await client.callTool({ name: "create_game", arguments: { game: "tic-tac-toe", playerColor: "black" } });
     const ticTacToeSnapshot = ticTacToeCreated.structuredContent as Record<string, unknown>;
     expect(ticTacToeSnapshot).toMatchObject({ kind: "tic-tac-toe", difficulty: "medium" });
+    expect(gameSnapshotSchema.safeParse({ ...ticTacToeSnapshot, legalMoves: ["a1"] }).success).toBe(false);
+    expect(gameSnapshotSchema.safeParse({ ...ticTacToeSnapshot, legalMoves: ["D1"] }).success).toBe(false);
     const ajv = new Ajv({ strict: false });
     for (const tool of tools.tools) {
       const validate = ajv.compile(tool.outputSchema as object);
       expect(validate(snapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate(goSnapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate(ticTacToeSnapshot), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...ticTacToeSnapshot, legalMoves: ["a1"] }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...ticTacToeSnapshot, legalMoves: ["D1"] }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, kind: "go" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, internalSecret: "SECRET" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, difficulty: undefined }), JSON.stringify(validate.errors)).toBe(false);

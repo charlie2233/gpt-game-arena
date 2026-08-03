@@ -64,6 +64,7 @@ export const gameSnapshotSchema = z.union([
   baseSnapshotSchema.extend({
     kind: z.literal("tic-tac-toe"),
     board: z.array(z.array(stoneSchema).length(3)).length(3),
+    legalMoves: z.array(ticTacToeCoordinateSchema),
     winningLine: z.tuple([ticTacToeCoordinateSchema, ticTacToeCoordinateSchema, ticTacToeCoordinateSchema]).optional(),
   }).strict(),
 ]);

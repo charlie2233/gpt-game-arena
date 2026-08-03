@@ -56,6 +56,7 @@ export interface TicTacToeGameSnapshot extends BaseGameSnapshot {
   kind: "tic-tac-toe";
   /** Rows descend from rank 3 to 1; columns run A through C. */
   board: (StoneColor | null)[][];
+  legalMoves: TicTacToeCoordinate[];
   winningLine?: [TicTacToeCoordinate, TicTacToeCoordinate, TicTacToeCoordinate];
 }
 

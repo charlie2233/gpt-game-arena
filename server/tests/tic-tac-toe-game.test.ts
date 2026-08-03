@@ -56,6 +56,16 @@ describe("TicTacToeGame", () => {
     expect(game.snapshot()).toEqual(before);
   });
 
+  it("rejects malformed, lowercase, and occupied-square moves when the actor owns the turn", () => {
+    const game = TicTacToeGame.create("ttt-1", "black");
+    expectRuleError(() => game.play("player", "a1", 0), "illegal_move");
+    expectRuleError(() => game.play("player", "A4", 0), "illegal_move");
+    expectRuleError(() => game.play("player", "A01", 0), "illegal_move");
+    game.play("player", "A1", 0);
+    game.play("gpt", "B1", 1);
+    expectRuleError(() => game.play("player", "A1", 2), "illegal_move");
+  });
+
   it("rejects moves after a completed game", () => {
     const game = TicTacToeGame.create("ttt-1", "black");
     playSequence(game, ["A3", "A2", "B3", "B2", "C3"]);
