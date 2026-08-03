@@ -37,16 +37,14 @@ export interface ChessGameSnapshot extends BaseGameSnapshot {
   board: ChessCell[];
 }
 
-export interface GoCell {
-  row: number;
-  column: number;
-  color?: StoneColor;
-}
-
 export interface GoGameSnapshot extends BaseGameSnapshot {
   kind: "go";
-  board: GoCell[];
+  /** Rows are ordered from 9 (top) to 1 (bottom); columns are A through J. */
+  board: (StoneColor | null)[][];
   boardSize: 9;
+  captures: { black: number; white: number };
+  consecutivePasses: number;
+  score?: { black: number; white: number; komi: 6.5 };
 }
 
 export type GameSnapshot = ChessGameSnapshot | GoGameSnapshot;
