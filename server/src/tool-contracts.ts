@@ -43,6 +43,8 @@ const chessCellSchema = z.union([
 const stoneSchema = z.enum(["white", "black"]).nullable();
 const goBoardSizeSchema = z.union([z.literal(9), z.literal(13), z.literal(19)]);
 const ticTacToeCoordinateSchema = z.string().regex(/^[A-C][1-3]$/);
+const connectFourColumnSchema = z.string().regex(/^[A-G]$/);
+const connectFourCoordinateSchema = z.string().regex(/^[A-G][1-6]$/);
 
 function goSnapshotSchema(boardSize: GoBoardSize) {
   const rowSchema = z.array(stoneSchema).length(boardSize);
@@ -66,6 +68,12 @@ export const gameSnapshotSchema = z.union([
     board: z.array(z.array(stoneSchema).length(3)).length(3),
     legalMoves: z.array(ticTacToeCoordinateSchema),
     winningLine: z.tuple([ticTacToeCoordinateSchema, ticTacToeCoordinateSchema, ticTacToeCoordinateSchema]).optional(),
+  }).strict(),
+  baseSnapshotSchema.extend({
+    kind: z.literal("connect-four"),
+    board: z.array(z.array(stoneSchema).length(7)).length(6),
+    legalMoves: z.array(connectFourColumnSchema),
+    winningLine: z.tuple([connectFourCoordinateSchema, connectFourCoordinateSchema, connectFourCoordinateSchema, connectFourCoordinateSchema]).optional(),
   }).strict(),
 ]);
 
@@ -101,7 +109,7 @@ export const mcpGameSnapshotSchema = z4.object({}).passthrough().superRefine((va
 
 export const toolInputSchemas = {
   create_game: z.object({
-    game: z.enum(["chess", "go", "tic-tac-toe"]),
+    game: z.enum(["chess", "go", "tic-tac-toe", "connect-four"]),
     playerColor: z.enum(["white", "black"]),
     boardSize: goBoardSizeSchema.optional(),
     difficulty: difficultySchema.default("medium"),

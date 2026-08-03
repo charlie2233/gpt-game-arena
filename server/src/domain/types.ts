@@ -1,4 +1,4 @@
-export type GameKind = "chess" | "go" | "tic-tac-toe";
+export type GameKind = "chess" | "go" | "tic-tac-toe" | "connect-four";
 export type StoneColor = "white" | "black";
 export type GameActor = "player" | "gpt";
 export type GameStatus = "active" | "finished";
@@ -60,4 +60,15 @@ export interface TicTacToeGameSnapshot extends BaseGameSnapshot {
   winningLine?: [TicTacToeCoordinate, TicTacToeCoordinate, TicTacToeCoordinate];
 }
 
-export type GameSnapshot = ChessGameSnapshot | GoGameSnapshot | TicTacToeGameSnapshot;
+export type ConnectFourColumn = "A" | "B" | "C" | "D" | "E" | "F" | "G";
+export type ConnectFourCoordinate = `${ConnectFourColumn}${1 | 2 | 3 | 4 | 5 | 6}`;
+
+export interface ConnectFourGameSnapshot extends BaseGameSnapshot {
+  kind: "connect-four";
+  /** Row 0 is rank 6 (top); row 5 is rank 1 (bottom). */
+  board: (StoneColor | null)[][];
+  legalMoves: ConnectFourColumn[];
+  winningLine?: [ConnectFourCoordinate, ConnectFourCoordinate, ConnectFourCoordinate, ConnectFourCoordinate];
+}
+
+export type GameSnapshot = ChessGameSnapshot | GoGameSnapshot | TicTacToeGameSnapshot | ConnectFourGameSnapshot;

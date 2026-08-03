@@ -102,6 +102,17 @@ describe("ToolService", () => {
     expect(reset.legalMoves).toHaveLength(9);
   });
 
+  it("creates, plays, and resets Connect Four without losing difficulty", () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({ game: "connect-four", playerColor: "black", difficulty: "hard" });
+    const moved = service.playGameMove({ gameId: created.gameId, actor: "player", move: "A", expectedVersion: 0 });
+    expect(moved).toMatchObject({ kind: "connect-four", stateVersion: 1, difficulty: "hard" });
+
+    const reset = service.resetGame({ gameId: created.gameId });
+    expect(reset).toMatchObject({ gameId: created.gameId, kind: "connect-four", playerColor: "black", difficulty: "hard", stateVersion: 0 });
+    expect(reset.legalMoves).toEqual(["A", "B", "C", "D", "E", "F", "G"]);
+  });
+
   it("returns not_found for unknown IDs", () => {
     const service = new ToolService(new GameStore());
 
@@ -113,7 +124,7 @@ describe("ToolService", () => {
   });
 
   it("exposes game kind and stone color as narrow TypeScript inputs", () => {
-    expectTypeOf<GameKind>().toEqualTypeOf<"chess" | "go" | "tic-tac-toe">();
+    expectTypeOf<GameKind>().toEqualTypeOf<"chess" | "go" | "tic-tac-toe" | "connect-four">();
     expectTypeOf<GameDifficulty>().toEqualTypeOf<"easy" | "medium" | "hard">();
     expectTypeOf<StoneColor>().toEqualTypeOf<"white" | "black">();
     expectTypeOf<GoBoardSize>().toEqualTypeOf<9 | 13 | 19>();

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { ChessGame } from "./domain/chess-game.js";
+import { ConnectFourGame } from "./domain/connect-four-game.js";
 import { GoGame } from "./domain/go-game.js";
 import { TicTacToeGame } from "./domain/tic-tac-toe-game.js";
 import type { GameActor, GameDifficulty, GameKind, GameSnapshot, GoBoardSize, StoneColor } from "./domain/types.js";
@@ -55,6 +56,8 @@ export class ToolService {
         return GoGame.create(gameId, playerColor, boardSize, difficulty);
       case "tic-tac-toe":
         return TicTacToeGame.create(gameId, playerColor, difficulty);
+      case "connect-four":
+        return ConnectFourGame.create(gameId, playerColor, difficulty);
       default:
         return this.unhandledGameKind(kind);
     }
