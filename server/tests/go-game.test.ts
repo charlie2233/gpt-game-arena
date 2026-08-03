@@ -93,6 +93,17 @@ describe("GoGame", () => {
     expect(game.snapshot()).toEqual(before);
   });
 
+  it("scores a real finished position with corner territory and neutral shared space", () => {
+    const game = GoGame.create("go-1", "black");
+    playSequence(game, ["A2", "J9", "B1", "J8", "pass", "pass"]);
+
+    const finished = game.snapshot();
+    expect(finished.status).toBe("finished");
+    expect(finished.board[8][0]).toBeNull();
+    expect(finished.score).toEqual({ black: 3, white: 8.5, komi: 6.5 });
+    expect(finished.winner).toBe("white");
+  });
+
   it("resets the consecutive pass counter after a stone move", () => {
     const game = GoGame.create("go-1", "black");
     game.play("player", "pass", 0);
@@ -100,5 +111,28 @@ describe("GoGame", () => {
 
     expect(afterStone.consecutivePasses).toBe(0);
     expect(afterStone.status).toBe("active");
+  });
+
+  it("assigns the opening black move to GPT when the player chose white", () => {
+    const game = GoGame.create("go-1", "white");
+
+    game.play("gpt", "A1", 0);
+    const afterPlayer = game.play("player", "B1", 1);
+
+    expect(afterPlayer.turn).toBe("black");
+    expect(afterPlayer.stateVersion).toBe(2);
+  });
+
+  it("returns snapshots that cannot mutate live game state", () => {
+    const game = GoGame.create("go-1", "black");
+    const snapshot = game.snapshot();
+    snapshot.board[8][0] = "black";
+    snapshot.captures.black = 99;
+    snapshot.legalMoves.pop();
+
+    const current = game.snapshot();
+    expect(current.board[8][0]).toBeNull();
+    expect(current.captures.black).toBe(0);
+    expect(current.legalMoves).toHaveLength(82);
   });
 });

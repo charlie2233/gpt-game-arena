@@ -35,8 +35,17 @@ export class ToolService {
   }
 
   private createSession(kind: GameKind, gameId: string, playerColor: StoneColor): GameSession {
-    return kind === "chess"
-      ? ChessGame.create(gameId, playerColor)
-      : GoGame.create(gameId, playerColor);
+    switch (kind) {
+      case "chess":
+        return ChessGame.create(gameId, playerColor);
+      case "go":
+        return GoGame.create(gameId, playerColor);
+      default:
+        return this.unhandledGameKind(kind);
+    }
+  }
+
+  private unhandledGameKind(kind: never): never {
+    throw new Error(`Unsupported game kind: ${kind}`);
   }
 }

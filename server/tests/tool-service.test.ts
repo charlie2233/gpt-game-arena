@@ -23,6 +23,8 @@ describe("ToolService", () => {
     const go = service.createGame({ game: "go", playerColor: "black" });
 
     expect(chess.gameId).not.toBe(go.gameId);
+    expect(chess.gameId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(go.gameId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     expect(chess.kind).toBe("chess");
     expect(go.kind).toBe("go");
   });
