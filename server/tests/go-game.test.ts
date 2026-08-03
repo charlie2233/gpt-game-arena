@@ -27,6 +27,7 @@ describe("GoGame", () => {
     const snapshot = GoGame.create("go-1", "black").snapshot();
 
     expect(snapshot.kind).toBe("go");
+    expect(snapshot.difficulty).toBe("medium");
     expect(snapshot.boardSize).toBe(9);
     expect(snapshot.board).toEqual(Array.from({ length: 9 }, () => Array(9).fill(null)));
     expect(snapshot.turn).toBe("black");
@@ -34,6 +35,13 @@ describe("GoGame", () => {
     expect(snapshot.legalMoves).toHaveLength(82);
     expect(snapshot.legalMoves.at(-1)).toBe("pass");
     expect(snapshot.legalMoves.slice(0, -1)).toEqual([...snapshot.legalMoves.slice(0, -1)].sort());
+  });
+
+  it.each(["easy", "medium", "hard"] as const)("keeps %s difficulty in every snapshot", (difficulty) => {
+    const game = GoGame.create("go-1", "black", 9, difficulty);
+
+    expect(game.snapshot().difficulty).toBe(difficulty);
+    expect(game.play("player", "A1", 0).difficulty).toBe(difficulty);
   });
 
   it.each([

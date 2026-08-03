@@ -1,5 +1,5 @@
 import { GameRuleError } from "./errors.js";
-import type { GameActor, GoBoardSize, GoGameSnapshot, MoveRecord, StoneColor } from "./types.js";
+import type { GameActor, GameDifficulty, GoBoardSize, GoGameSnapshot, MoveRecord, StoneColor } from "./types.js";
 
 const COLUMNS = "ABCDEFGHJKLMNOPQRST";
 const PASS = "pass";
@@ -28,16 +28,22 @@ export class GoGame {
     private readonly gameId: string,
     private readonly playerColor: StoneColor,
     private readonly boardSize: GoBoardSize,
+    private readonly difficulty: GameDifficulty,
   ) {
     this.board = GoGame.emptyBoard(boardSize);
     this.stonePositionHashes = new Set([this.boardHash(this.board)]);
   }
 
-  static create(gameId: string, playerColor: StoneColor, boardSize: GoBoardSize = 9): GoGame {
+  static create(
+    gameId: string,
+    playerColor: StoneColor,
+    boardSize: GoBoardSize = 9,
+    difficulty: GameDifficulty = "medium",
+  ): GoGame {
     if (boardSize !== 9 && boardSize !== 13 && boardSize !== 19) {
       throw new RangeError("Unsupported Go board size.");
     }
-    return new GoGame(gameId, playerColor, boardSize);
+    return new GoGame(gameId, playerColor, boardSize, difficulty);
   }
 
   snapshot(): GoGameSnapshot {
@@ -47,6 +53,7 @@ export class GoGame {
     return {
       gameId: this.gameId,
       kind: "go",
+      difficulty: this.difficulty,
       playerColor: this.playerColor,
       turn: this.turn,
       status: this.status,

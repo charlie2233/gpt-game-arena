@@ -12,6 +12,7 @@ import { ToolService } from "../src/tool-service.js";
 
 describe("MCP game arena server", () => {
   it("registers five game tools and the widget resource", async () => {
+    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v2/widget.html");
     const server = createMcpServer(new ToolService(new GameStore()), {
       loadWidgetHtml: () => "<!doctype html><title>fixture</title>",
     });
@@ -48,13 +49,24 @@ describe("MCP game arena server", () => {
     expect(tools.tools.find((tool) => tool.name === "play_game_move")?.title).toBe("Play game move");
     expect(tools.tools.find((tool) => tool.name === "reset_game")?.title).toBe("Reset game");
     const createTool = tools.tools.find((tool) => tool.name === "create_game");
+    expect(createTool?.description).toContain("omitted difficulty defaults to medium");
     expect(createTool?.inputSchema).toMatchObject({
-      properties: { boardSize: { enum: [9, 13, 19] } },
+      properties: {
+        boardSize: { enum: [9, 13, 19] },
+        difficulty: { enum: ["easy", "medium", "hard"], default: "medium" },
+      },
     });
+    expect((createTool?.inputSchema as { required?: string[] }).required).not.toContain("difficulty");
     const validateCreateInput = new Ajv({ strict: false }).compile(createTool?.inputSchema as object);
     expect(validateCreateInput({ game: "go", playerColor: "black" })).toBe(true);
+    for (const difficulty of ["easy", "medium", "hard"]) {
+      expect(validateCreateInput({ game: "chess", playerColor: "white", difficulty })).toBe(true);
+    }
     for (const boardSize of [9, 13, 19]) {
       expect(validateCreateInput({ game: "go", playerColor: "black", boardSize })).toBe(true);
+    }
+    for (const difficulty of ["Medium", "expert", "", 1, null]) {
+      expect(validateCreateInput({ game: "chess", playerColor: "white", difficulty })).toBe(false);
     }
     expect(validateCreateInput({ game: "go", playerColor: "black", boardSize: 10 })).toBe(false);
     expect(validateCreateInput({ game: "go", playerColor: "black", boardSize: 19, secret: "SECRET" })).toBe(false);
@@ -71,11 +83,17 @@ describe("MCP game arena server", () => {
           kind: { const: string };
           board?: { minItems?: number; maxItems?: number; items?: { minItems?: number; maxItems?: number } };
           boardSize?: { const?: number };
+          difficulty?: { enum?: string[]; $ref?: string };
         };
         required: string[];
       }> }).oneOf;
       expect(branches.map((branch) => branch.properties.kind.const).sort()).toEqual(["chess", "go", "go", "go"]);
-      expect(branches.find((branch) => branch.properties.kind.const === "chess")?.required).toContain("board");
+      for (const branch of branches) {
+        expect(branch.required).toEqual(expect.arrayContaining(["board", "difficulty"]));
+      }
+      expect(branches.some((branch) => (
+        JSON.stringify(branch.properties.difficulty?.enum) === JSON.stringify(["easy", "medium", "hard"])
+      ))).toBe(true);
       const goBranches = branches.filter((branch) => branch.properties.kind.const === "go");
       expect(goBranches.map((branch) => branch.properties.boardSize?.const).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([9, 13, 19]);
       for (const branch of goBranches) {
@@ -91,12 +109,14 @@ describe("MCP game arena server", () => {
 
     const created = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
     expect(created.isError, JSON.stringify(created)).not.toBe(true);
-    const snapshot = created.structuredContent as { gameId: string; kind: string };
+    const snapshot = created.structuredContent as { gameId: string; kind: string; difficulty: string };
     expect(snapshot.kind).toBe("chess");
+    expect(snapshot.difficulty).toBe("medium");
     expect(gameSnapshotSchema.safeParse(snapshot).success).toBe(true);
-    const goCreated = await client.callTool({ name: "create_game", arguments: { game: "go", playerColor: "black", boardSize: 19 } });
+    const goCreated = await client.callTool({ name: "create_game", arguments: { game: "go", playerColor: "black", boardSize: 19, difficulty: "hard" } });
     const goSnapshot = goCreated.structuredContent as Record<string, unknown>;
     expect(goSnapshot.kind).toBe("go");
+    expect(goSnapshot.difficulty).toBe("hard");
     expect(goSnapshot.boardSize).toBe(19);
     expect(goSnapshot.board).toHaveLength(19);
     const goBoard = goSnapshot.board as unknown[][];
@@ -107,12 +127,16 @@ describe("MCP game arena server", () => {
       expect(validate(goSnapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate({ ...snapshot, kind: "go" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, internalSecret: "SECRET" }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...snapshot, difficulty: undefined }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...snapshot, difficulty: "expert" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...goSnapshot, captures: { ...(goSnapshot.captures as object), secret: "SECRET" } }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...goSnapshot, board: goBoard.slice(1) }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...goSnapshot, board: goBoard.map((row, index) => index === 0 ? row.slice(1) : row) }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...goSnapshot, boardSize: 13 }), JSON.stringify(validate.errors)).toBe(false);
     }
     expect(gameSnapshotSchema.safeParse({ ...goSnapshot, captures: { ...(goSnapshot.captures as object), secret: "SECRET" } }).success).toBe(false);
+    expect(gameSnapshotSchema.safeParse({ ...goSnapshot, difficulty: undefined }).success).toBe(false);
+    expect(gameSnapshotSchema.safeParse({ ...goSnapshot, difficulty: "expert" }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...goSnapshot, board: goBoard.slice(1) }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...goSnapshot, board: goBoard.map((row, index) => index === 0 ? row.slice(1) : row) }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...goSnapshot, boardSize: 13 }).success).toBe(false);
@@ -126,6 +150,11 @@ describe("MCP game arena server", () => {
     } });
     expect(secretBoardSize.isError).toBe(true);
     expect(JSON.stringify(secretBoardSize)).not.toContain("SECRET_BOARD_SIZE");
+    const secretDifficulty = await client.callTool({ name: "create_game", arguments: {
+      game: "chess", playerColor: "white", difficulty: "SECRET_DIFFICULTY",
+    } });
+    expect(secretDifficulty.isError).toBe(true);
+    expect(JSON.stringify(secretDifficulty)).not.toContain("SECRET_DIFFICULTY");
     const render = await client.callTool({ name: "render_game", arguments: { gameId: snapshot.gameId } });
     expect(render.structuredContent).toEqual(snapshot);
     const played = await client.callTool({ name: "play_game_move", arguments: {
@@ -141,7 +170,7 @@ describe("MCP game arena server", () => {
     const missing = await client.callTool({ name: "get_game_state", arguments: { gameId: "missing" } });
     expect(missing).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("not_found") }] });
     const reset = await client.callTool({ name: "reset_game", arguments: { gameId: snapshot.gameId } });
-    expect(reset.structuredContent).toMatchObject({ gameId: snapshot.gameId, stateVersion: 0, moveHistory: [] });
+    expect(reset.structuredContent).toMatchObject({ gameId: snapshot.gameId, difficulty: "medium", stateVersion: 0, moveHistory: [] });
     const invalid = await client.callTool({ name: "get_game_state", arguments: { gameId: "" } });
     expect(invalid.isError).toBe(true);
 

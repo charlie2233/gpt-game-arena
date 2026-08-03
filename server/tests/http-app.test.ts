@@ -2,6 +2,7 @@ import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
 import { createHttpApp, FixedWindowLimiter } from "../src/http-app.js";
+import { WIDGET_RESOURCE_URI } from "../src/mcp-server.js";
 import { toolInputSchemas } from "../src/tool-contracts.js";
 import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
@@ -47,6 +48,7 @@ describe("HTTP game arena app", () => {
 
     const created = await request(app).post("/api/tools/create_game").send({ game: "chess", playerColor: "white" });
     expect(created.status).toBe(200);
+    expect(created.body.structuredContent.difficulty).toBe("medium");
     const gameId = created.body.structuredContent.gameId as string;
     const played = await request(app).post("/api/tools/play_game_move").send({
       gameId, actor: "player", move: "e2e4", expectedVersion: 0,
@@ -55,7 +57,7 @@ describe("HTTP game arena app", () => {
     const state = await request(app).post("/api/tools/get_game_state").send({ gameId });
     expect(state.body.structuredContent).toEqual(played.body.structuredContent);
     const reset = await request(app).post("/api/tools/reset_game").send({ gameId });
-    expect(reset.body.structuredContent).toMatchObject({ gameId, stateVersion: 0, moveHistory: [] });
+    expect(reset.body.structuredContent).toMatchObject({ gameId, difficulty: "medium", stateVersion: 0, moveHistory: [] });
   });
 
   it("accepts supported Go board sizes through REST and rejects invalid sizes", async () => {
@@ -65,7 +67,7 @@ describe("HTTP game arena app", () => {
 
     const defaultResponse = await request(app).post("/api/tools/create_game").send({ game: "go", playerColor: "black" });
     expect(defaultResponse.status).toBe(200);
-    expect(defaultResponse.body.structuredContent).toMatchObject({ kind: "go", boardSize: 9 });
+    expect(defaultResponse.body.structuredContent).toMatchObject({ kind: "go", boardSize: 9, difficulty: "medium" });
 
     for (const [boardSize, expectedMoves] of [[9, 82], [13, 170], [19, 362]] as const) {
       const response = await request(app).post("/api/tools/create_game").send({
@@ -83,6 +85,34 @@ describe("HTTP game arena app", () => {
       });
       expect(response.status).toBe(400);
       expect(response.body).toEqual({ error: { code: "invalid_input", message: "Invalid tool input." } });
+    }
+    expect(create).toHaveBeenCalledTimes(4);
+  });
+
+  it("defaults difficulty to medium, accepts every level, and safely rejects invalid levels through REST", async () => {
+    const service = new ToolService(new GameStore());
+    const create = vi.spyOn(service, "createGame");
+    const app = createHttpApp(service);
+
+    const defaultResponse = await request(app).post("/api/tools/create_game").send({ game: "chess", playerColor: "white" });
+    expect(defaultResponse.status).toBe(200);
+    expect(defaultResponse.body.structuredContent.difficulty).toBe("medium");
+
+    for (const difficulty of ["easy", "medium", "hard"]) {
+      const response = await request(app).post("/api/tools/create_game").send({
+        game: "go", playerColor: "black", difficulty,
+      });
+      expect(response.status).toBe(200);
+      expect(response.body.structuredContent).toMatchObject({ kind: "go", difficulty });
+    }
+
+    for (const difficulty of ["Medium", "expert", "", 1, null, "SECRET_DIFFICULTY"]) {
+      const response = await request(app).post("/api/tools/create_game").send({
+        game: "chess", playerColor: "white", difficulty,
+      });
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({ error: { code: "invalid_input", message: "Invalid tool input." } });
+      if (difficulty === "SECRET_DIFFICULTY") expect(response.text).not.toContain(difficulty);
     }
     expect(create).toHaveBeenCalledTimes(4);
   });
@@ -145,11 +175,12 @@ describe("HTTP game arena app", () => {
     expect(list.status).toBe(200);
     expect(list.body.result.tools).toHaveLength(5);
     const call = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
-      jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "create_game", arguments: { game: "go", playerColor: "black", boardSize: 13 } },
+      jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "create_game", arguments: { game: "go", playerColor: "black", boardSize: 13, difficulty: "hard" } },
     });
     expect(call.status).toBe(200);
     expect(call.body.result.structuredContent.kind).toBe("go");
     expect(call.body.result.structuredContent.boardSize).toBe(13);
+    expect(call.body.result.structuredContent.difficulty).toBe("hard");
 
     const rejected = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
       jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "create_game", arguments: { game: "go", playerColor: "black", boardSize: 10 } },
@@ -157,6 +188,13 @@ describe("HTTP game arena app", () => {
     expect(rejected.status).toBe(200);
     expect(rejected.body.result.isError).toBe(true);
     expect(JSON.stringify(rejected.body.result)).not.toContain("10");
+
+    const rejectedDifficulty = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
+      jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "create_game", arguments: { game: "chess", playerColor: "white", difficulty: "SECRET_DIFFICULTY" } },
+    });
+    expect(rejectedDifficulty.status).toBe(200);
+    expect(rejectedDifficulty.body.result.isError).toBe(true);
+    expect(JSON.stringify(rejectedDifficulty.body.result)).not.toContain("SECRET_DIFFICULTY");
   });
 
   it("rate-limits MCP requests with a JSON-RPC-safe response", async () => {
@@ -235,7 +273,7 @@ describe("HTTP game arena app", () => {
       loadWidgetHtml: () => { throw new Error("SECRET_LOADER_VALUE"); },
     });
     const resource = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
-      jsonrpc: "2.0", id: 4, method: "resources/read", params: { uri: "ui://gpt-game-arena/v1/widget.html" },
+      jsonrpc: "2.0", id: 4, method: "resources/read", params: { uri: WIDGET_RESOURCE_URI },
     });
     expect(resource.status).toBe(200);
     expect(resource.text).not.toContain("SECRET_LOADER_VALUE");

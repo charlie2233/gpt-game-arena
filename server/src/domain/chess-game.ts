@@ -6,6 +6,7 @@ import type {
   ChessSquare,
   ChessGameSnapshot,
   GameActor,
+  GameDifficulty,
   MoveRecord,
   StoneColor,
 } from "./types.js";
@@ -28,10 +29,11 @@ export class ChessGame {
   private constructor(
     private readonly gameId: string,
     private readonly playerColor: StoneColor,
+    private readonly difficulty: GameDifficulty,
   ) {}
 
-  static create(gameId: string, playerColor: StoneColor): ChessGame {
-    return new ChessGame(gameId, playerColor);
+  static create(gameId: string, playerColor: StoneColor, difficulty: GameDifficulty = "medium"): ChessGame {
+    return new ChessGame(gameId, playerColor, difficulty);
   }
 
   snapshot(): ChessGameSnapshot {
@@ -49,6 +51,7 @@ export class ChessGame {
     return {
       gameId: this.gameId,
       kind: "chess",
+      difficulty: this.difficulty,
       playerColor: this.playerColor,
       turn: currentTurn,
       status,

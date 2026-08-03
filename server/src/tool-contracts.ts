@@ -8,6 +8,7 @@ import type { GameSnapshot, GoBoardSize } from "./domain/types.js";
 import { ToolService } from "./tool-service.js";
 
 const boundedString = z.string().trim().min(1).max(128);
+const difficultySchema = z.enum(["easy", "medium", "hard"]);
 const moveRecordSchema = z.object({
   actor: z.enum(["player", "gpt"]),
   color: z.enum(["white", "black"]),
@@ -16,6 +17,7 @@ const moveRecordSchema = z.object({
 }).strict();
 const baseSnapshotSchema = z.object({
   gameId: boundedString,
+  difficulty: difficultySchema,
   playerColor: z.enum(["white", "black"]),
   turn: z.enum(["white", "black"]),
   status: z.enum(["active", "finished"]),
@@ -95,6 +97,7 @@ export const toolInputSchemas = {
     game: z.enum(["chess", "go"]),
     playerColor: z.enum(["white", "black"]),
     boardSize: goBoardSizeSchema.optional(),
+    difficulty: difficultySchema.default("medium"),
   }).strict(),
   get_game_state: z.object({ gameId: boundedString }).strict(),
   play_game_move: z.object({

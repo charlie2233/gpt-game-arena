@@ -2,6 +2,7 @@ export type GameKind = "chess" | "go";
 export type StoneColor = "white" | "black";
 export type GameActor = "player" | "gpt";
 export type GameStatus = "active" | "finished";
+export type GameDifficulty = "easy" | "medium" | "hard";
 export type GoBoardSize = 9 | 13 | 19;
 export type ChessFile = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h";
 export type ChessRank = "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8";
@@ -18,6 +19,7 @@ export interface MoveRecord {
 export interface BaseGameSnapshot {
   gameId: string;
   kind: GameKind;
+  difficulty: GameDifficulty;
   playerColor: StoneColor;
   turn: StoneColor;
   status: GameStatus;

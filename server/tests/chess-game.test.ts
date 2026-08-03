@@ -8,10 +8,18 @@ describe("ChessGame", () => {
     const game = ChessGame.create("game-1", "white");
     const snapshot = game.snapshot();
 
+    expect(snapshot.difficulty).toBe("medium");
     expect(snapshot.turn).toBe("white");
     expect(snapshot.legalMoves).toHaveLength(20);
     expect(snapshot.legalMoves).toEqual([...snapshot.legalMoves].sort());
     expect(snapshot.stateVersion).toBe(0);
+  });
+
+  it.each(["easy", "medium", "hard"] as const)("keeps %s difficulty in every snapshot", (difficulty) => {
+    const game = ChessGame.create("game-1", "white", difficulty);
+
+    expect(game.snapshot().difficulty).toBe(difficulty);
+    expect(game.play("player", "e2e4", 0).difficulty).toBe(difficulty);
   });
 
   it("serializes all 64 stable board squares, including empty cells", () => {

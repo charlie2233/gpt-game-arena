@@ -4,7 +4,8 @@ import { GameClient, isSnapshot } from "./game-client";
 import { ChessBoard } from "./components/ChessBoard";
 import { GoBoard } from "./components/GoBoard";
 import { GameChrome } from "./components/GameChrome";
-import type { GameSnapshot, GoBoardSize } from "./types";
+import { chooseStandaloneMove, embeddedMovePrompt } from "./move-strategy";
+import type { GameDifficulty, GameSnapshot, GoBoardSize } from "./types";
 
 type GamePreset = "chess" | `go-${GoBoardSize}`;
 const gamePresets: ReadonlyArray<{ value: GamePreset; label: string }> = [
@@ -12,6 +13,11 @@ const gamePresets: ReadonlyArray<{ value: GamePreset; label: string }> = [
   { value: "go-9", label: "Quick Go · 9×9" },
   { value: "go-13", label: "Go · 13×13" },
   { value: "go-19", label: "Real Go · 19×19" },
+];
+const difficultyPresets: ReadonlyArray<{ value: GameDifficulty; label: string }> = [
+  { value: "easy", label: "Easy" },
+  { value: "medium", label: "Medium" },
+  { value: "hard", label: "Hard" },
 ];
 
 function presetFor(game?: GameSnapshot): GamePreset {
@@ -30,6 +36,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const [game, setGame] = useState<GameSnapshot | undefined>(() => initialGame ?? initialHostState());
   const [selected, setSelected] = useState<string>();
   const [gamePreset, setGamePreset] = useState<GamePreset>(() => presetFor(initialGame ?? initialHostState()));
+  const [difficultyPreset, setDifficultyPreset] = useState<GameDifficulty>(() => (initialGame ?? initialHostState())?.difficulty ?? "medium");
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string>();
@@ -54,20 +61,39 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   }), [apply, client]);
   const gptTurn = useCallback(async (next: GameSnapshot, version: number) => {
     if (next.status === "finished" || next.turn === next.playerColor) return;
-    if (bridge.embedded) { await bridge.sendMessage(`Call get_game_state for gameId ${next.gameId}, select one exact entry from legalMoves, then call play_game_move with actor 'gpt' and expectedVersion ${next.stateVersion}.`); await poll(next, version); return; }
-    const moves = [...next.legalMoves].sort((a, b) => a.localeCompare(b)); const options = moves.filter(move => move !== "pass"); const move = (options.length ? options : moves)[Math.floor((options.length ? options : moves).length / 2)];
+    if (bridge.embedded) { await bridge.sendMessage(embeddedMovePrompt(next)); await poll(next, version); return; }
+    const move = chooseStandaloneMove(next);
     if (!move) return; const reply = await client.play(next.gameId, "gpt", move, next.stateVersion); apply(reply, version);
   }, [apply, bridge, client, poll]);
   useEffect(() => { let alive = true; const initEpoch = epoch.current; const unsubscribe = bridge.onToolResult(result => { const next = result.structuredContent; const current = gameRef.current; if (!isSnapshot(next)) return; if (!current) { stop(); commitBusy(false); setStarting(false); gameRef.current = next; setGame(next); return; } if (next.gameId !== current.gameId) return; const barrier = resetBarrier.current; if (next.stateVersion === 0) { if (current.stateVersion === 0 || barrier?.gameId === next.gameId) return; resetBarrier.current = { gameId: next.gameId, ceiling: current.stateVersion + 1 }; stop(); commitBusy(false); setStarting(false); setSelected(undefined); gameRef.current = next; setGame(next); return; } if (barrier?.gameId === next.gameId && next.stateVersion <= barrier.ceiling) return; const finishPoll = pollDone.current; if (!finishPoll || next.stateVersion <= current.stateVersion) return; gameRef.current = next; setGame(next); commitBusy(false); setStarting(false); finishPoll(); }); const context = bridge.onHostContext(() => undefined); if (bridge.embedded) void bridge.initialize().catch(() => { if (alive && epoch.current === initEpoch) setError("Could not initialize the game host."); }); return () => { alive = false; unsubscribe(); context(); stop(); bridge.dispose(); }; }, [bridge, commitBusy, stop]);
-  useEffect(() => { if (!game) void action(() => client.create("chess"), undefined, true); }, [action, client, game]);
+  useEffect(() => { if (!game) void action(() => client.create({ game: "chess", playerColor: "white", difficulty: "medium" }), undefined, true); }, [action, client, game]);
   const currentPreset = presetFor(game);
-  useEffect(() => { if (game) setGamePreset(currentPreset); }, [currentPreset, game?.gameId]);
+  useEffect(() => { if (game) { setGamePreset(currentPreset); setDifficultyPreset(game.difficulty); } }, [currentPreset, game?.gameId]);
   const humanMove = (move: string) => game && action(() => client.play(game.gameId, "player", move, game.stateVersion), gptTurn);
   const chessSquare = (square: string) => { if (!game || game.kind !== "chess") return; if (!selected) { setSelected(square); return; } const legal = game.legalMoves.filter(move => move.startsWith(selected) && move.slice(2, 4) === square).sort(); const move = legal.find(m => m.endsWith("q")) ?? legal[0]; if (move) humanMove(move); else setSelected(undefined); };
   const startGame = () => {
-    if (gamePreset === "chess") return action(() => client.create("chess"), undefined, true);
+    if (gamePreset === "chess") return action(() => client.create({ game: "chess", playerColor: "white", difficulty: difficultyPreset }), undefined, true);
     const boardSize = Number(gamePreset.slice(3)) as GoBoardSize;
-    return action(() => client.create("go", "black", boardSize === 9 ? undefined : boardSize), undefined, true);
+    return action(() => client.create({ game: "go", playerColor: "black", difficulty: difficultyPreset, ...(boardSize === 9 ? {} : { boardSize }) }), undefined, true);
   };
-  return <main className="arena"><header><h1><span>GPT</span> GAME <em>ARENA</em></h1><form className="new-game-picker" aria-busy={starting} onSubmit={event => { event.preventDefault(); void startGame(); }}><label htmlFor="game-preset">NEW GAME</label><div className="game-picker-controls"><select id="game-preset" value={gamePreset} disabled={starting} onChange={event => setGamePreset(event.target.value as GamePreset)}>{gamePresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select><button className="primary" type="submit" disabled={starting}>{starting ? "Starting…" : "Start game"}</button></div></form></header>{error && <p className="error" role="alert">{error}</p>}{game && <section className="table"><GameChrome game={game}/><div className="board-column">{game.kind === "chess" ? <ChessBoard game={game} selected={selected} onSquare={chessSquare} disabled={busy || game.status === "finished" || game.turn !== game.playerColor}/> : <GoBoard game={game} onMove={humanMove} disabled={busy || game.status === "finished" || game.turn !== game.playerColor}/>}<div className="controls"><button disabled={busy || game.kind !== "go" || game.status === "finished" || game.turn !== game.playerColor} onClick={() => humanMove("pass")}>⊘ Pass</button><button className="primary" disabled={busy} onClick={() => void action(() => client.reset(game.gameId))}>⟳ Reset</button><button disabled={busy} onClick={() => void action(() => client.state(game.gameId))}>⟳ Refresh</button></div>{game.kind === "go" && <p className="captures">Captures — Black: {game.captures.black}, White: {game.captures.white}</p>}<p className="game-status" role="status">{game.winner ? `Winner: ${game.winner}` : game.lastMove ? `Last move: ${game.lastMove.notation}` : "Choose a piece to begin."}</p></div></section>}</main>;
+  useEffect(() => {
+    const render = () => JSON.stringify(gameTextState(game, gamePreset, difficultyPreset, busy, starting, selected, error));
+    const advance = (_milliseconds: number) => { /* This turn-based DOM game has no animation clock. */ };
+    window.render_game_to_text = render;
+    window.advanceTime = advance;
+    return () => {
+      if (window.render_game_to_text === render) Reflect.deleteProperty(window, "render_game_to_text");
+      if (window.advanceTime === advance) Reflect.deleteProperty(window, "advanceTime");
+    };
+  }, [busy, difficultyPreset, error, game, gamePreset, selected, starting]);
+  return <main className="arena"><header><h1><span>GPT</span> GAME <em>ARENA</em></h1><form className="new-game-picker" aria-busy={starting} onSubmit={event => { event.preventDefault(); void startGame(); }}><label className="picker-field" htmlFor="game-preset"><span>NEW GAME</span><select id="game-preset" value={gamePreset} disabled={starting} onChange={event => setGamePreset(event.target.value as GamePreset)}>{gamePresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label><label className="picker-field" htmlFor="difficulty-preset"><span>DIFFICULTY</span><select id="difficulty-preset" value={difficultyPreset} disabled={starting} onChange={event => setDifficultyPreset(event.target.value as GameDifficulty)}>{difficultyPresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label><button className="primary" type="submit" disabled={starting}>{starting ? "Starting…" : "Start game"}</button></form></header>{error && <p className="error" role="alert">{error}</p>}{game && <section className="table"><GameChrome game={game}/><div className="board-column">{game.kind === "chess" ? <ChessBoard game={game} selected={selected} onSquare={chessSquare} disabled={busy || game.status === "finished" || game.turn !== game.playerColor}/> : <GoBoard game={game} onMove={humanMove} disabled={busy || game.status === "finished" || game.turn !== game.playerColor}/>}<div className="controls"><button disabled={busy || game.kind !== "go" || game.status === "finished" || game.turn !== game.playerColor} onClick={() => humanMove("pass")}>⊘ Pass</button><button className="primary" disabled={busy} onClick={() => void action(() => client.reset(game.gameId))}>⟳ Reset</button><button disabled={busy} onClick={() => void action(() => client.state(game.gameId))}>⟳ Refresh</button></div>{game.kind === "go" && <p className="captures">Captures — Black: {game.captures.black}, White: {game.captures.white}</p>}<p className="game-status" role="status">{game.winner ? `Winner: ${game.winner}` : game.lastMove ? `Last move: ${game.lastMove.notation}` : "Choose a piece to begin."}</p></div></section>}</main>;
+}
+
+function gameTextState(game: GameSnapshot | undefined, gamePreset: GamePreset, difficultyPreset: GameDifficulty, busy: boolean, starting: boolean, selected: string | undefined, error: string | undefined) {
+  if (!game) return { mode: "loading", draft: { game: gamePreset, difficulty: difficultyPreset }, busy, starting, error };
+  const coordinateSystem = game.kind === "chess" ? "Chess files a-h run left-to-right; ranks 1-8 run White-to-Black." : `Go columns ${"ABCDEFGHJKLMNOPQRST".slice(0, game.boardSize)} run left-to-right, I is skipped, and ranks ${game.boardSize}-1 run top-to-bottom.`;
+  const board = game.kind === "chess"
+    ? Array.from({ length: 8 }, (_, row) => game.board.slice(row * 8, row * 8 + 8).map((cell) => cell.piece ? (cell.color === "white" ? cell.piece.toUpperCase() : cell.piece) : ".").join(""))
+    : game.board.map((row) => row.map((stone) => stone === "black" ? "B" : stone === "white" ? "W" : ".").join(""));
+  return { mode: game.status, draft: { game: gamePreset, difficulty: difficultyPreset }, busy, starting, error, selected, coordinateSystem, game: { gameId: game.gameId, kind: game.kind, difficulty: game.difficulty, playerColor: game.playerColor, turn: game.turn, status: game.status, winner: game.winner, stateVersion: game.stateVersion, message: game.message, lastMove: game.lastMove, legalMoves: game.legalMoves, board } };
 }

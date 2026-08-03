@@ -2,14 +2,14 @@ import { randomUUID } from "node:crypto";
 
 import { ChessGame } from "./domain/chess-game.js";
 import { GoGame } from "./domain/go-game.js";
-import type { GameActor, GameKind, GameSnapshot, GoBoardSize, StoneColor } from "./domain/types.js";
+import type { GameActor, GameDifficulty, GameKind, GameSnapshot, GoBoardSize, StoneColor } from "./domain/types.js";
 import { GameStore, type GameSession } from "./game-store.js";
 
 export class ToolService {
   constructor(private readonly store = new GameStore()) {}
 
-  createGame(input: { game: GameKind; playerColor: StoneColor; boardSize?: GoBoardSize }): GameSnapshot {
-    const session = this.createSession(input.game, randomUUID(), input.playerColor, input.boardSize);
+  createGame(input: { game: GameKind; playerColor: StoneColor; boardSize?: GoBoardSize; difficulty?: GameDifficulty }): GameSnapshot {
+    const session = this.createSession(input.game, randomUUID(), input.playerColor, input.boardSize, input.difficulty);
     this.store.put(session);
     return session.snapshot();
   }
@@ -34,6 +34,7 @@ export class ToolService {
       current.gameId,
       current.playerColor,
       current.kind === "go" ? current.boardSize : undefined,
+      current.difficulty,
     );
     this.store.replace(replacement);
     return replacement.snapshot();
@@ -44,12 +45,13 @@ export class ToolService {
     gameId: string,
     playerColor: StoneColor,
     boardSize: GoBoardSize = 9,
+    difficulty: GameDifficulty = "medium",
   ): GameSession {
     switch (kind) {
       case "chess":
-        return ChessGame.create(gameId, playerColor);
+        return ChessGame.create(gameId, playerColor, difficulty);
       case "go":
-        return GoGame.create(gameId, playerColor, boardSize);
+        return GoGame.create(gameId, playerColor, boardSize, difficulty);
       default:
         return this.unhandledGameKind(kind);
     }

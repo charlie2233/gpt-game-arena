@@ -3,7 +3,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { GameRuleError } from "../src/domain/errors.js";
 import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
-import type { GameKind, GoBoardSize, StoneColor } from "../src/domain/types.js";
+import type { GameDifficulty, GameKind, GoBoardSize, StoneColor } from "../src/domain/types.js";
 
 function expectRuleError(action: () => unknown, code: GameRuleError["code"]): void {
   let error: unknown;
@@ -27,6 +27,19 @@ describe("ToolService", () => {
     expect(go.gameId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     expect(chess.kind).toBe("chess");
     expect(go.kind).toBe("go");
+    expect(chess.difficulty).toBe("medium");
+    expect(go.difficulty).toBe("medium");
+  });
+
+  it.each(["easy", "medium", "hard"] as const)("stores %s difficulty for chess and Go", (difficulty) => {
+    const service = new ToolService(new GameStore());
+    const chess = service.createGame({ game: "chess", playerColor: "white", difficulty });
+    const go = service.createGame({ game: "go", playerColor: "black", boardSize: 13, difficulty });
+
+    expect(chess.difficulty).toBe(difficulty);
+    expect(go.difficulty).toBe(difficulty);
+    expect(service.getGameState({ gameId: chess.gameId }).difficulty).toBe(difficulty);
+    expect(service.getGameState({ gameId: go.gameId }).difficulty).toBe(difficulty);
   });
 
   it("defaults Go to 9x9 and creates each supported board size", () => {
@@ -59,9 +72,9 @@ describe("ToolService", () => {
     }), "stale_version");
   });
 
-  it("resets the same authoritative ID with its original kind, player color, and board size", () => {
+  it("resets the same authoritative ID with its original kind, player color, board size, and difficulty", () => {
     const service = new ToolService(new GameStore());
-    const created = service.createGame({ game: "go", playerColor: "black", boardSize: 19 });
+    const created = service.createGame({ game: "go", playerColor: "black", boardSize: 19, difficulty: "hard" });
     service.playGameMove({ gameId: created.gameId, actor: "player", move: "A1", expectedVersion: 0 });
 
     const reset = service.resetGame({ gameId: created.gameId });
@@ -69,6 +82,7 @@ describe("ToolService", () => {
     expect(reset.kind).toBe("go");
     if (reset.kind !== "go") throw new Error("Expected a Go snapshot.");
     expect(reset.playerColor).toBe("black");
+    expect(reset.difficulty).toBe("hard");
     expect(reset.boardSize).toBe(19);
     expect(reset.board).toHaveLength(19);
     expect(reset.legalMoves).toHaveLength(362);
@@ -89,6 +103,7 @@ describe("ToolService", () => {
 
   it("exposes game kind and stone color as narrow TypeScript inputs", () => {
     expectTypeOf<GameKind>().toEqualTypeOf<"chess" | "go">();
+    expectTypeOf<GameDifficulty>().toEqualTypeOf<"easy" | "medium" | "hard">();
     expectTypeOf<StoneColor>().toEqualTypeOf<"white" | "black">();
     expectTypeOf<GoBoardSize>().toEqualTypeOf<9 | 13 | 19>();
   });
