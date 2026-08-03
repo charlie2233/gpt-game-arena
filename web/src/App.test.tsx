@@ -5,12 +5,21 @@ import { App } from "./App";
 import { GameBridge } from "./bridge";
 import { isSnapshot } from "./game-client";
 import { chooseStandaloneMove } from "./move-strategy";
-import type { Board, ChessSnapshot, GameDifficulty, GoBoardSize, GoSnapshot, ChessSquare, TicTacToeSnapshot, ConnectFourSnapshot, ReversiSnapshot } from "./types";
+import type { Board, ChessSnapshot, GameDifficulty, GoBoardSize, GoSnapshot, ChessSquare, TicTacToeSnapshot, ConnectFourSnapshot, ReversiCoordinate, ReversiSnapshot } from "./types";
 const chess = (version = 0, difficulty: GameDifficulty = "medium"): ChessSnapshot => ({ gameId: "chess-1", kind: "chess", difficulty, playerColor: "white", turn: "white", status: "active", legalMoves: ["e2e4"], moveHistory: [], stateVersion: version, message: "White to move.", board: Array.from({ length: 8 }, (_, r) => Array.from({ length: 8 }, (_, c) => ({ square: `${"abcdefgh"[c]}${8-r}` as ChessSquare, ...(r === 6 && c === 4 ? { color: "white" as const, piece: "p" as const } : {}) }))).flat() as ChessSnapshot["board"] });
 const go = (boardSize: GoBoardSize = 9, difficulty: GameDifficulty = "medium"): GoSnapshot => ({ gameId: `go-${boardSize}`, kind: "go", difficulty, playerColor: "black", turn: "black", status: "active", legalMoves: [`A${boardSize}`, "pass"], moveHistory: [], stateVersion: 0, message: "Black to move.", boardSize, board: Array.from({ length: boardSize }, () => Array<"white" | "black" | null>(boardSize).fill(null)), captures: { black: 0, white: 0 }, consecutivePasses: 0 });
 const tic = (): TicTacToeSnapshot => ({ gameId: "tic", kind: "tic-tac-toe", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["A1", "A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: Array.from({ length: 3 }, () => Array<"white" | "black" | null>(3).fill(null)) as Board<3, 3> });
 const four = (): ConnectFourSnapshot => ({ gameId: "four", kind: "connect-four", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["A", "B", "C", "D", "E", "F", "G"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: Array.from({ length: 6 }, () => Array<"white" | "black" | null>(7).fill(null)) as Board<6, 7> });
 const reversi = (): ReversiSnapshot => ({ gameId: "rev", kind: "reversi", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["C4", "D3", "E6", "F5"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: [[null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, "black", "white", null, null, null], [null, null, null, "white", "black", null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null]], score: { black: 2, white: 2 } });
+const reversiDirections = [-1, 0, 1].flatMap(row => [-1, 0, 1].map(column => [row, column] as const)).filter(([row, column]) => row || column);
+function reversiFixturePlay(game: ReversiSnapshot, move: ReversiCoordinate): ReversiSnapshot {
+  const board = game.board.map(row => [...row]) as Board<8, 8>; const row = 8 - Number(move[1]); const column = move.charCodeAt(0) - 65; const opponent = game.turn === "black" ? "white" : "black";
+  for (const [dy, dx] of reversiDirections) { const line: Array<readonly [number, number]> = []; let y = row + dy, x = column + dx; while (board[y]?.[x] === opponent) { line.push([y, x]); y += dy; x += dx; } if (line.length && board[y]?.[x] === game.turn) for (const [fy, fx] of line) board[fy][fx] = game.turn; }
+  board[row][column] = game.turn;
+  const legalFor = (color: "black" | "white") => { const enemy = color === "black" ? "white" : "black"; const legal: ReversiCoordinate[] = []; for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) if (board[y][x] === null && reversiDirections.some(([dy, dx]) => { let cy = y + dy, cx = x + dx, count = 0; while (board[cy]?.[cx] === enemy) { count++; cy += dy; cx += dx; } return count > 0 && board[cy]?.[cx] === color; })) legal.push(`${"ABCDEFGH"[x]}${8-y}` as ReversiCoordinate); return legal.sort(); };
+  const opponentMoves = legalFor(opponent); const ownMoves = legalFor(game.turn); const nextTurn = opponentMoves.length ? opponent : game.turn; const legalMoves = opponentMoves.length ? opponentMoves : ownMoves; const notation = move; const record = { actor: game.turn === game.playerColor ? "player" as const : "gpt" as const, color: game.turn, notation, ply: game.moveHistory.length + 1 }; let black = 0, white = 0; for (const line of board) for (const cell of line) cell === "black" ? black++ : cell === "white" ? white++ : undefined;
+  return { ...game, board, turn: nextTurn, legalMoves, moveHistory: [...game.moveHistory, record], lastMove: record, stateVersion: game.stateVersion + 1, message: opponentMoves.length ? `${nextTurn === "black" ? "Black" : "White"} to move.` : `${opponent === "black" ? "Black" : "White"} has no legal move; ${game.turn === "black" ? "Black" : "White"} moves again.`, score: { black, white } };
+}
 describe("App", () => {
   afterEach(() => { cleanup(); vi.useRealTimers(); });
   beforeEach(() => { vi.stubGlobal("fetch", vi.fn()); });
@@ -149,6 +158,30 @@ describe("App", () => {
     expect(JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string)).toEqual({ gameId: "rev", actor: "player", move: "C4", expectedVersion: 0 });
     expect(JSON.parse((vi.mocked(fetch).mock.calls[1][1] as RequestInit).body as string)).toEqual({ gameId: "rev", actor: "gpt", move: "C3", expectedVersion: 1 });
     expect(screen.queryByRole("button", { name: /pass/i })).not.toBeInTheDocument();
+  });
+  it("keeps standalone Reversi busy through a forced skipped-player GPT turn", async () => {
+    const states = ["C4", "C3", "C2", "B2", "E6", "C1"].reduce<ReversiSnapshot>((game, move) => reversiFixturePlay(game, move as ReversiCoordinate), { ...reversi(), difficulty: "easy" });
+    const afterPlayer = reversiFixturePlay(states, "A1");
+    expect(afterPlayer.turn).toBe("white"); expect(afterPlayer.legalMoves).toContain("A3");
+    const afterFirstGpt = reversiFixturePlay(afterPlayer, "A3");
+    expect(afterFirstGpt).toMatchObject({ turn: "white", legalMoves: ["C5", "F6"], stateVersion: 8 });
+    const secondMove = chooseStandaloneMove(afterFirstGpt)!; const afterSecondGpt = reversiFixturePlay(afterFirstGpt, secondMove as ReversiCoordinate);
+    let resolveSecond!: (response: Response) => void;
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterPlayer }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterFirstGpt }) } as Response).mockReturnValueOnce(new Promise<Response>(resolve => { resolveSecond = resolve; }));
+    render(<App initialGame={states}/>); await userEvent.setup().click(screen.getByRole("button", { name: "A1, empty, legal move" })); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[1][1] as RequestInit).body as string)).toEqual({ gameId: "rev", actor: "gpt", move: "A3", expectedVersion: 7 });
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[2][1] as RequestInit).body as string)).toEqual({ gameId: "rev", actor: "gpt", move: secondMove, expectedVersion: 8 });
+    expect(screen.getByRole("button", { name: /reset/i })).toBeDisabled();
+    resolveSecond({ ok: true, json: async () => ({ structuredContent: afterSecondGpt }) } as Response);
+    await waitFor(() => expect(screen.getByRole("button", { name: /reset/i })).toBeEnabled());
+  });
+  it("prompts and polls again when embedded GPT retains the turn", async () => {
+    vi.useFakeTimers(); const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000); const after = { ...chess(1, "hard"), turn: "black" as const, legalMoves: ["a7a6"] }; const skipped = { ...chess(2, "hard"), turn: "black" as const, legalMoves: ["b7b6"], message: "Black moves again." }; const done = { ...chess(3, "hard"), turn: "white" as const, legalMoves: ["e2e4"] };
+    render(<App bridge={bridge} initialGame={chess(0, "hard")}/>); fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i })); fireEvent.click(screen.getByRole("button", { name: /empty e4/i }));
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await vi.advanceTimersByTimeAsync(0); };
+    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } }); await respond(2, { structuredContent: after }); await respond(3, {}); await vi.advanceTimersByTimeAsync(1_000); await respond(4, { structuredContent: skipped });
+    await vi.advanceTimersByTimeAsync(0); const prompts = () => postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "ui/message"); expect(prompts()).toHaveLength(2); expect(prompts()[0][0]).toEqual(expect.objectContaining({ params: expect.objectContaining({ content: [expect.objectContaining({ text: expect.stringContaining('"gameId":"chess-1"') })] }) })); await respond(5, {}); await vi.advanceTimersByTimeAsync(1_000); await respond(6, { structuredContent: done }); await vi.advanceTimersByTimeAsync(0);
+    expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeEnabled(); const directGptCalls = postMessage.mock.calls.filter(([request]) => { const value = request as { method?: string; params?: { arguments?: { actor?: string } } }; return value.method === "tools/call" && value.params?.arguments?.actor === "gpt"; }); expect(directGptCalls).toHaveLength(0); expect(prompts()).toHaveLength(2); bridge.dispose(); vi.useRealTimers();
   });
   it("renders Reversi score, winning highlights, and deterministic text rows for every new board", () => {
     const finished: TicTacToeSnapshot = { ...tic(), turn: "black", status: "finished", winner: "black", legalMoves: [], moveHistory: [{ actor: "player", color: "black", notation: "A3", ply: 1 }, { actor: "gpt", color: "white", notation: "A2", ply: 2 }, { actor: "player", color: "black", notation: "B3", ply: 3 }, { actor: "gpt", color: "white", notation: "B2", ply: 4 }, { actor: "player", color: "black", notation: "C3", ply: 5 }], lastMove: { actor: "player", color: "black", notation: "C3", ply: 5 }, stateVersion: 5, message: "Black wins.", board: [["black", "black", "black"], ["white", "white", null], [null, null, null]], winningLine: ["A3", "B3", "C3"] };

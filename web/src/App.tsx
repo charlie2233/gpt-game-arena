@@ -44,7 +44,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string>();
-  const epoch = useRef(0); const pollTimer = useRef<number>(); const pollExpiry = useRef<number>(); const pollDone = useRef<(() => void)>(); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const resetBarrier = useRef<{ gameId: string; ceiling: number }>();
+  const epoch = useRef(0); const pollTimer = useRef<number>(); const pollExpiry = useRef<number>(); const pollDone = useRef<((next?: GameSnapshot) => void)>(); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const resetBarrier = useRef<{ gameId: string; ceiling: number }>();
   const stop = useCallback(() => { epoch.current += 1; if (pollTimer.current) window.clearTimeout(pollTimer.current); if (pollExpiry.current) window.clearTimeout(pollExpiry.current); pollTimer.current = undefined; pollExpiry.current = undefined; pollDone.current?.(); pollDone.current = undefined; }, []);
   const commitBusy = useCallback((next: boolean) => { busyRef.current = next; setBusy(next); }, []);
   const apply = useCallback((next: GameSnapshot, version: number) => { if (version !== epoch.current) return; const prior = gameRef.current; if (!prior || prior.gameId !== next.gameId) resetBarrier.current = undefined; else if (next.stateVersion === 0) resetBarrier.current = { gameId: next.gameId, ceiling: Math.max(resetBarrier.current?.gameId === next.gameId ? resetBarrier.current.ceiling : 0, prior.stateVersion + 1) }; gameRef.current = next; setGame(next); }, []);
@@ -52,24 +52,40 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
     stop(); const version = epoch.current; commitBusy(true); setStarting(startsGame); setError(undefined); setSelected(undefined);
     try { const next = await run(); if (version !== epoch.current) return; apply(next, version); if (version !== epoch.current) return; await after?.(next, version); } catch (reason) { if (version === epoch.current) setError(reason instanceof Error ? reason.message : "Game request failed."); } finally { if (version === epoch.current) { commitBusy(false); setStarting(false); } }
   }, [apply, commitBusy, stop]);
-  const poll = useCallback((previous: GameSnapshot, version: number) => new Promise<void>((resolve, reject) => {
-    let settled = false; const finish = (error?: Error) => { if (settled) return; settled = true; if (pollDone.current === finish) pollDone.current = undefined; if (pollTimer.current) window.clearTimeout(pollTimer.current); if (pollExpiry.current) window.clearTimeout(pollExpiry.current); pollTimer.current = undefined; pollExpiry.current = undefined; error ? reject(error) : resolve(); };
+  const poll = useCallback((previous: GameSnapshot, version: number) => new Promise<GameSnapshot | undefined>((resolve, reject) => {
+    let settled = false; const finish = (next?: GameSnapshot, error?: Error) => { if (settled) return; settled = true; if (pollDone.current === finish) pollDone.current = undefined; if (pollTimer.current) window.clearTimeout(pollTimer.current); if (pollExpiry.current) window.clearTimeout(pollExpiry.current); pollTimer.current = undefined; pollExpiry.current = undefined; error ? reject(error) : resolve(next); };
     pollDone.current = finish;
     const check = async (): Promise<void> => {
       if (version !== epoch.current) return finish();
-      try { const next = await client.state(previous.gameId); if (settled || version !== epoch.current) return finish(); apply(next, version); if (next.stateVersion > previous.stateVersion || next.status === "finished") return finish(); } catch { /* transient host failure: retry until deadline */ }
+      try { const next = await client.state(previous.gameId); if (settled || version !== epoch.current) return finish(); if (next.gameId === previous.gameId && next.stateVersion > previous.stateVersion) { apply(next, version); return finish(next); } } catch { /* transient host failure: retry until deadline */ }
       if (!settled && version === epoch.current) pollTimer.current = window.setTimeout(() => void check(), 1000);
     };
     pollTimer.current = window.setTimeout(() => void check(), 1000);
-    pollExpiry.current = window.setTimeout(() => finish(new Error("GPT did not return a move in time.")), 15_000);
+    pollExpiry.current = window.setTimeout(() => finish(undefined, new Error("GPT did not return a move in time.")), 15_000);
   }), [apply, client]);
   const gptTurn = useCallback(async (next: GameSnapshot, version: number) => {
-    if (next.status === "finished" || next.turn === next.playerColor) return;
-    if (bridge.embedded) { await bridge.sendMessage(embeddedMovePrompt(next)); await poll(next, version); return; }
-    const move = chooseStandaloneMove(next);
-    if (!move) return; const reply = await client.play(next.gameId, "gpt", move, next.stateVersion); apply(reply, version);
+    let current = next;
+    for (let turns = 0; turns < 128 && current.status === "active" && current.turn !== current.playerColor; turns += 1) {
+      if (version !== epoch.current) return;
+      if (bridge.embedded) {
+        await bridge.sendMessage(embeddedMovePrompt(current));
+        if (version !== epoch.current) return;
+        const reply = await poll(current, version);
+        if (!reply || version !== epoch.current) return;
+        current = reply;
+        continue;
+      }
+      const move = chooseStandaloneMove(current);
+      if (!move) return;
+      const reply = await client.play(current.gameId, "gpt", move, current.stateVersion);
+      if (version !== epoch.current) return;
+      if (reply.gameId !== current.gameId || reply.stateVersion <= current.stateVersion) throw new Error("The game service returned a non-advancing GPT state.");
+      apply(reply, version);
+      current = reply;
+    }
+    if (current.status === "active" && current.turn !== current.playerColor) throw new Error("GPT turn limit reached.");
   }, [apply, bridge, client, poll]);
-  useEffect(() => { let alive = true; const initEpoch = epoch.current; const unsubscribe = bridge.onToolResult(result => { const next = result.structuredContent; const current = gameRef.current; if (!isSnapshot(next)) return; if (!current) { stop(); commitBusy(false); setStarting(false); gameRef.current = next; setGame(next); return; } if (next.gameId !== current.gameId) return; const barrier = resetBarrier.current; if (next.stateVersion === 0) { if (current.stateVersion === 0 || barrier?.gameId === next.gameId) return; resetBarrier.current = { gameId: next.gameId, ceiling: current.stateVersion + 1 }; stop(); commitBusy(false); setStarting(false); setSelected(undefined); gameRef.current = next; setGame(next); return; } if (barrier?.gameId === next.gameId && next.stateVersion <= barrier.ceiling) return; const finishPoll = pollDone.current; if (!finishPoll || next.stateVersion <= current.stateVersion) return; gameRef.current = next; setGame(next); commitBusy(false); setStarting(false); finishPoll(); }); const context = bridge.onHostContext(() => undefined); if (bridge.embedded) void bridge.initialize().catch(() => { if (alive && epoch.current === initEpoch) setError("Could not initialize the game host."); }); return () => { alive = false; unsubscribe(); context(); stop(); bridge.dispose(); }; }, [bridge, commitBusy, stop]);
+  useEffect(() => { let alive = true; const initEpoch = epoch.current; const unsubscribe = bridge.onToolResult(result => { const next = result.structuredContent; const current = gameRef.current; if (!isSnapshot(next)) return; if (!current) { stop(); commitBusy(false); setStarting(false); gameRef.current = next; setGame(next); return; } if (next.gameId !== current.gameId) return; const barrier = resetBarrier.current; if (next.stateVersion === 0) { if (current.stateVersion === 0 || barrier?.gameId === next.gameId) return; resetBarrier.current = { gameId: next.gameId, ceiling: current.stateVersion + 1 }; stop(); commitBusy(false); setStarting(false); setSelected(undefined); gameRef.current = next; setGame(next); return; } if (barrier?.gameId === next.gameId && next.stateVersion <= barrier.ceiling) return; const finishPoll = pollDone.current; if (!finishPoll || next.stateVersion <= current.stateVersion) return; gameRef.current = next; setGame(next); finishPoll(next); }); const context = bridge.onHostContext(() => undefined); if (bridge.embedded) void bridge.initialize().catch(() => { if (alive && epoch.current === initEpoch) setError("Could not initialize the game host."); }); return () => { alive = false; unsubscribe(); context(); stop(); bridge.dispose(); }; }, [bridge, commitBusy, stop]);
   useEffect(() => { if (!game) void action(() => client.create({ game: "chess", playerColor: "white", difficulty: "medium" }), undefined, true); }, [action, client, game]);
   const currentPreset = presetFor(game);
   useEffect(() => { if (game) { setGamePreset(currentPreset); setDifficultyPreset(game.difficulty); } }, [currentPreset, game?.gameId]);
