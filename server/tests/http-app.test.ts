@@ -58,6 +58,35 @@ describe("HTTP game arena app", () => {
     expect(reset.body.structuredContent).toMatchObject({ gameId, stateVersion: 0, moveHistory: [] });
   });
 
+  it("accepts supported Go board sizes through REST and rejects invalid sizes", async () => {
+    const service = new ToolService(new GameStore());
+    const create = vi.spyOn(service, "createGame");
+    const app = createHttpApp(service);
+
+    const defaultResponse = await request(app).post("/api/tools/create_game").send({ game: "go", playerColor: "black" });
+    expect(defaultResponse.status).toBe(200);
+    expect(defaultResponse.body.structuredContent).toMatchObject({ kind: "go", boardSize: 9 });
+
+    for (const [boardSize, expectedMoves] of [[9, 82], [13, 170], [19, 362]] as const) {
+      const response = await request(app).post("/api/tools/create_game").send({
+        game: "go", playerColor: "black", boardSize,
+      });
+      expect(response.status).toBe(200);
+      expect(response.body.structuredContent).toMatchObject({ kind: "go", boardSize });
+      expect(response.body.structuredContent.board).toHaveLength(boardSize);
+      expect(response.body.structuredContent.legalMoves).toHaveLength(expectedMoves);
+    }
+
+    for (const boardSize of [7, 10, 20, "19", null]) {
+      const response = await request(app).post("/api/tools/create_game").send({
+        game: "go", playerColor: "black", boardSize,
+      });
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({ error: { code: "invalid_input", message: "Invalid tool input." } });
+    }
+    expect(create).toHaveBeenCalledTimes(4);
+  });
+
   it("maps validation, domain, unknown-tool, rate-limit, and body-size failures safely", async () => {
     let now = 0;
     const app = createHttpApp(new ToolService(new GameStore()), {
@@ -116,10 +145,18 @@ describe("HTTP game arena app", () => {
     expect(list.status).toBe(200);
     expect(list.body.result.tools).toHaveLength(5);
     const call = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
-      jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "create_game", arguments: { game: "go", playerColor: "black" } },
+      jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "create_game", arguments: { game: "go", playerColor: "black", boardSize: 13 } },
     });
     expect(call.status).toBe(200);
     expect(call.body.result.structuredContent.kind).toBe("go");
+    expect(call.body.result.structuredContent.boardSize).toBe(13);
+
+    const rejected = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
+      jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "create_game", arguments: { game: "go", playerColor: "black", boardSize: 10 } },
+    });
+    expect(rejected.status).toBe(200);
+    expect(rejected.body.result.isError).toBe(true);
+    expect(JSON.stringify(rejected.body.result)).not.toContain("10");
   });
 
   it("rate-limits MCP requests with a JSON-RPC-safe response", async () => {

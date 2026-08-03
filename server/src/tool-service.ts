@@ -2,14 +2,14 @@ import { randomUUID } from "node:crypto";
 
 import { ChessGame } from "./domain/chess-game.js";
 import { GoGame } from "./domain/go-game.js";
-import type { GameActor, GameKind, GameSnapshot, StoneColor } from "./domain/types.js";
+import type { GameActor, GameKind, GameSnapshot, GoBoardSize, StoneColor } from "./domain/types.js";
 import { GameStore, type GameSession } from "./game-store.js";
 
 export class ToolService {
   constructor(private readonly store = new GameStore()) {}
 
-  createGame(input: { game: GameKind; playerColor: StoneColor }): GameSnapshot {
-    const session = this.createSession(input.game, randomUUID(), input.playerColor);
+  createGame(input: { game: GameKind; playerColor: StoneColor; boardSize?: GoBoardSize }): GameSnapshot {
+    const session = this.createSession(input.game, randomUUID(), input.playerColor, input.boardSize);
     this.store.put(session);
     return session.snapshot();
   }
@@ -29,17 +29,27 @@ export class ToolService {
 
   resetGame(input: { gameId: string }): GameSnapshot {
     const current = this.store.get(input.gameId).snapshot();
-    const replacement = this.createSession(current.kind, current.gameId, current.playerColor);
+    const replacement = this.createSession(
+      current.kind,
+      current.gameId,
+      current.playerColor,
+      current.kind === "go" ? current.boardSize : undefined,
+    );
     this.store.replace(replacement);
     return replacement.snapshot();
   }
 
-  private createSession(kind: GameKind, gameId: string, playerColor: StoneColor): GameSession {
+  private createSession(
+    kind: GameKind,
+    gameId: string,
+    playerColor: StoneColor,
+    boardSize: GoBoardSize = 9,
+  ): GameSession {
     switch (kind) {
       case "chess":
         return ChessGame.create(gameId, playerColor);
       case "go":
-        return GoGame.create(gameId, playerColor);
+        return GoGame.create(gameId, playerColor, boardSize);
       default:
         return this.unhandledGameKind(kind);
     }

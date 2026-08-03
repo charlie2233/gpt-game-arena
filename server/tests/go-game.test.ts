@@ -36,6 +36,50 @@ describe("GoGame", () => {
     expect(snapshot.legalMoves.slice(0, -1)).toEqual([...snapshot.legalMoves.slice(0, -1)].sort());
   });
 
+  it.each([
+    { boardSize: 13 as const, edge: "N13", legalMoveCount: 170 },
+    { boardSize: 19 as const, edge: "T19", legalMoveCount: 362 },
+  ])("starts a $boardSize x $boardSize game with every intersection legal", ({ boardSize, edge, legalMoveCount }) => {
+    const game = GoGame.create(`go-${boardSize}`, "black", boardSize);
+    const snapshot = game.snapshot();
+
+    expect(snapshot.boardSize).toBe(boardSize);
+    expect(snapshot.board).toHaveLength(boardSize);
+    expect(snapshot.board.every((row) => row.length === boardSize && row.every((point) => point === null))).toBe(true);
+    expect(snapshot.legalMoves).toHaveLength(legalMoveCount);
+    expect(snapshot.legalMoves).toContain("A1");
+    expect(snapshot.legalMoves).toContain(edge);
+    expect(snapshot.legalMoves).not.toContain(`I${boardSize}`);
+
+    const afterEdge = game.play("player", edge, 0);
+    expect(afterEdge.board[0][boardSize - 1]).toBe("black");
+    expect(afterEdge.lastMove?.notation).toBe(edge);
+  });
+
+  it.each([
+    { boardSize: 13 as const, moves: ["N14", "T13", "I13", "A0", "A01"] },
+    { boardSize: 19 as const, moves: ["T20", "U19", "I19", "A0", "A01"] },
+  ])("rejects malformed and out-of-range moves on a $boardSize x $boardSize board", ({ boardSize, moves }) => {
+    const game = GoGame.create(`go-${boardSize}`, "black", boardSize);
+    const before = game.snapshot();
+
+    for (const move of moves) {
+      expectRuleError(() => game.play("player", move, 0), "illegal_move");
+      expect(game.snapshot()).toEqual(before);
+    }
+  });
+
+  it("applies area scoring across all 19x19 intersections", () => {
+    const game = GoGame.create("go-19", "black", 19);
+    game.play("player", "T19", 0);
+    game.play("gpt", "pass", 1);
+    const finished = game.play("player", "pass", 2);
+
+    expect(finished.status).toBe("finished");
+    expect(finished.score).toEqual({ black: 361, white: 6.5, komi: 6.5 });
+    expect(finished.winner).toBe("black");
+  });
+
   it("captures surrounded opponent groups", () => {
     const game = GoGame.create("go-1", "black");
     playSequence(game, ["B2", "A2", "J9", "B1", "J8", "B3", "J7", "C2"]);

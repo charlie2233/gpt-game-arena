@@ -4,11 +4,18 @@ import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from "@model
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AnySchema } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 
-import { executeTool, isGameRuleError, mcpGameSnapshotSchema, toolInputSchemas, toToolFailure } from "./tool-contracts.js";
+import {
+  executeTool,
+  isGameRuleError,
+  mcpGameSnapshotSchema,
+  mcpToolInputSchemas,
+  toolInputSchemas,
+  toToolFailure,
+} from "./tool-contracts.js";
 import { ToolService } from "./tool-service.js";
 
 export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v1/widget.html";
-export const WIDGET_DESCRIPTION = "An interactive chess or 9x9 Go board for playing turn by turn against GPT.";
+export const WIDGET_DESCRIPTION = "An interactive chess or 9x9, 13x13, or 19x19 Go board for playing turn by turn against GPT.";
 export type WidgetLoader = () => string | undefined | Promise<string | undefined>;
 
 export interface McpServerOptions {
@@ -31,7 +38,7 @@ export function createMcpServer(service: ToolService, options: McpServerOptions 
     }],
   }));
 
-  registerTool(server, service, "create_game", "Create game", "Use this when starting a new chess or 9x9 Go game.", {
+  registerTool(server, service, "create_game", "Create game", "Use this when starting a new chess or 9x9, 13x13, or 19x19 Go game.", {
     readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false,
   }, { ui: { visibility: ["model", "app"] } });
   registerTool(server, service, "get_game_state", "Get game state", "Use this when you need the authoritative current game state.", {
@@ -65,7 +72,7 @@ function registerTool(
   registerAppTool(server, name, {
     title,
     description,
-    inputSchema: toolInputSchemas[name] as unknown as AnySchema,
+    inputSchema: mcpToolInputSchemas[name] as unknown as AnySchema,
     outputSchema: mcpGameSnapshotSchema as unknown as AnySchema,
     annotations,
     _meta: {

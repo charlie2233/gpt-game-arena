@@ -1,8 +1,7 @@
 import { GameRuleError } from "./errors.js";
-import type { GameActor, GoGameSnapshot, MoveRecord, StoneColor } from "./types.js";
+import type { GameActor, GoBoardSize, GoGameSnapshot, MoveRecord, StoneColor } from "./types.js";
 
-const BOARD_SIZE = 9;
-const COLUMNS = "ABCDEFGHJ";
+const COLUMNS = "ABCDEFGHJKLMNOPQRST";
 const PASS = "pass";
 type Point = { row: number; column: number };
 type Board = (StoneColor | null)[][];
@@ -16,22 +15,29 @@ function colorOwner(playerColor: StoneColor, color: StoneColor): GameActor {
 }
 
 export class GoGame {
-  private board: Board = GoGame.emptyBoard();
+  private board: Board;
   private turn: StoneColor = "black";
   private status: "active" | "finished" = "active";
   private readonly moveHistory: MoveRecord[] = [];
   private readonly captures = { black: 0, white: 0 };
   private consecutivePasses = 0;
   private stateVersion = 0;
-  private readonly stonePositionHashes = new Set<string>([this.boardHash(this.board)]);
+  private readonly stonePositionHashes: Set<string>;
 
   private constructor(
     private readonly gameId: string,
     private readonly playerColor: StoneColor,
-  ) {}
+    private readonly boardSize: GoBoardSize,
+  ) {
+    this.board = GoGame.emptyBoard(boardSize);
+    this.stonePositionHashes = new Set([this.boardHash(this.board)]);
+  }
 
-  static create(gameId: string, playerColor: StoneColor): GoGame {
-    return new GoGame(gameId, playerColor);
+  static create(gameId: string, playerColor: StoneColor, boardSize: GoBoardSize = 9): GoGame {
+    if (boardSize !== 9 && boardSize !== 13 && boardSize !== 19) {
+      throw new RangeError("Unsupported Go board size.");
+    }
+    return new GoGame(gameId, playerColor, boardSize);
   }
 
   snapshot(): GoGameSnapshot {
@@ -53,7 +59,7 @@ export class GoGame {
       stateVersion: this.stateVersion,
       message: this.message(score, winner),
       board: this.board.map((row) => [...row]),
-      boardSize: BOARD_SIZE,
+      boardSize: this.boardSize,
       captures: { ...this.captures },
       consecutivePasses: this.consecutivePasses,
       ...(score === undefined ? {} : { score }),
@@ -108,8 +114,8 @@ export class GoGame {
 
   private legalMoves(): string[] {
     const moves: string[] = [];
-    for (let row = 0; row < BOARD_SIZE; row += 1) {
-      for (let column = 0; column < BOARD_SIZE; column += 1) {
+    for (let row = 0; row < this.boardSize; row += 1) {
+      for (let column = 0; column < this.boardSize; column += 1) {
         if (this.board[row][column] !== null) continue;
         const simulation = this.simulateStoneMove(this.board, { row, column }, this.turn);
         if (simulation !== undefined && !this.stonePositionHashes.has(this.boardHash(simulation.board))) {
@@ -165,8 +171,8 @@ export class GoGame {
     let black = 0;
     let white = 6.5;
     const visitedEmpty = new Set<string>();
-    for (let row = 0; row < BOARD_SIZE; row += 1) {
-      for (let column = 0; column < BOARD_SIZE; column += 1) {
+    for (let row = 0; row < this.boardSize; row += 1) {
+      for (let column = 0; column < this.boardSize; column += 1) {
         const point = { row, column };
         const value = this.board[row][column];
         if (value === "black") {
@@ -205,13 +211,16 @@ export class GoGame {
   }
 
   private parsePoint(notation: string): Point | undefined {
-    const match = /^([A-HJ])([1-9])$/.exec(notation);
+    const match = /^([A-HJ-T])([1-9]|1[0-9])$/.exec(notation);
     if (!match) return undefined;
-    return { row: BOARD_SIZE - Number(match[2]), column: COLUMNS.indexOf(match[1]) };
+    const rank = Number(match[2]);
+    const column = COLUMNS.indexOf(match[1]);
+    if (rank > this.boardSize || column < 0 || column >= this.boardSize) return undefined;
+    return { row: this.boardSize - rank, column };
   }
 
   private formatPoint(point: Point): string {
-    return `${COLUMNS[point.column]}${BOARD_SIZE - point.row}`;
+    return `${COLUMNS[point.column]}${this.boardSize - point.row}`;
   }
 
   private neighbors(point: Point): Point[] {
@@ -220,7 +229,7 @@ export class GoGame {
       { row: point.row + 1, column: point.column },
       { row: point.row, column: point.column - 1 },
       { row: point.row, column: point.column + 1 },
-    ].filter(({ row, column }) => row >= 0 && row < BOARD_SIZE && column >= 0 && column < BOARD_SIZE);
+    ].filter(({ row, column }) => row >= 0 && row < this.boardSize && column >= 0 && column < this.boardSize);
   }
 
   private boardHash(board: Board): string {
@@ -238,7 +247,7 @@ export class GoGame {
     return `${this.turn === "black" ? "Black" : "White"} to move.`;
   }
 
-  private static emptyBoard(): Board {
-    return Array.from({ length: BOARD_SIZE }, () => Array<StoneColor | null>(BOARD_SIZE).fill(null));
+  private static emptyBoard(boardSize: GoBoardSize): Board {
+    return Array.from({ length: boardSize }, () => Array<StoneColor | null>(boardSize).fill(null));
   }
 }

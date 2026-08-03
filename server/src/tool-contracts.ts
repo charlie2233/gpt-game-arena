@@ -4,7 +4,7 @@ import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-sc
 import type { AnySchema } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 
 import { GameRuleError } from "./domain/errors.js";
-import type { GameSnapshot } from "./domain/types.js";
+import type { GameSnapshot, GoBoardSize } from "./domain/types.js";
 import { ToolService } from "./tool-service.js";
 
 const boundedString = z.string().trim().min(1).max(128);
@@ -38,16 +38,26 @@ const chessCellSchema = z.union([
   }).strict(),
 ]);
 
-export const gameSnapshotSchema = z.discriminatedUnion("kind", [
-  baseSnapshotSchema.extend({ kind: z.literal("chess"), board: z.array(chessCellSchema) }).strict(),
-  baseSnapshotSchema.extend({
+const stoneSchema = z.enum(["white", "black"]).nullable();
+const goBoardSizeSchema = z.union([z.literal(9), z.literal(13), z.literal(19)]);
+
+function goSnapshotSchema(boardSize: GoBoardSize) {
+  const rowSchema = z.array(stoneSchema).length(boardSize);
+  return baseSnapshotSchema.extend({
     kind: z.literal("go"),
-    board: z.array(z.array(z.enum(["white", "black"]).nullable())),
-    boardSize: z.literal(9),
+    board: z.array(rowSchema).length(boardSize),
+    boardSize: z.literal(boardSize),
     captures: z.object({ black: z.number().int().nonnegative(), white: z.number().int().nonnegative() }).strict(),
     consecutivePasses: z.number().int().nonnegative(),
     score: z.object({ black: z.number(), white: z.number(), komi: z.literal(6.5) }).strict().optional(),
-  }).strict(),
+  }).strict();
+}
+
+export const gameSnapshotSchema = z.union([
+  baseSnapshotSchema.extend({ kind: z.literal("chess"), board: z.array(chessCellSchema) }).strict(),
+  goSnapshotSchema(9),
+  goSnapshotSchema(13),
+  goSnapshotSchema(19),
 ]);
 
 const generatedSnapshotSchema = toJsonSchemaCompat(
@@ -81,7 +91,11 @@ export const mcpGameSnapshotSchema = z4.object({}).passthrough().superRefine((va
 });
 
 export const toolInputSchemas = {
-  create_game: z.object({ game: z.enum(["chess", "go"]), playerColor: z.enum(["white", "black"]) }).strict(),
+  create_game: z.object({
+    game: z.enum(["chess", "go"]),
+    playerColor: z.enum(["white", "black"]),
+    boardSize: goBoardSizeSchema.optional(),
+  }).strict(),
   get_game_state: z.object({ gameId: boundedString }).strict(),
   play_game_move: z.object({
     gameId: boundedString,
@@ -91,6 +105,30 @@ export const toolInputSchemas = {
   }).strict(),
   reset_game: z.object({ gameId: boundedString }).strict(),
   render_game: z.object({ gameId: boundedString }).strict(),
+} as const;
+
+function mcpInputSchema(schema: z.ZodTypeAny) {
+  const bridge = z4.object({}).passthrough().superRefine((value, context) => {
+    if (!schema.safeParse(value).success) {
+      context.addIssue({ code: "custom", message: "Invalid tool input." });
+    }
+  });
+  (bridge as unknown as { _zod: { toJSONSchema?: () => unknown } })._zod.toJSONSchema = () => (
+    toJsonSchemaCompat(schema as unknown as AnySchema, { strictUnions: true, pipeStrategy: "output" })
+  );
+  return bridge;
+}
+
+/**
+ * MCP validates these generic bridges before handlers run. Their advertised
+ * JSON Schemas stay precise while validation failures remain value-agnostic.
+ */
+export const mcpToolInputSchemas = {
+  create_game: mcpInputSchema(toolInputSchemas.create_game),
+  get_game_state: mcpInputSchema(toolInputSchemas.get_game_state),
+  play_game_move: mcpInputSchema(toolInputSchemas.play_game_move),
+  reset_game: mcpInputSchema(toolInputSchemas.reset_game),
+  render_game: mcpInputSchema(toolInputSchemas.render_game),
 } as const;
 
 export type ToolName = keyof typeof toolInputSchemas;
