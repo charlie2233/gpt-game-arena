@@ -8,12 +8,20 @@ export type ChessSquare = `${ChessFile}${ChessRank}`;
 export type ChessPiece = "p" | "n" | "b" | "r" | "q" | "k";
 export type ChessCell = { square: ChessSquare; color: Color; piece: ChessPiece } | { square: ChessSquare; color?: never; piece?: never };
 export type GoBoardSize = 9 | 13 | 19;
+export type TicTacToeCoordinate = `${"A" | "B" | "C"}${1 | 2 | 3}`;
+export type ConnectFourColumn = "A" | "B" | "C" | "D" | "E" | "F" | "G";
+export type ConnectFourCoordinate = `${ConnectFourColumn}${1 | 2 | 3 | 4 | 5 | 6}`;
+export type ReversiCoordinate = `${"A" | "B" | "C" | "D" | "E" | "F" | "G" | "H"}${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8}`;
 export type BaseSnapshot = { gameId: string; difficulty: GameDifficulty; playerColor: Color; turn: Color; status: "active" | "finished"; winner?: Color | "draw"; legalMoves: string[]; moveHistory: MoveRecord[]; lastMove?: MoveRecord; stateVersion: number; message: string };
 export type ChessSnapshot = BaseSnapshot & { kind: "chess"; board: ChessCell[] };
 export type GoSnapshot = BaseSnapshot & { kind: "go"; board: (Color | null)[][]; boardSize: GoBoardSize; captures: { black: number; white: number }; consecutivePasses: number; score?: { black: number; white: number; komi: 6.5 } };
-export type GameSnapshot = ChessSnapshot | GoSnapshot;
+export type TicTacToeSnapshot = BaseSnapshot & { kind: "tic-tac-toe"; board: (Color | null)[][]; legalMoves: TicTacToeCoordinate[]; winningLine?: [TicTacToeCoordinate, TicTacToeCoordinate, TicTacToeCoordinate] };
+export type ConnectFourSnapshot = BaseSnapshot & { kind: "connect-four"; board: (Color | null)[][]; legalMoves: ConnectFourColumn[]; winningLine?: [ConnectFourCoordinate, ConnectFourCoordinate, ConnectFourCoordinate, ConnectFourCoordinate] };
+export type ReversiMoveRecord = Omit<MoveRecord, "notation"> & { notation: ReversiCoordinate };
+export type ReversiSnapshot = Omit<BaseSnapshot, "legalMoves" | "moveHistory" | "lastMove"> & { kind: "reversi"; board: (Color | null)[][]; legalMoves: ReversiCoordinate[]; moveHistory: ReversiMoveRecord[]; lastMove?: ReversiMoveRecord; score: { black: number; white: number } };
+export type GameSnapshot = ChessSnapshot | GoSnapshot | TicTacToeSnapshot | ConnectFourSnapshot | ReversiSnapshot;
 export type ToolResult = { structuredContent?: unknown; content?: { type: string; text: string }[]; isError?: boolean };
-export type ToolInput = { create_game: { game: "chess" | "go"; playerColor: Color; difficulty: GameDifficulty; boardSize?: GoBoardSize }; get_game_state: { gameId: string }; play_game_move: { gameId: string; actor: "player" | "gpt"; move: string; expectedVersion: number }; reset_game: { gameId: string }; render_game: { gameId: string } };
+export type ToolInput = { create_game: { game: "chess"; playerColor: Color; difficulty: GameDifficulty } | { game: "go"; playerColor: Color; difficulty: GameDifficulty; boardSize?: GoBoardSize } | { game: "tic-tac-toe" | "connect-four" | "reversi"; playerColor: Color; difficulty: GameDifficulty }; get_game_state: { gameId: string }; play_game_move: { gameId: string; actor: "player" | "gpt"; move: string; expectedVersion: number }; reset_game: { gameId: string }; render_game: { gameId: string } };
 
 declare global {
   interface Window {

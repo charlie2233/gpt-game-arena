@@ -23,7 +23,7 @@ describe("App", () => {
     render(<App />);
     const user = userEvent.setup();
     const picker = await screen.findByRole("combobox", { name: "NEW GAME" });
-    expect(within(picker).getAllByRole("option").map(option => option.textContent)).toEqual(["Chess", "Quick Go · 9×9", "Go · 13×13", "Real Go · 19×19"]);
+    expect(within(picker).getAllByRole("option").map(option => option.textContent)).toEqual(["Chess", "Tic-Tac-Toe", "Connect Four", "Reversi", "Quick Go · 9×9", "Go · 13×13", "Real Go · 19×19"]);
     expect(picker).toHaveValue("chess");
     await screen.findByRole("group", { name: "Chess board" });
     await user.selectOptions(picker, "go-19");

@@ -1,4 +1,4 @@
-import type { ChessPiece, ChessSnapshot, Color, GameSnapshot, GoSnapshot } from "./types";
+import type { ChessPiece, ChessSnapshot, Color, ConnectFourSnapshot, GameSnapshot, GoSnapshot, ReversiSnapshot, TicTacToeSnapshot } from "./types";
 
 const GO_COLUMNS = "ABCDEFGHJKLMNOPQRST";
 const PIECE_VALUE: Record<ChessPiece, number> = { p: 1, n: 3, b: 3.25, r: 5, q: 9, k: 100 };
@@ -39,9 +39,40 @@ export function chooseStandaloneMove(game: GameSnapshot): string | undefined {
     if (game.difficulty === "medium") return candidates[Math.floor(candidates.length / 2)];
     return candidates[stableHash(positionKey(game)) % candidates.length];
   }
+  if (game.kind === "tic-tac-toe") return game.difficulty === "hard" ? hardTic(game, candidates) : game.difficulty === "medium" ? candidates[Math.floor(candidates.length / 2)] : candidates[stableHash(positionKey(game)) % candidates.length];
+  if (game.kind === "connect-four") return game.difficulty === "hard" ? hardConnect(game, candidates) : game.difficulty === "medium" ? candidates[Math.floor(candidates.length / 2)] : candidates[stableHash(positionKey(game)) % candidates.length];
+  if (game.kind === "reversi") return game.difficulty === "hard" ? hardReversi(game, candidates) : game.difficulty === "medium" ? candidates[Math.floor(candidates.length / 2)] : candidates[stableHash(positionKey(game)) % candidates.length];
   if (game.difficulty === "medium") return candidates[Math.floor(candidates.length / 2)];
   if (game.difficulty === "easy") return candidates[stableHash(positionKey(game)) % candidates.length];
   return bestScored(candidates, (move) => scoreChessMove(game, move));
+}
+
+function hardTic(game: TicTacToeSnapshot, moves: string[]): string {
+  const win = (color: Color) => moves.find(move => ticWins(game.board, move, color));
+  return win(game.turn) ?? win(game.turn === "black" ? "white" : "black") ?? ["B2", "A3", "C3", "A1", "C1"].find(move => moves.includes(move)) ?? moves[0];
+}
+function ticWins(board: (Color | null)[][], move: string, color: Color): boolean {
+  const c = move.charCodeAt(0) - 65, r = 3 - Number(move[1]); if (r < 0 || c < 0) return false;
+  const next = board.map(row => [...row]); next[r][c] = color;
+  return [[0, 1, 2].map(i => [r, i]), [0, 1, 2].map(i => [i, c]), [[0, 0], [1, 1], [2, 2]], [[0, 2], [1, 1], [2, 0]]].some(line => line.every(([y, x]) => next[y][x] === color));
+}
+function hardConnect(game: ConnectFourSnapshot, moves: string[]): string {
+  const opponent = game.turn === "black" ? "white" : "black";
+  const win = (color: Color) => moves.find(move => connectWins(game.board, move, color));
+  return win(game.turn) ?? win(opponent) ?? [...moves].sort((a, b) => Math.abs(a.charCodeAt(0) - 68) - Math.abs(b.charCodeAt(0) - 68) || a.localeCompare(b))[0];
+}
+function connectWins(board: (Color | null)[][], move: string, color: Color): boolean {
+  const c = move.charCodeAt(0) - 65, next = board.map(row => [...row]); const r = [...next.keys()].reverse().find(row => !next[row][c]); if (r === undefined) return false; next[r][c] = color;
+  return [[0, 1], [1, 0], [1, 1], [1, -1]].some(([dy, dx]) => { let n = 1; for (const sign of [-1, 1]) for (let y = r + dy * sign, x = c + dx * sign; y >= 0 && y < 6 && x >= 0 && x < 7 && next[y][x] === color; y += dy * sign, x += dx * sign) n++; return n >= 4; });
+}
+function hardReversi(game: ReversiSnapshot, moves: string[]): string {
+  const corners = moves.filter(move => ["A1", "A8", "H1", "H8"].includes(move)); if (corners.length) return corners[0];
+  const safe = moves.filter(move => !["A2", "B1", "B2", "A7", "B7", "B8", "G1", "G2", "H2", "G7", "G8", "H7"].includes(move));
+  return bestScored(safe.length ? safe : moves, move => reversiFlips(game.board, move, game.turn));
+}
+function reversiFlips(board: (Color | null)[][], move: string, color: Color): number {
+  const x = move.charCodeAt(0) - 65, y = 8 - Number(move[1]), enemy = color === "black" ? "white" : "black"; let flips = 0;
+  for (const [dy, dx] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) { let row = y + dy, col = x + dx, n = 0; while (row >= 0 && row < 8 && col >= 0 && col < 8 && board[row][col] === enemy) { n++; row += dy; col += dx; } if (n && board[row]?.[col] === color) flips += n; } return flips;
 }
 
 export function embeddedMovePrompt(game: GameSnapshot): string {
