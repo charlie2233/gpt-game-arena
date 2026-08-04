@@ -28,6 +28,8 @@ export interface BaseGameSnapshot {
   moveHistory: MoveRecord[];
   lastMove?: MoveRecord;
   stateVersion: number;
+  /** Increments whenever this game ID is reset to a fresh position. */
+  resetEpoch?: number;
   message: string;
 }
 

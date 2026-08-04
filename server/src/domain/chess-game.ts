@@ -30,10 +30,16 @@ export class ChessGame {
     private readonly gameId: string,
     private readonly playerColor: StoneColor,
     private readonly difficulty: GameDifficulty,
+    private readonly resetEpoch: number,
   ) {}
 
-  static create(gameId: string, playerColor: StoneColor, difficulty: GameDifficulty = "medium"): ChessGame {
-    return new ChessGame(gameId, playerColor, difficulty);
+  static create(
+    gameId: string,
+    playerColor: StoneColor,
+    difficulty: GameDifficulty = "medium",
+    resetEpoch = 0,
+  ): ChessGame {
+    return new ChessGame(gameId, playerColor, difficulty, resetEpoch);
   }
 
   snapshot(): ChessGameSnapshot {
@@ -62,6 +68,7 @@ export class ChessGame {
         ? {}
         : { lastMove: { ...this.moveHistory[this.moveHistory.length - 1] } }),
       stateVersion: this.stateVersion,
+      resetEpoch: this.resetEpoch,
       message: this.message(currentTurn, isCheckmate, isDraw, isGameOver),
       board: this.board(),
     };

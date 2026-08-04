@@ -1,10 +1,28 @@
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, expectTypeOf, it } from "vitest";
 
 import { GameRuleError } from "../src/domain/errors.js";
 import { executeTool, toolInputSchemas } from "../src/tool-contracts.js";
 import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
 import type { GameDifficulty, GameKind, GoBoardSize, StoneColor } from "../src/domain/types.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function temporaryStorePath(): string {
+  const directory = mkdtempSync(join(tmpdir(), "gpt-game-arena-store-"));
+  temporaryDirectories.push(directory);
+  return join(directory, "game-sessions.json");
+}
 
 function expectRuleError(action: () => unknown, code: GameRuleError["code"]): void {
   let error: unknown;
@@ -39,6 +57,8 @@ describe("ToolService", () => {
     expect(go.kind).toBe("go");
     expect(chess.difficulty).toBe("medium");
     expect(go.difficulty).toBe("medium");
+    expect(chess.resetEpoch).toBe(0);
+    expect(go.resetEpoch).toBe(0);
   });
 
   it.each(["easy", "medium", "hard"] as const)("stores %s difficulty for chess and Go", (difficulty) => {
@@ -101,6 +121,47 @@ describe("ToolService", () => {
     expect(service.getGameState({ gameId: created.gameId })).toEqual(reset);
   });
 
+  it("increments the reset epoch while preserving the game identity and configuration", () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({
+      game: "go",
+      playerColor: "white",
+      boardSize: 13,
+      difficulty: "easy",
+    });
+
+    expect(created.resetEpoch).toBe(0);
+    const firstReset = service.resetGame({ gameId: created.gameId });
+    expect(firstReset).toMatchObject({
+      gameId: created.gameId,
+      kind: "go",
+      playerColor: "white",
+      difficulty: "easy",
+      boardSize: 13,
+      stateVersion: 0,
+      resetEpoch: 1,
+    });
+
+    const moved = service.playGameMove({
+      gameId: created.gameId,
+      actor: "gpt",
+      move: "D4",
+      expectedVersion: 0,
+    });
+    expect(moved.resetEpoch).toBe(1);
+
+    const secondReset = service.resetGame({ gameId: created.gameId });
+    expect(secondReset).toMatchObject({
+      gameId: created.gameId,
+      kind: "go",
+      playerColor: "white",
+      difficulty: "easy",
+      boardSize: 13,
+      stateVersion: 0,
+      resetEpoch: 2,
+    });
+  });
+
   it("creates and resets Tic-Tac-Toe without losing difficulty", () => {
     const service = new ToolService(new GameStore());
     const created = service.createGame({ game: "tic-tac-toe", playerColor: "black", difficulty: "hard" });
@@ -142,6 +203,166 @@ describe("ToolService", () => {
       gameId: "missing", actor: "player", move: "A1", expectedVersion: 0,
     }), "not_found");
     expectRuleError(() => service.resetGame({ gameId: "missing" }), "not_found");
+  });
+
+  it("replays durable sessions for all five game kinds after a process restart", () => {
+    const persistencePath = temporaryStorePath();
+    const service = new ToolService(new GameStore({ persistencePath }));
+    const cases = [
+      { game: "chess", playerColor: "white", move: "e2e4" },
+      { game: "go", playerColor: "black", boardSize: 13, move: "D4" },
+      { game: "tic-tac-toe", playerColor: "black", move: "A1" },
+      { game: "connect-four", playerColor: "black", move: "D" },
+      { game: "reversi", playerColor: "black", move: "C4" },
+    ] as const;
+
+    const expected = cases.map((testCase) => {
+      const created = service.createGame({
+        game: testCase.game,
+        playerColor: testCase.playerColor,
+        ...(testCase.game === "go" ? { boardSize: testCase.boardSize } : {}),
+        difficulty: "hard",
+      });
+      return service.playGameMove({
+        gameId: created.gameId,
+        actor: "player",
+        move: testCase.move,
+        expectedVersion: 0,
+      });
+    });
+
+    const restarted = new ToolService(new GameStore({ persistencePath }));
+    for (const snapshot of expected) {
+      expect(restarted.getGameState({ gameId: snapshot.gameId })).toEqual(snapshot);
+    }
+  });
+
+  it("persists a read-based TTL refresh across a process restart", () => {
+    const persistencePath = temporaryStorePath();
+    let time = 0;
+    const service = new ToolService(new GameStore({ persistencePath, ttlMs: 1_000, now: () => time }));
+    const created = service.createGame({ game: "chess", playerColor: "white" });
+
+    time = 900;
+    expect(service.getGameState({ gameId: created.gameId })).toEqual(created);
+    time = 1_500;
+
+    const restarted = new ToolService(new GameStore({ persistencePath, ttlMs: 1_000, now: () => time }));
+    expect(restarted.getGameState({ gameId: created.gameId })).toEqual(created);
+  });
+
+  it("ignores expired move histories before replaying active sessions", () => {
+    const persistencePath = temporaryStorePath();
+    writeFileSync(persistencePath, JSON.stringify({
+      formatVersion: 1,
+      sessions: [{
+        gameId: "expired-broken-game",
+        kind: "chess",
+        playerColor: "white",
+        difficulty: "medium",
+        events: [{ type: "move", actor: "player", move: "a1a8" }],
+        lastAccessedAt: 0,
+      }],
+    }), "utf8");
+
+    const restarted = new ToolService(new GameStore({ persistencePath, ttlMs: 1_000, now: () => 5_000 }));
+    expectRuleError(() => restarted.getGameState({ gameId: "expired-broken-game" }), "not_found");
+  });
+
+  it("does not persist a failed stale move", () => {
+    const persistencePath = temporaryStorePath();
+    const service = new ToolService(new GameStore({ persistencePath, now: () => 123_456 }));
+    const created = service.createGame({ game: "chess", playerColor: "white" });
+    const moved = service.playGameMove({ gameId: created.gameId, actor: "player", move: "e2e4", expectedVersion: 0 });
+    const beforeFailure = readFileSync(persistencePath, "utf8");
+
+    expectRuleError(() => service.playGameMove({
+      gameId: created.gameId,
+      actor: "gpt",
+      move: "e7e5",
+      expectedVersion: 0,
+    }), "stale_version");
+
+    expect(readFileSync(persistencePath, "utf8")).toBe(beforeFailure);
+    const restarted = new ToolService(new GameStore({ persistencePath, now: () => 123_456 }));
+    expect(restarted.getGameState({ gameId: created.gameId })).toEqual(moved);
+  });
+
+  it("persists reset as an empty replay epoch", () => {
+    const persistencePath = temporaryStorePath();
+    const service = new ToolService(new GameStore({ persistencePath }));
+    const created = service.createGame({
+      game: "go",
+      playerColor: "black",
+      boardSize: 19,
+      difficulty: "hard",
+    });
+    service.playGameMove({ gameId: created.gameId, actor: "player", move: "D4", expectedVersion: 0 });
+    const reset = service.resetGame({ gameId: created.gameId });
+
+    const restarted = new ToolService(new GameStore({ persistencePath }));
+    expect(restarted.getGameState({ gameId: created.gameId })).toEqual(reset);
+    expect(reset).toMatchObject({
+      stateVersion: 0,
+      resetEpoch: 1,
+      moveHistory: [],
+      boardSize: 19,
+      difficulty: "hard",
+    });
+
+    const movedAfterRestart = restarted.playGameMove({
+      gameId: created.gameId,
+      actor: "player",
+      move: "D4",
+      expectedVersion: 0,
+    });
+    expect(movedAfterRestart.resetEpoch).toBe(1);
+  });
+
+  it("loads legacy persisted sessions without a reset epoch as epoch zero", () => {
+    const persistencePath = temporaryStorePath();
+    writeFileSync(persistencePath, JSON.stringify({
+      formatVersion: 1,
+      sessions: [{
+        gameId: "legacy-game",
+        kind: "chess",
+        playerColor: "white",
+        difficulty: "medium",
+        events: [],
+        lastAccessedAt: 100,
+      }],
+    }), "utf8");
+
+    const service = new ToolService(new GameStore({ persistencePath, now: () => 100 }));
+    expect(service.getGameState({ gameId: "legacy-game" }).resetEpoch).toBe(0);
+
+    const persisted = JSON.parse(readFileSync(persistencePath, "utf8")) as {
+      sessions: Array<{ resetEpoch?: number }>;
+    };
+    expect(persisted.sessions[0].resetEpoch).toBe(0);
+    expect(service.resetGame({ gameId: "legacy-game" }).resetEpoch).toBe(1);
+  });
+
+  it.each([
+    ["invalid JSON", "{not-json"],
+    ["unknown version", JSON.stringify({ formatVersion: 2, sessions: [] })],
+    ["an impossible move log", JSON.stringify({
+      formatVersion: 1,
+      sessions: [{
+        gameId: "broken-game",
+        kind: "chess",
+        playerColor: "white",
+        difficulty: "medium",
+        events: [{ type: "move", actor: "player", move: "a1a8" }],
+        lastAccessedAt: Date.now(),
+      }],
+    })],
+  ])("fails closed instead of discarding %s", (_label, content) => {
+    const persistencePath = temporaryStorePath();
+    writeFileSync(persistencePath, content, "utf8");
+
+    expect(() => new GameStore({ persistencePath })).toThrow(/could not be validated/);
+    expect(readFileSync(persistencePath, "utf8")).toBe(content);
   });
 
   it("exposes game kind and stone color as narrow TypeScript inputs", () => {

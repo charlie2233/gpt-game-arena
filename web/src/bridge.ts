@@ -11,6 +11,7 @@ export class GameBridge {
   private pending = new Map<number, Pending>();
   private initialized = false;
   private disposed = false;
+  private listening = false;
   private capabilities: { serverTools?: unknown; message?: unknown } = {};
   private initPromise?: Promise<void>;
   private listeners = new Set<ToolNotification>();
@@ -20,11 +21,12 @@ export class GameBridge {
 
   constructor(private readonly target: Window = window.parent, private readonly timeoutMs = 15_000) {
     this.embedded = target !== window;
-    if (this.embedded) window.addEventListener("message", this.onMessage);
   }
 
   async initialize(): Promise<void> {
     if (!this.embedded || this.initialized) return;
+    if (this.disposed) throw new Error("Bridge disposed.");
+    this.ensureListening();
     this.initPromise ??= this.request("ui/initialize", { protocolVersion: "2026-01-26", appInfo: { name: "gpt-game-arena", version: "0.1.0" }, appCapabilities: {} }).then((result) => {
       const host = result as { hostCapabilities?: { serverTools?: unknown; message?: unknown }; hostContext?: unknown };
       this.capabilities = host?.hostCapabilities ?? {}; this.applyHostContext(host?.hostContext);
@@ -49,9 +51,9 @@ export class GameBridge {
     if (acknowledgement?.isError) throw new Error(acknowledgement.content?.[0]?.text || "The host could not send the message.");
   }
 
-  onToolResult(listener: ToolNotification): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-  onHostContext(listener: HostContextNotification): () => void { this.contextListeners.add(listener); return () => this.contextListeners.delete(listener); }
-  dispose(): void { this.disposed = true; window.removeEventListener("message", this.onMessage); for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error("Bridge disposed.")); } this.pending.clear(); this.listeners.clear(); this.contextListeners.clear(); }
+  onToolResult(listener: ToolNotification): () => void { this.ensureListening(); this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  onHostContext(listener: HostContextNotification): () => void { this.ensureListening(); this.contextListeners.add(listener); return () => this.contextListeners.delete(listener); }
+  dispose(): void { this.disposed = true; if (this.listening) window.removeEventListener("message", this.onMessage); this.listening = false; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error("Bridge disposed.")); } this.pending.clear(); this.listeners.clear(); this.contextListeners.clear(); }
 
   private request(method: string, params: unknown): Promise<unknown> {
     if (this.disposed) return Promise.reject(new Error("Bridge disposed."));
@@ -62,6 +64,7 @@ export class GameBridge {
       this.target.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
     });
   }
+  private ensureListening(): void { if (this.embedded && !this.disposed && !this.listening) { window.addEventListener("message", this.onMessage); this.listening = true; } }
   private notify(method: string, params: unknown): void { this.target.postMessage({ jsonrpc: "2.0", method, params }, "*"); }
   private receive(event: MessageEvent): void {
     if (event.source !== this.target || !isRpc(event.data)) return;

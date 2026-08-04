@@ -43,10 +43,16 @@ export class TicTacToeGame {
     private readonly gameId: string,
     private readonly playerColor: StoneColor,
     private readonly difficulty: GameDifficulty,
+    private readonly resetEpoch: number,
   ) {}
 
-  static create(gameId: string, playerColor: StoneColor, difficulty: GameDifficulty = "medium"): TicTacToeGame {
-    return new TicTacToeGame(gameId, playerColor, difficulty);
+  static create(
+    gameId: string,
+    playerColor: StoneColor,
+    difficulty: GameDifficulty = "medium",
+    resetEpoch = 0,
+  ): TicTacToeGame {
+    return new TicTacToeGame(gameId, playerColor, difficulty, resetEpoch);
   }
 
   snapshot(): TicTacToeGameSnapshot {
@@ -62,6 +68,7 @@ export class TicTacToeGame {
       moveHistory: this.moveHistory.map((move) => ({ ...move })),
       ...(this.moveHistory.length === 0 ? {} : { lastMove: { ...this.moveHistory.at(-1)! } }),
       stateVersion: this.stateVersion,
+      resetEpoch: this.resetEpoch,
       message: this.message(),
       board: this.board.map((row) => [...row]),
       ...(this.winningLine === undefined ? {} : { winningLine: [...this.winningLine] as TicTacToeGameSnapshot["winningLine"] }),

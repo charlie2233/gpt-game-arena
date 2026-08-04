@@ -25,13 +25,23 @@ export class ReversiGame {
   private stateVersion = 0;
   private lastSkippedColor: StoneColor | undefined;
 
-  private constructor(private readonly gameId: string, private readonly playerColor: StoneColor, private readonly difficulty: GameDifficulty) {
+  private constructor(
+    private readonly gameId: string,
+    private readonly playerColor: StoneColor,
+    private readonly difficulty: GameDifficulty,
+    private readonly resetEpoch: number,
+  ) {
     this.board[3][3] = "black"; this.board[3][4] = "white";
     this.board[4][3] = "white"; this.board[4][4] = "black";
   }
 
-  static create(gameId: string, playerColor: StoneColor, difficulty: GameDifficulty = "medium"): ReversiGame {
-    return new ReversiGame(gameId, playerColor, difficulty);
+  static create(
+    gameId: string,
+    playerColor: StoneColor,
+    difficulty: GameDifficulty = "medium",
+    resetEpoch = 0,
+  ): ReversiGame {
+    return new ReversiGame(gameId, playerColor, difficulty, resetEpoch);
   }
 
   snapshot(): ReversiGameSnapshot {
@@ -41,7 +51,8 @@ export class ReversiGame {
       turn: this.turn, status: this.status, ...(this.winner === undefined ? {} : { winner: this.winner }),
       legalMoves: this.status === "finished" ? [] : this.legalMoves(this.turn),
       moveHistory: this.moveHistory.map((move) => ({ ...move })), ...(this.moveHistory.length ? { lastMove: { ...this.moveHistory.at(-1)! } } : {}),
-      stateVersion: this.stateVersion, message: this.message(), board: this.board.map((row) => [...row]), score: { ...score },
+      stateVersion: this.stateVersion, resetEpoch: this.resetEpoch,
+      message: this.message(), board: this.board.map((row) => [...row]), score: { ...score },
     };
   }
 

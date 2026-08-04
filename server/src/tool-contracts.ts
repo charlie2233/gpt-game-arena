@@ -27,6 +27,7 @@ const baseSnapshotSchema = z.object({
   moveHistory: z.array(moveRecordSchema),
   lastMove: moveRecordSchema.optional(),
   stateVersion: z.number().int().nonnegative(),
+  resetEpoch: z.number().int().nonnegative().optional(),
   message: z.string(),
 }).strict();
 

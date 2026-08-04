@@ -42,10 +42,16 @@ export class ConnectFourGame {
     private readonly gameId: string,
     private readonly playerColor: StoneColor,
     private readonly difficulty: GameDifficulty,
+    private readonly resetEpoch: number,
   ) {}
 
-  static create(gameId: string, playerColor: StoneColor, difficulty: GameDifficulty = "medium"): ConnectFourGame {
-    return new ConnectFourGame(gameId, playerColor, difficulty);
+  static create(
+    gameId: string,
+    playerColor: StoneColor,
+    difficulty: GameDifficulty = "medium",
+    resetEpoch = 0,
+  ): ConnectFourGame {
+    return new ConnectFourGame(gameId, playerColor, difficulty, resetEpoch);
   }
 
   snapshot(): ConnectFourGameSnapshot {
@@ -56,7 +62,8 @@ export class ConnectFourGame {
       legalMoves: this.status === "finished" ? [] : this.legalMoves(),
       moveHistory: this.moveHistory.map((move) => ({ ...move })),
       ...(this.moveHistory.length === 0 ? {} : { lastMove: { ...this.moveHistory.at(-1)! } }),
-      stateVersion: this.stateVersion, message: this.message(), board: this.board.map((row) => [...row]),
+      stateVersion: this.stateVersion, resetEpoch: this.resetEpoch,
+      message: this.message(), board: this.board.map((row) => [...row]),
       ...(this.winningLine === undefined ? {} : { winningLine: [...this.winningLine] as ConnectFourGameSnapshot["winningLine"] }),
     };
   }

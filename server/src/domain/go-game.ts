@@ -29,6 +29,7 @@ export class GoGame {
     private readonly playerColor: StoneColor,
     private readonly boardSize: GoBoardSize,
     private readonly difficulty: GameDifficulty,
+    private readonly resetEpoch: number,
   ) {
     this.board = GoGame.emptyBoard(boardSize);
     this.stonePositionHashes = new Set([this.boardHash(this.board)]);
@@ -39,11 +40,12 @@ export class GoGame {
     playerColor: StoneColor,
     boardSize: GoBoardSize = 9,
     difficulty: GameDifficulty = "medium",
+    resetEpoch = 0,
   ): GoGame {
     if (boardSize !== 9 && boardSize !== 13 && boardSize !== 19) {
       throw new RangeError("Unsupported Go board size.");
     }
-    return new GoGame(gameId, playerColor, boardSize, difficulty);
+    return new GoGame(gameId, playerColor, boardSize, difficulty, resetEpoch);
   }
 
   snapshot(): GoGameSnapshot {
@@ -64,6 +66,7 @@ export class GoGame {
         ? {}
         : { lastMove: { ...this.moveHistory[this.moveHistory.length - 1] } }),
       stateVersion: this.stateVersion,
+      resetEpoch: this.resetEpoch,
       message: this.message(score, winner),
       board: this.board.map((row) => [...row]),
       boardSize: this.boardSize,

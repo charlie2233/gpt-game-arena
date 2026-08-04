@@ -1,18 +1,21 @@
 import { randomUUID } from "node:crypto";
 
-import { ChessGame } from "./domain/chess-game.js";
-import { ConnectFourGame } from "./domain/connect-four-game.js";
-import { GoGame } from "./domain/go-game.js";
-import { TicTacToeGame } from "./domain/tic-tac-toe-game.js";
-import { ReversiGame } from "./domain/reversi-game.js";
 import type { GameActor, GameDifficulty, GameKind, GameSnapshot, GoBoardSize, StoneColor } from "./domain/types.js";
-import { GameStore, type GameSession } from "./game-store.js";
+import { cloneGameSession, createGameSession } from "./game-session.js";
+import { GameStore } from "./game-store.js";
 
 export class ToolService {
   constructor(private readonly store = new GameStore()) {}
 
   createGame(input: { game: GameKind; playerColor: StoneColor; boardSize?: GoBoardSize; difficulty?: GameDifficulty }): GameSnapshot {
-    const session = this.createSession(input.game, randomUUID(), input.playerColor, input.boardSize, input.difficulty);
+    const session = createGameSession({
+      gameId: randomUUID(),
+      kind: input.game,
+      playerColor: input.playerColor,
+      difficulty: input.difficulty ?? "medium",
+      resetEpoch: 0,
+      ...(input.game === "go" ? { boardSize: input.boardSize ?? 9 } : {}),
+    });
     this.store.put(session);
     return session.snapshot();
   }
@@ -27,46 +30,23 @@ export class ToolService {
     move: string;
     expectedVersion: number;
   }): GameSnapshot {
-    return this.store.get(input.gameId).play(input.actor, input.move, input.expectedVersion);
+    const replacement = cloneGameSession(this.store.get(input.gameId));
+    const snapshot = replacement.play(input.actor, input.move, input.expectedVersion);
+    this.store.replace(replacement);
+    return snapshot;
   }
 
   resetGame(input: { gameId: string }): GameSnapshot {
     const current = this.store.get(input.gameId).snapshot();
-    const replacement = this.createSession(
-      current.kind,
-      current.gameId,
-      current.playerColor,
-      current.kind === "go" ? current.boardSize : undefined,
-      current.difficulty,
-    );
+    const replacement = createGameSession({
+      gameId: current.gameId,
+      kind: current.kind,
+      playerColor: current.playerColor,
+      difficulty: current.difficulty,
+      resetEpoch: (current.resetEpoch ?? 0) + 1,
+      ...(current.kind === "go" ? { boardSize: current.boardSize } : {}),
+    });
     this.store.replace(replacement);
     return replacement.snapshot();
-  }
-
-  private createSession(
-    kind: GameKind,
-    gameId: string,
-    playerColor: StoneColor,
-    boardSize: GoBoardSize = 9,
-    difficulty: GameDifficulty = "medium",
-  ): GameSession {
-    switch (kind) {
-      case "chess":
-        return ChessGame.create(gameId, playerColor, difficulty);
-      case "go":
-        return GoGame.create(gameId, playerColor, boardSize, difficulty);
-      case "tic-tac-toe":
-        return TicTacToeGame.create(gameId, playerColor, difficulty);
-      case "connect-four":
-        return ConnectFourGame.create(gameId, playerColor, difficulty);
-      case "reversi":
-        return ReversiGame.create(gameId, playerColor, difficulty);
-      default:
-        return this.unhandledGameKind(kind);
-    }
-  }
-
-  private unhandledGameKind(kind: never): never {
-    throw new Error(`Unsupported game kind: ${kind}`);
   }
 }
