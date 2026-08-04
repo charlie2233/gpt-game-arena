@@ -25,7 +25,7 @@ export type ReversiMoveRecord = Omit<MoveRecord, "notation"> & { notation: Rever
 export type ReversiSnapshot = Omit<BaseSnapshot, "legalMoves" | "moveHistory" | "lastMove"> & { kind: "reversi"; board: Board<8, 8>; legalMoves: ReversiCoordinate[]; moveHistory: ReversiMoveRecord[]; lastMove?: ReversiMoveRecord; score: { black: number; white: number } };
 export type GameSnapshot = ChessSnapshot | GoSnapshot | TicTacToeSnapshot | ConnectFourSnapshot | ReversiSnapshot;
 export type ToolResult = { structuredContent?: unknown; content?: { type: string; text: string }[]; isError?: boolean };
-export type ToolInput = { create_game: { game: "chess"; playerColor: Color; difficulty: GameDifficulty; boardSize?: never } | { game: "go"; playerColor: Color; difficulty: GameDifficulty; boardSize?: GoBoardSize } | { game: "tic-tac-toe" | "connect-four" | "reversi"; playerColor: Color; difficulty: GameDifficulty; boardSize?: never }; get_game_state: { gameId: string }; play_game_move: { gameId: string; actor: "player" | "gpt"; move: string; expectedVersion: number }; reset_game: { gameId: string }; render_game: { gameId: string } };
+export type ToolInput = { create_game: { game: "chess"; playerColor: Color; difficulty: GameDifficulty; boardSize?: never } | { game: "go"; playerColor: Color; difficulty: GameDifficulty; boardSize?: GoBoardSize } | { game: "tic-tac-toe" | "connect-four" | "reversi"; playerColor: Color; difficulty: GameDifficulty; boardSize?: never }; get_game_state: { gameId: string }; play_game_move: { gameId: string; actor: "player" | "gpt"; move: string; expectedVersion: number; expectedResetEpoch?: number }; reset_game: { gameId: string }; render_game: { gameId: string } };
 
 declare global {
   interface Window {

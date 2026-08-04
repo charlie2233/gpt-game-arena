@@ -18,6 +18,29 @@ type GoPositionAnalysis = {
 
 const GO_ENDGAME_OCCUPANCY = 0.35;
 const GO_TACTICAL_CONTINUE_SCORE = 700;
+const EMBEDDED_CANDIDATE_LIMIT: Record<GameSnapshot["difficulty"], number> = {
+  easy: 8,
+  medium: 16,
+  hard: 32,
+};
+
+export type EmbeddedMoveDecision = {
+  gameId: string;
+  kind: GameSnapshot["kind"];
+  difficulty: GameSnapshot["difficulty"];
+  turn: Color;
+  expectedResetEpoch: number;
+  expectedVersion: number;
+  positionFormat: string;
+  position: string;
+  lastMove?: { actor: "player" | "gpt"; color: Color; move: string; ply: number };
+  legalMoveCount: number;
+  candidatesTruncated: boolean;
+  candidateMoves: string[];
+  captures?: { black: number; white: number };
+  consecutivePasses?: number;
+  score?: { black: number; white: number };
+};
 
 export function chooseStandaloneMove(game: GameSnapshot): string | undefined {
   const ordered = [...new Set(game.legalMoves)].sort((left, right) => left.localeCompare(right));
@@ -75,16 +98,103 @@ function reversiFlips(board: (Color | null)[][], move: string, color: Color): nu
   for (const [dy, dx] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) { let row = y + dy, col = x + dx, n = 0; while (row >= 0 && row < 8 && col >= 0 && col < 8 && board[row][col] === enemy) { n++; row += dy; col += dx; } if (n && board[row]?.[col] === color) flips += n; } return flips;
 }
 
-export function embeddedMovePrompt(game: GameSnapshot): string {
+export function embeddedMoveDecision(game: GameSnapshot): EmbeddedMoveDecision {
+  const candidateMoves = embeddedMoveCandidates(game);
+  const position = game.kind === "chess"
+    ? Array.from({ length: 8 }, (_, row) => game.board.slice(row * 8, row * 8 + 8).map((cell) => {
+      if (!cell.piece || !cell.color) return ".";
+      return cell.color === "white" ? cell.piece.toUpperCase() : cell.piece;
+    }).join("")).join("/")
+    : game.board.map((row) => row.map((cell) => cell === "black" ? "B" : cell === "white" ? "W" : ".").join("")).join("/");
+  return {
+    gameId: game.gameId,
+    kind: game.kind,
+    difficulty: game.difficulty,
+    turn: game.turn,
+    expectedResetEpoch: game.resetEpoch ?? 0,
+    expectedVersion: game.stateVersion,
+    positionFormat: game.kind === "chess"
+      ? "ranks 8-to-1; files a-to-h; uppercase=White, lowercase=Black, .=empty"
+      : game.kind === "go"
+        ? `rows ${game.boardSize}-to-1; columns ${GO_COLUMNS.slice(0, game.boardSize)}; B=black, W=white, .=empty`
+        : game.kind === "tic-tac-toe"
+          ? "rows 3-to-1; columns A-to-C; B=black, W=white, .=empty"
+          : game.kind === "connect-four"
+            ? "rows 6-to-1; columns A-to-G; B=black, W=white, .=empty"
+            : "rows 8-to-1; columns A-to-H; B=black, W=white, .=empty",
+    position,
+    ...(game.lastMove ? { lastMove: { actor: game.lastMove.actor, color: game.lastMove.color, move: game.lastMove.notation, ply: game.lastMove.ply } } : {}),
+    legalMoveCount: game.legalMoves.length,
+    candidatesTruncated: candidateMoves.length < new Set(game.legalMoves).size,
+    candidateMoves,
+    ...(game.kind === "go" ? { captures: game.captures, consecutivePasses: game.consecutivePasses } : {}),
+    ...(game.kind === "reversi" ? { score: game.score } : {}),
+  };
+}
+
+export function embeddedMoveCandidates(game: GameSnapshot): string[] {
+  const legalMoves = [...new Set(game.legalMoves)].sort((left, right) => left.localeCompare(right));
+  if (legalMoves.length === 0) return [];
+  const nonPass = legalMoves.filter((move) => move !== "pass");
+  if (nonPass.length === 0) return legalMoves;
+  const limit = EMBEDDED_CANDIDATE_LIMIT[game.difficulty];
+
+  const recommended = chooseStandaloneMove(game);
+  const ranked = strategicallyRankedMoves(game, nonPass);
+  const candidateMoves: string[] = [];
+  const add = (move: string | undefined) => {
+    if (move && legalMoves.includes(move) && !candidateMoves.includes(move) && candidateMoves.length < limit) candidateMoves.push(move);
+  };
+  add(recommended);
+
+  const tacticalBudget = game.difficulty === "hard" ? Math.ceil(limit * 0.75) : game.difficulty === "medium" ? Math.ceil(limit / 2) : 2;
+  for (const move of ranked.slice(0, tacticalBudget)) add(move);
+
+  // Fill remaining slots across the entire sorted move space instead of taking
+  // a corner-biased prefix (especially important for 13x13 and 19x19 Go).
+  const remaining = limit - candidateMoves.length;
+  for (let index = 0; index < remaining; index += 1) {
+    const position = remaining === 1 ? Math.floor((nonPass.length - 1) / 2) : Math.round(index * (nonPass.length - 1) / (remaining - 1));
+    add(nonPass[position]);
+  }
+  for (const move of ranked) add(move);
+
+  if (game.kind === "go" && game.consecutivePasses === 1 && recommended === "pass") {
+    if (candidateMoves.length === limit) candidateMoves.pop();
+    add("pass");
+  }
+  return candidateMoves;
+}
+
+export function embeddedMovePrompt(game: GameSnapshot, decision = embeddedMoveDecision(game)): string {
   const level = game.difficulty.toUpperCase();
   return [
-    `Continue this game at ${level} difficulty.`,
-    `Call get_game_state with exactly ${JSON.stringify({ gameId: game.gameId })} and use that freshly returned snapshot as the authority.`,
+    `FAST_TURN ${JSON.stringify(decision)}.`,
+    "This compact state comes from the authoritative successful player-move result.",
     difficultyInstruction[game.difficulty],
-    "Choose exactly one string from that snapshot's legalMoves array.",
-    "Then call play_game_move exactly once with actor 'gpt', that exact move, the same gameId, and expectedVersion from that same freshly fetched snapshot.",
-    "Do not call create_game or reset_game.",
+    `For ${level}, choose exactly one exact string from candidateMoves (the first is the app's difficulty-aware recommendation), then immediately call play_game_move exactly once with actor 'gpt', that move, and the FAST_TURN gameId, expectedResetEpoch, and expectedVersion.`,
+    "Do not call get_game_state, create_game, reset_game, or render_game on this normal fast path. Never retry the mutation.",
+    "Only say the move landed after a matching MOVE_CONFIRMED receipt. An explicit MOVE_NOT_APPLIED means it did not land. For a transport/internal error or missing/mismatched receipt, say the move is not confirmed; you may call get_game_state once to reconcile, but never call play_game_move again.",
   ].join(" ");
+}
+
+function strategicallyRankedMoves(game: GameSnapshot, moves: string[]): string[] {
+  if (game.kind === "chess") return [...moves].sort((left, right) => scoreChessMove(game, right) - scoreChessMove(game, left) || left.localeCompare(right));
+  if (game.kind === "go") {
+    const analysis = analyzeGoPosition(game);
+    const scores = new Map(moves.map((move) => [move, scoreGoMove(game, move, analysis)]));
+    return [...moves].sort((left, right) => (scores.get(right) ?? Number.NEGATIVE_INFINITY) - (scores.get(left) ?? Number.NEGATIVE_INFINITY) || left.localeCompare(right));
+  }
+  if (game.kind === "tic-tac-toe") {
+    const best = hardTic(game, moves);
+    return [best, ...moves.filter((move) => move !== best)];
+  }
+  if (game.kind === "connect-four") {
+    const best = hardConnect(game, moves);
+    return [best, ...moves.filter((move) => move !== best).sort((left, right) => Math.abs(left.charCodeAt(0) - 68) - Math.abs(right.charCodeAt(0) - 68) || left.localeCompare(right))];
+  }
+  const best = hardReversi(game, moves);
+  return [best, ...moves.filter((move) => move !== best).sort((left, right) => reversiFlips(game.board, right, game.turn) - reversiFlips(game.board, left, game.turn) || left.localeCompare(right))];
 }
 
 function bestScored(moves: string[], score: (move: string) => number): string {

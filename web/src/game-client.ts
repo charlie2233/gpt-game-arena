@@ -5,7 +5,7 @@ export class GameClient {
   constructor(private readonly bridge: GameBridge) {}
   create(input: ToolInput["create_game"]) { return this.call("create_game", input); }
   state(gameId: string) { return this.call("get_game_state", { gameId }); }
-  play(gameId: string, actor: "player" | "gpt", move: string, expectedVersion: number) { return this.call("play_game_move", { gameId, actor, move, expectedVersion }); }
+  play(gameId: string, actor: "player" | "gpt", move: string, expectedVersion: number, expectedResetEpoch?: number) { return this.call("play_game_move", { gameId, actor, move, expectedVersion, ...(expectedResetEpoch === undefined ? {} : { expectedResetEpoch }) }); }
   reset(gameId: string) { return this.call("reset_game", { gameId }); }
   render(gameId: string) { return this.call("render_game", { gameId }); }
   private async call<N extends ToolName>(name: N, input: ToolInput[N]): Promise<GameSnapshot> {

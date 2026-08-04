@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chooseStandaloneMove, embeddedMovePrompt } from "./move-strategy";
+import { chooseStandaloneMove, embeddedMoveCandidates, embeddedMoveDecision, embeddedMovePrompt } from "./move-strategy";
 import type { Board, ChessCell, ChessSnapshot, ConnectFourSnapshot, GameDifficulty, GoBoardSize, GoSnapshot, ReversiSnapshot, TicTacToeSnapshot } from "./types";
 
 const emptyChessBoard = (): ChessCell[] => Array.from({ length: 8 }, (_, row) => Array.from({ length: 8 }, (_, column) => ({ square: `${"abcdefgh"[column]}${8 - row}` as ChessCell["square"] }))).flat();
@@ -75,13 +75,46 @@ describe("standalone move strategy", () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 
-  it("builds enum-controlled embedded instructions around a freshly fetched version", () => {
+  it("builds a direct-play prompt from the authoritative compact turn", () => {
     const prompt = embeddedMovePrompt(chess("hard", ["a8a7"]));
-    expect(prompt).toContain("HARD difficulty");
-    expect(prompt).toContain("get_game_state");
-    expect(prompt).toContain("exactly one string");
-    expect(prompt).toContain("expectedVersion from that same freshly fetched snapshot");
-    expect(prompt).toContain("Do not call create_game or reset_game");
+    expect(prompt).toContain("FAST_TURN");
+    expect(prompt).toContain('"difficulty":"hard"');
+    expect(prompt).toContain('"expectedResetEpoch":0');
+    expect(prompt).toContain('"expectedVersion":4');
+    expect(prompt).toContain('"candidateMoves":["a8a7"]');
+    expect(prompt).not.toContain("Call get_game_state");
+    expect(prompt).toContain("Do not call get_game_state");
+    expect(prompt).toContain("MOVE_CONFIRMED");
+    expect(prompt).toContain("MOVE_NOT_APPLIED means it did not land");
+    expect(prompt).toContain("move is not confirmed");
+    expect(prompt).toContain("get_game_state once to reconcile");
+  });
+
+  it("keeps large-board decision state bounded, legal, unique, and spatially varied", () => {
+    const legalMoves = Array.from({ length: 19 }, (_, row) => Array.from({ length: 19 }, (_, column) => `${"ABCDEFGHJKLMNOPQRST"[column]}${19 - row}`)).flat();
+    for (const difficulty of ["easy", "medium", "hard"] as const) {
+      const game = go(difficulty, [...legalMoves, "pass"], 19);
+      const decision = embeddedMoveDecision(game);
+      const expectedLimit = difficulty === "easy" ? 8 : difficulty === "medium" ? 16 : 32;
+      expect(decision.candidateMoves.length).toBeLessThanOrEqual(expectedLimit);
+      expect(new Set(decision.candidateMoves).size).toBe(decision.candidateMoves.length);
+      expect(decision.candidateMoves.every((move) => game.legalMoves.includes(move))).toBe(true);
+      expect(decision.candidateMoves).toContain(chooseStandaloneMove(game));
+      expect(decision.candidateMoves).not.toContain("pass");
+      expect(new Set(decision.candidateMoves.map((move) => move[0])).size).toBeGreaterThan(2);
+      expect(new TextEncoder().encode(JSON.stringify(decision)).byteLength).toBeLessThanOrEqual(2_048);
+      expect(decision.position.split("/")).toHaveLength(19);
+      expect(decision).toMatchObject({ legalMoveCount: 362, candidatesTruncated: true, expectedResetEpoch: 0, expectedVersion: 4 });
+    }
+  });
+
+  it("keeps a tactical Go capture in the compact Hard candidate set", () => {
+    const game = go("hard", ["A9", "C2", "D4", "E5", "F6", "G7", "H8", "J9", "pass"]);
+    game.board[6][1] = "black";
+    game.board[7][0] = "black";
+    game.board[7][1] = "white";
+    game.board[8][1] = "black";
+    expect(embeddedMoveCandidates(game)[0]).toBe("C2");
   });
   it("makes Hard Tic-Tac-Toe take a win then block a forced loss", () => {
     const win = tic("hard", ["C3", "C1"]); win.board[0][0] = "black"; win.board[0][1] = "black";

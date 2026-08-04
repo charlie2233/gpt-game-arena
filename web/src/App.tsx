@@ -5,7 +5,7 @@ import { ChessBoard } from "./components/ChessBoard";
 import { GoBoard } from "./components/GoBoard";
 import { GameChrome } from "./components/GameChrome";
 import { ConnectFourBoard, ReversiBoard, TicTacToeBoard } from "./components/SmallBoards";
-import { chooseStandaloneMove, embeddedMovePrompt } from "./move-strategy";
+import { chooseStandaloneMove, embeddedMoveDecision, embeddedMovePrompt } from "./move-strategy";
 import type { GameDifficulty, GameSnapshot, GoBoardSize } from "./types";
 
 type GamePreset = "chess" | "tic-tac-toe" | "connect-four" | "reversi" | `go-${GoBoardSize}`;
@@ -61,9 +61,12 @@ function initialHostState(): GameSnapshot | undefined {
 
 const expiredSessionMessage = "This saved game session has expired. Start a new game to continue.";
 const gptPollTimeoutMs = 45_000;
+const gptPollInitialDelayMs = 750;
+const gptPollMaximumDelayMs = 2_500;
 
 type SnapshotMove = { actor: string; notation: string; ply: number };
 type ResetBarrier = { gameId: string; staleHistory: SnapshotMove[]; legacyCeiling: number };
+type PendingPoll = { accepts: (next: GameSnapshot) => boolean; finish: (next?: GameSnapshot, error?: Error) => void };
 
 function historyStartsWith(history: readonly SnapshotMove[], prefix: readonly SnapshotMove[]): boolean {
   return prefix.length <= history.length && prefix.every((move, index) => {
@@ -78,6 +81,14 @@ function resetEpochOf(snapshot: GameSnapshot): number {
 
 function compareSnapshotPosition(left: GameSnapshot, right: GameSnapshot): number {
   return resetEpochOf(left) - resetEpochOf(right) || left.stateVersion - right.stateVersion;
+}
+
+function isConfirmedGptAdvance(previous: GameSnapshot, next: GameSnapshot): boolean {
+  if (next.gameId !== previous.gameId || resetEpochOf(next) !== resetEpochOf(previous)) return false;
+  if (next.stateVersion !== previous.stateVersion + 1 || next.moveHistory.length !== previous.moveHistory.length + 1) return false;
+  if (!historyStartsWith(next.moveHistory, previous.moveHistory)) return false;
+  const appended = next.moveHistory[previous.moveHistory.length];
+  return appended?.actor === "gpt" && appended.color === previous.turn;
 }
 
 function isNotFoundError(reason: unknown): boolean {
@@ -102,8 +113,8 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string>();
-  const epoch = useRef(0); const pollTimer = useRef<number>(); const pollExpiry = useRef<number>(); const pollDone = useRef<((next?: GameSnapshot) => void)>(); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const resetBarrier = useRef<ResetBarrier>(); const resetPending = useRef<string>(); const recoveryStarted = useRef(false); const lifecycleTimer = useRef<number>();
-  const stop = useCallback(() => { epoch.current += 1; if (pollTimer.current) window.clearTimeout(pollTimer.current); if (pollExpiry.current) window.clearTimeout(pollExpiry.current); pollTimer.current = undefined; pollExpiry.current = undefined; pollDone.current?.(); pollDone.current = undefined; }, []);
+  const epoch = useRef(0); const pollTimer = useRef<number>(); const pollExpiry = useRef<number>(); const pendingPoll = useRef<PendingPoll>(); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const resetBarrier = useRef<ResetBarrier>(); const resetPending = useRef<string>(); const recoveryStarted = useRef(false); const lifecycleTimer = useRef<number>();
+  const stop = useCallback(() => { epoch.current += 1; if (pollTimer.current) window.clearTimeout(pollTimer.current); if (pollExpiry.current) window.clearTimeout(pollExpiry.current); pollTimer.current = undefined; pollExpiry.current = undefined; pendingPoll.current?.finish(); pendingPoll.current = undefined; }, []);
   const commitBusy = useCallback((next: boolean) => { busyRef.current = next; setBusy(next); }, []);
   const apply = useCallback((next: GameSnapshot, version: number) => {
     if (version !== epoch.current) return;
@@ -120,22 +131,33 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
     try { const next = await run(); if (version !== epoch.current) return; apply(next, version); if (version !== epoch.current) return; await after?.(next, version); } catch (reason) { if (version === epoch.current) setError(requestErrorMessage(reason)); } finally { if (version === epoch.current) { if (resetPending.current === resetGameId) resetPending.current = undefined; commitBusy(false); setStarting(false); } }
   }, [apply, commitBusy, stop]);
   const poll = useCallback((previous: GameSnapshot, version: number) => new Promise<GameSnapshot | undefined>((resolve, reject) => {
-    let settled = false; const finish = (next?: GameSnapshot, error?: Error) => { if (settled) return; settled = true; if (pollDone.current === finish) pollDone.current = undefined; if (pollTimer.current) window.clearTimeout(pollTimer.current); if (pollExpiry.current) window.clearTimeout(pollExpiry.current); pollTimer.current = undefined; pollExpiry.current = undefined; error ? reject(error) : resolve(next); };
-    pollDone.current = finish;
+    let settled = false;
+    let delay = gptPollInitialDelayMs;
+    let registered: PendingPoll;
+    const accepts = (next: GameSnapshot) => isConfirmedGptAdvance(previous, next);
+    const finish = (next?: GameSnapshot, error?: Error) => { if (settled) return; settled = true; if (pendingPoll.current === registered) pendingPoll.current = undefined; if (pollTimer.current) window.clearTimeout(pollTimer.current); if (pollExpiry.current) window.clearTimeout(pollExpiry.current); pollTimer.current = undefined; pollExpiry.current = undefined; error ? reject(error) : resolve(next); };
+    registered = { accepts, finish };
+    pendingPoll.current = registered;
+    const schedule = () => {
+      pollTimer.current = window.setTimeout(() => void check(), delay);
+      delay = Math.min(gptPollMaximumDelayMs, delay + 500);
+    };
     const check = async (): Promise<void> => {
       if (version !== epoch.current) return finish();
-      try { const next = await client.state(previous.gameId); if (settled || version !== epoch.current) return finish(); if (next.gameId === previous.gameId && compareSnapshotPosition(next, previous) > 0) { apply(next, version); return finish(next); } } catch { /* transient host failure: retry until deadline */ }
-      if (!settled && version === epoch.current) pollTimer.current = window.setTimeout(() => void check(), 1000);
+      try { const next = await client.state(previous.gameId); if (settled || version !== epoch.current) return finish(); if (next.gameId === previous.gameId && compareSnapshotPosition(next, previous) > 0) { apply(next, version); return accepts(next) ? finish(next) : finish(undefined, new Error("The game changed before GPT's move was confirmed.")); } } catch { /* transient host failure: retry until deadline */ }
+      if (!settled && version === epoch.current) schedule();
     };
-    pollTimer.current = window.setTimeout(() => void check(), 1000);
-    pollExpiry.current = window.setTimeout(() => finish(undefined, new Error("GPT did not return a move in time.")), gptPollTimeoutMs);
+    schedule();
+    pollExpiry.current = window.setTimeout(() => finish(undefined, new Error("GPT move was not confirmed in time.")), gptPollTimeoutMs);
   }), [apply, client]);
   const gptTurn = useCallback(async (next: GameSnapshot, version: number) => {
     let current = next;
     for (let turns = 0; turns < 128 && current.status === "active" && current.turn !== current.playerColor; turns += 1) {
       if (version !== epoch.current) return;
       if (bridge.embedded) {
-        await bridge.sendMessage(embeddedMovePrompt(current));
+        const decision = embeddedMoveDecision(current);
+        if (decision.candidateMoves.length === 0) throw new Error("No legal GPT move is available.");
+        await bridge.sendMessage(embeddedMovePrompt(current, decision));
         if (version !== epoch.current) return;
         const reply = await poll(current, version);
         if (!reply || version !== epoch.current) return;
@@ -144,7 +166,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       }
       const move = chooseStandaloneMove(current);
       if (!move) return;
-      const reply = await client.play(current.gameId, "gpt", move, current.stateVersion);
+      const reply = await client.play(current.gameId, "gpt", move, current.stateVersion, resetEpochOf(current));
       if (version !== epoch.current) return;
       if (reply.gameId !== current.gameId || resetEpochOf(reply) !== resetEpochOf(current) || reply.stateVersion <= current.stateVersion) throw new Error("The game service returned a non-advancing GPT state.");
       apply(reply, version);
@@ -157,6 +179,12 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
     let alive = true;
     const initEpoch = epoch.current;
     const unsubscribe = bridge.onToolResult(result => {
+      const activePoll = pendingPoll.current;
+      const resultText = result.content?.map(item => item.text).join(" ") ?? "";
+      if (activePoll && result.isError && /^MOVE_NOT_APPLIED\b/.test(resultText)) {
+        activePoll.finish(undefined, new Error("GPT move was not applied. Use Refresh to continue."));
+        return;
+      }
       const next = result.structuredContent;
       const current = gameRef.current;
       if (!isSnapshot(next)) return;
@@ -182,13 +210,15 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
         resetBarrier.current = undefined;
         resetPending.current = undefined;
       }
-      const finishPoll = pollDone.current;
       gameRef.current = next;
       setGame(next);
       setSelected(undefined);
       setError(undefined);
-      finishPoll?.(next);
-      if (!finishPoll && next.status === "active" && next.turn !== next.playerColor) {
+      if (activePoll) {
+        if (activePoll.accepts(next)) activePoll.finish(next);
+        else activePoll.finish(undefined, new Error("The game changed before GPT's move was confirmed."));
+      }
+      if (!activePoll && next.status === "active" && next.turn !== next.playerColor) {
         void action(() => Promise.resolve(next), gptTurn);
       }
     });
@@ -254,7 +284,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   }, [bridge.embedded, game]);
   const currentPreset = presetFor(game);
   useEffect(() => { if (game) { setGamePreset(currentPreset); setDifficultyPreset(game.difficulty); } }, [currentPreset, game?.gameId]);
-  const humanMove = (move: string) => game && action(() => client.play(game.gameId, "player", move, game.stateVersion), gptTurn);
+  const humanMove = (move: string) => game && action(() => client.play(game.gameId, "player", move, game.stateVersion, resetEpochOf(game)), gptTurn);
   const chessSquare = (square: string) => { if (!game || game.kind !== "chess") return; if (!selected) { setSelected(square); return; } const legal = game.legalMoves.filter(move => move.startsWith(selected) && move.slice(2, 4) === square).sort(); const move = legal.find(m => m.endsWith("q")) ?? legal[0]; if (move) humanMove(move); else setSelected(undefined); };
   const startGame = () => {
     if (gamePreset === "chess") return action(() => client.create({ game: "chess", playerColor: "white", difficulty: difficultyPreset }), undefined, true);
@@ -275,7 +305,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const disabled = busy || game?.status === "finished" || game?.turn !== game?.playerColor;
   const hostHydrating = bridge.embedded && !game && !error;
   const arenaStyle = hostMaxHeight ? { "--host-max-height": `${hostMaxHeight}px` } as CSSProperties : undefined;
-  return <main className="arena" style={arenaStyle}><header><h1><span>GPT</span> GAME <em>ARENA</em></h1>{!hostHydrating && <form className="new-game-picker" aria-busy={starting} onSubmit={event => { event.preventDefault(); void startGame(); }}><label className="picker-field" htmlFor="game-preset"><span>NEW GAME</span><select id="game-preset" value={gamePreset} disabled={starting} onChange={event => setGamePreset(event.target.value as GamePreset)}>{gamePresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label><label className="picker-field" htmlFor="difficulty-preset"><span>DIFFICULTY</span><select id="difficulty-preset" value={difficultyPreset} disabled={starting} onChange={event => setDifficultyPreset(event.target.value as GameDifficulty)}>{difficultyPresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label><button className="primary" type="submit" disabled={starting}>{starting ? "Starting…" : "Start game"}</button></form>}</header>{hostHydrating && <p className="game-status" role="status">Loading game…</p>}{error && <p className="error" role="alert">{error}</p>}{game && <section className="table"><GameChrome game={game}/><div className="board-column">{game.kind === "chess" ? <ChessBoard game={game} selected={selected} onSquare={chessSquare} disabled={disabled}/> : game.kind === "go" ? <GoBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "tic-tac-toe" ? <TicTacToeBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "reversi" ? <ReversiBoard game={game} onMove={humanMove} disabled={disabled}/> : <ConnectFourBoard game={game} onMove={humanMove} disabled={disabled}/>}<div className="controls">{game.kind === "go" && <button disabled={disabled} onClick={() => humanMove("pass")}>⊘ Pass</button>}<button className="primary" disabled={busy} onClick={() => void action(() => client.reset(game.gameId), undefined, false, game.gameId)}>⟳ Reset</button><button disabled={busy} onClick={() => void action(() => client.state(game.gameId), gptTurn)}>⟳ Refresh</button></div>{game.kind === "go" && <p className="captures">Captures — Black: {game.captures.black}, White: {game.captures.white}</p>}{game.kind === "reversi" && <p className="captures">Disks — Black: {game.score.black}, White: {game.score.white}</p>}<p className="game-status" role="status">{game.winner ? `Winner: ${game.winner}` : game.lastMove ? `Last move: ${game.lastMove.notation}` : "Choose a piece to begin."}</p></div></section>}</main>;
+  return <main className="arena" style={arenaStyle}><header><h1><span>GPT</span> GAME <em>ARENA</em></h1>{!hostHydrating && <form className="new-game-picker" aria-busy={starting} onSubmit={event => { event.preventDefault(); void startGame(); }}><label className="picker-field" htmlFor="game-preset"><span>NEW GAME</span><select id="game-preset" value={gamePreset} disabled={starting} onChange={event => setGamePreset(event.target.value as GamePreset)}>{gamePresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label><label className="picker-field" htmlFor="difficulty-preset"><span>DIFFICULTY</span><select id="difficulty-preset" value={difficultyPreset} disabled={starting} onChange={event => setDifficultyPreset(event.target.value as GameDifficulty)}>{difficultyPresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label><button className="primary" type="submit" disabled={starting}>{starting ? "Starting…" : "Start game"}</button></form>}</header>{hostHydrating && <p className="game-status" role="status">Loading game…</p>}{error && <p className="error" role="alert">{error}</p>}{game && <section className="table"><GameChrome game={game} thinking={busy && game.turn !== game.playerColor} unconfirmed={Boolean(error) && !busy && game.turn !== game.playerColor}/><div className="board-column">{game.kind === "chess" ? <ChessBoard game={game} selected={selected} onSquare={chessSquare} disabled={disabled}/> : game.kind === "go" ? <GoBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "tic-tac-toe" ? <TicTacToeBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "reversi" ? <ReversiBoard game={game} onMove={humanMove} disabled={disabled}/> : <ConnectFourBoard game={game} onMove={humanMove} disabled={disabled}/>}<div className="controls">{game.kind === "go" && <button disabled={disabled} onClick={() => humanMove("pass")}>⊘ Pass</button>}<button className="primary" disabled={busy} onClick={() => void action(() => client.reset(game.gameId), undefined, false, game.gameId)}>⟳ Reset</button><button disabled={busy} onClick={() => void action(() => client.state(game.gameId), gptTurn)}>⟳ Refresh</button></div>{game.kind === "go" && <p className="captures">Captures — Black: {game.captures.black}, White: {game.captures.white}</p>}{game.kind === "reversi" && <p className="captures">Disks — Black: {game.score.black}, White: {game.score.white}</p>}<p className="game-status" role="status">{game.winner ? `Winner: ${game.winner}` : game.lastMove ? `Last move: ${game.lastMove.notation}` : "Choose a piece to begin."}</p></div></section>}</main>;
 }
 
 function gameTextState(game: GameSnapshot | undefined, gamePreset: GamePreset, difficultyPreset: GameDifficulty, busy: boolean, starting: boolean, selected: string | undefined, error: string | undefined) {

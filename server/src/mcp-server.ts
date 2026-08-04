@@ -7,14 +7,14 @@ import type { AnySchema } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import {
   executeTool,
   isGameRuleError,
-  mcpGameSnapshotSchema,
+  mcpGameSnapshotSummarySchema,
   mcpToolInputSchemas,
   toolInputSchemas,
   toToolFailure,
 } from "./tool-contracts.js";
 import { ToolService } from "./tool-service.js";
 
-export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v10/widget.html";
+export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v11/widget.html";
 export const WIDGET_DESCRIPTION = "An interactive chess, Reversi, Tic-Tac-Toe, Connect Four, or 9x9, 13x13, or 19x19 Go board for playing turn by turn against GPT.";
 export type WidgetLoader = () => string | undefined | Promise<string | undefined>;
 
@@ -44,7 +44,7 @@ export function createMcpServer(service: ToolService, options: McpServerOptions 
   registerTool(server, service, "get_game_state", "Get game state", "Use this when you need the authoritative current game state.", {
     readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true,
   }, { ui: { visibility: ["model", "app"] } });
-  registerTool(server, service, "play_game_move", "Play game move", "Use this when a player or GPT makes the next legal move.", {
+  registerTool(server, service, "play_game_move", "Play game move", "Use this when applying exactly one legal move with expectedResetEpoch and expectedVersion. Only claim that a move landed after a matching MOVE_CONFIRMED receipt. MOVE_NOT_APPLIED is definite; MOVE_CONFIRMATION_UNKNOWN requires a read-only state check and must never trigger a repeated mutation.", {
     readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false,
   }, { ui: { visibility: ["model", "app"] } });
   registerTool(server, service, "reset_game", "Reset game", "Use this when current game progress should be erased and reset.", {
@@ -73,7 +73,7 @@ function registerTool(
     title,
     description,
     inputSchema: mcpToolInputSchemas[name] as unknown as AnySchema,
-    outputSchema: mcpGameSnapshotSchema as unknown as AnySchema,
+    outputSchema: mcpGameSnapshotSummarySchema as unknown as AnySchema,
     annotations,
     _meta: {
       ...meta,
@@ -84,8 +84,8 @@ function registerTool(
     try {
       return executeTool(service, name, input);
     } catch (error) {
-      if (isGameRuleError(error)) return toToolFailure(error);
-      return { isError: true, content: [{ type: "text" as const, text: "internal_error: Internal server error." }] };
+      if (isGameRuleError(error)) return toToolFailure(error, name === "play_game_move");
+      return { isError: true, content: [{ type: "text" as const, text: `${name === "play_game_move" ? "MOVE_CONFIRMATION_UNKNOWN " : ""}internal_error: Internal server error.` }] };
     }
   });
 }

@@ -83,3 +83,34 @@ Original prompt: also implement select difficuktuy
 
 - Deploy the v3 widget over public HTTPS and refresh metadata.
 - Complete actual hosted ChatGPT acceptance and the separate Node 18 built-server smoke.
+
+## Fast, confirmed GPT turns
+
+### Original prompts
+
+- make it ezier for gpt to read uz its taking too long for him everytime, ans sometime he didnt place it but he said he placed it
+- Let gpt work quicker is whatg i mean
+- also everytim gpt thinks anf shit it brings me back to the end of chat convo so i have t scrolll up everytime if i wanna keep playin with gpt try solving that
+
+### Implemented
+
+- [x] Replaced the normal redundant `get_game_state` model round trip with a compact authoritative `FAST_TURN` packet.
+- [x] Added difficulty-sized, exact-legal candidate sets with tactical ordering and spatially distributed Go coverage.
+- [x] Bound new moves to both `expectedResetEpoch` and `expectedVersion` while preserving cached-widget compatibility.
+- [x] Added server-authored `MOVE_CONFIRMED`, definite `MOVE_NOT_APPLIED`, and ambiguous `MOVE_CONFIRMATION_UNKNOWN` result language.
+- [x] Switched ChatGPT follow-ups to `sendFollowUpMessage({ scrollToBottom: false })`, with standard `ui/message` fallback for other hosts.
+- [x] Reduced the repeated model-facing output schema and bumped the widget cache URI to v11.
+- [x] Shortened fallback board reconciliation to start at 750 ms and stop immediately on an explicit move rejection.
+
+### Verification status
+
+- [x] Compact decision tests cover 19×19 payload size, legal/unique caps, spatial variety, and tactical capture retention.
+- [x] Bridge tests cover no-scroll delivery, portable fallback, and no duplicate retry after a rejected follow-up.
+- [x] App tests cover nonzero epochs, no-scroll completion, authoritative moves outside the shortlist, and immediate failed-move exit.
+- [x] Epoch/version race, omitted-epoch-after-reset, explicit receipt, and ambiguous post-commit tests pass in focused server coverage.
+- [x] Complete matrix passes: 107 server + 68 web = 175 tests, workspace typecheck, production builds, and `git diff --check`.
+- [x] Required web-game client smoke produced a clean screenshot and deterministic text state with no console-error artifact.
+- [x] Local 1280×720 Real Go check: the 19×19 board is 416×416, has no horizontal overflow, and completed D16 → K19 in about 0.54 s.
+- [x] Hosted ChatGPT v11 check: K9 → K18 landed in board history, and GPT narrated exactly K18 only after the authoritative board update.
+- [x] Hosted scroll check: the ChatGPT scroll container stayed at 479 px and the widget top stayed at -73 px while GPT was thinking; after completion it shifted only 35 px and the board remained visible instead of jumping to the conversation end.
+- [ ] Replace the temporary `trycloudflare.com` acceptance tunnel with an approved stable deployment before calling the app permanently hosted.

@@ -42,7 +42,9 @@ describe("ToolService", () => {
     expect(toolInputSchemas.play_game_move.parse({ gameId: created.gameId, actor: "player", move: " A1 ", expectedVersion: 0 }).move).toBe(" A1 ");
     expectRuleError(() => executeTool(service, "play_game_move", { gameId: created.gameId, actor: "player", move: " A1 ", expectedVersion: 0 }), "illegal_move");
     expect(service.getGameState({ gameId: created.gameId })).toMatchObject({ stateVersion: 0, moveHistory: [] });
-    expect(executeTool(service, "play_game_move", { gameId: created.gameId, actor: "player", move: "A1", expectedVersion: 0 }).structuredContent).toMatchObject({ stateVersion: 1, moveHistory: [{ notation: "A1" }] });
+    const played = executeTool(service, "play_game_move", { gameId: created.gameId, actor: "player", move: "A1", expectedVersion: 0, expectedResetEpoch: 0 });
+    expect(played.structuredContent).toMatchObject({ stateVersion: 1, moveHistory: [{ notation: "A1" }] });
+    expect(played.content[0].text).toMatch(/^MOVE_CONFIRMED /);
   });
 
   it("creates chess and Go games with distinct generated IDs", () => {
@@ -102,6 +104,28 @@ describe("ToolService", () => {
     }), "stale_version");
   });
 
+  it("rejects a delayed pre-reset move even when stateVersion returns to zero", () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({ game: "tic-tac-toe", playerColor: "white" });
+    expect(created).toMatchObject({ resetEpoch: 0, stateVersion: 0, turn: "black" });
+    const reset = service.resetGame({ gameId: created.gameId });
+    expect(reset).toMatchObject({ resetEpoch: 1, stateVersion: 0, moveHistory: [] });
+    expectRuleError(() => service.playGameMove({
+      gameId: created.gameId,
+      actor: "gpt",
+      move: "A1",
+      expectedVersion: 0,
+      expectedResetEpoch: 0,
+    }), "stale_version");
+    expectRuleError(() => service.playGameMove({
+      gameId: created.gameId,
+      actor: "gpt",
+      move: "A1",
+      expectedVersion: 0,
+    }), "stale_version");
+    expect(service.getGameState({ gameId: created.gameId })).toMatchObject({ resetEpoch: 1, stateVersion: 0, moveHistory: [] });
+  });
+
   it("resets the same authoritative ID with its original kind, player color, board size, and difficulty", () => {
     const service = new ToolService(new GameStore());
     const created = service.createGame({ game: "go", playerColor: "black", boardSize: 19, difficulty: "hard" });
@@ -147,6 +171,7 @@ describe("ToolService", () => {
       actor: "gpt",
       move: "D4",
       expectedVersion: 0,
+      expectedResetEpoch: 1,
     });
     expect(moved.resetEpoch).toBe(1);
 
@@ -315,6 +340,7 @@ describe("ToolService", () => {
       actor: "player",
       move: "D4",
       expectedVersion: 0,
+      expectedResetEpoch: 1,
     });
     expect(movedAfterRestart.resetEpoch).toBe(1);
   });

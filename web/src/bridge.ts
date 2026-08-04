@@ -4,8 +4,9 @@ type RpcResponse = { jsonrpc: "2.0"; id?: number; result?: unknown; error?: { me
 type Pending = { resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: number };
 export type ToolNotification = (result: ToolResult) => void;
 export type HostContextNotification = (context: unknown) => void;
+type ChatGptFollowUpHost = { sendFollowUpMessage?: (input: { prompt: string; scrollToBottom?: boolean }) => void | Promise<void> };
 
-/** Minimal host bridge: it deliberately uses postMessage rather than the optional window.openai shortcut. */
+/** Minimal portable bridge, with ChatGPT's optional no-scroll follow-up extension. */
 export class GameBridge {
   private nextId = 1;
   private pending = new Map<number, Pending>();
@@ -46,6 +47,11 @@ export class GameBridge {
   async sendMessage(text: string): Promise<void> {
     if (!this.embedded) return;
     await this.initialize();
+    const openai = (window as Window & { openai?: ChatGptFollowUpHost }).openai;
+    if (typeof openai?.sendFollowUpMessage === "function") {
+      await openai.sendFollowUpMessage({ prompt: text, scrollToBottom: false });
+      return;
+    }
     if (this.capabilities.message === undefined) throw new Error("This host does not support messages.");
     const acknowledgement = await this.request("ui/message", { role: "user", content: [{ type: "text", text }] }) as ToolResult;
     if (acknowledgement?.isError) throw new Error(acknowledgement.content?.[0]?.text || "The host could not send the message.");

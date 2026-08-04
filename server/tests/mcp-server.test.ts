@@ -12,7 +12,7 @@ import { ToolService } from "../src/tool-service.js";
 
 describe("MCP game arena server", () => {
   it("registers five game tools and the widget resource", async () => {
-    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v10/widget.html");
+    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v11/widget.html");
     expect(WIDGET_DESCRIPTION).toContain("chess");
     expect(WIDGET_DESCRIPTION).toContain("Reversi");
     expect(WIDGET_DESCRIPTION).toContain("Tic-Tac-Toe");
@@ -52,6 +52,7 @@ describe("MCP game arena server", () => {
     expect(tools.tools.find((tool) => tool.name === "create_game")?.title).toBe("Create game");
     expect(tools.tools.find((tool) => tool.name === "get_game_state")?.title).toBe("Get game state");
     expect(tools.tools.find((tool) => tool.name === "play_game_move")?.title).toBe("Play game move");
+    expect(tools.tools.find((tool) => tool.name === "play_game_move")?.description).toContain("MOVE_CONFIRMED");
     expect(tools.tools.find((tool) => tool.name === "reset_game")?.title).toBe("Reset game");
     const createTool = tools.tools.find((tool) => tool.name === "create_game");
     for (const game of ["chess", "Reversi", "Tic-Tac-Toe", "Connect Four", "Go"]) {
@@ -91,47 +92,18 @@ describe("MCP game arena server", () => {
         && meta?.["openai/outputTemplate"] === undefined
         && JSON.stringify(meta?.ui?.visibility) === JSON.stringify(["model", "app"]);
     })).toBe(true);
+    expect(JSON.stringify(tools.tools).length).toBeLessThan(15_000);
     for (const tool of tools.tools) {
-      expect(tool.outputSchema).toMatchObject({ oneOf: expect.any(Array) });
-      const branches = (tool.outputSchema as unknown as { oneOf: Array<{
-        properties: {
-          kind: { const: string };
-          board?: { minItems?: number; maxItems?: number; items?: { minItems?: number; maxItems?: number } };
-          boardSize?: { const?: number };
-          difficulty?: { enum?: string[]; $ref?: string };
-          resetEpoch?: { type?: string; minimum?: number; $ref?: string };
-        };
-        required: string[];
-      }> }).oneOf;
-      expect(branches.map((branch) => branch.properties.kind.const).sort()).toEqual(["chess", "connect-four", "go", "go", "go", "reversi", "tic-tac-toe"]);
-      for (const [branchIndex, branch] of branches.entries()) {
-        expect(branch.required).toEqual(expect.arrayContaining(["board", "difficulty"]));
-        expect(branch.required).not.toContain("resetEpoch");
-        if (branchIndex === 0) {
-          expect(branch.properties.resetEpoch).toMatchObject({ type: "integer", minimum: 0 });
-        } else {
-          expect(branch.properties.resetEpoch).toEqual({ $ref: "#/oneOf/0/properties/resetEpoch" });
-        }
-      }
-      expect(branches.some((branch) => (
-        JSON.stringify(branch.properties.difficulty?.enum) === JSON.stringify(["easy", "medium", "hard"])
-      ))).toBe(true);
-      const goBranches = branches.filter((branch) => branch.properties.kind.const === "go");
-      expect(goBranches.map((branch) => branch.properties.boardSize?.const).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([9, 13, 19]);
-      for (const branch of goBranches) {
-        const boardSize = branch.properties.boardSize?.const;
-        expect(branch.required).toEqual(expect.arrayContaining(["board", "boardSize", "captures", "consecutivePasses"]));
-        expect(branch.properties.board).toMatchObject({
-          minItems: boardSize,
-          maxItems: boardSize,
-          items: { minItems: boardSize, maxItems: boardSize },
-        });
-      }
-      const ticTacToeBranch = branches.find((branch) => branch.properties.kind.const === "tic-tac-toe");
-      expect(ticTacToeBranch?.properties.board).toMatchObject({ minItems: 3, maxItems: 3, items: { minItems: 3, maxItems: 3 } });
-      const connectFourBranch = branches.find((branch) => branch.properties.kind.const === "connect-four");
-      expect(connectFourBranch?.properties.board).toMatchObject({ minItems: 6, maxItems: 6, items: { minItems: 7, maxItems: 7 } });
+      const outputSchema = tool.outputSchema as { type?: string; properties?: Record<string, unknown>; required?: string[] };
+      expect(outputSchema).toMatchObject({ type: "object", properties: { gameId: expect.any(Object), kind: expect.any(Object), difficulty: expect.any(Object), stateVersion: expect.any(Object), legalMoves: expect.any(Object) } });
+      expect(outputSchema.required).toEqual(expect.arrayContaining(["gameId", "kind", "difficulty", "playerColor", "turn", "status", "stateVersion", "legalMoves", "message"]));
+      expect(outputSchema.required).not.toContain("resetEpoch");
+      expect(outputSchema.properties).not.toHaveProperty("board");
+      expect(JSON.stringify(outputSchema)).not.toContain("boardSize");
     }
+    const playTool = tools.tools.find((tool) => tool.name === "play_game_move");
+    expect(playTool?.inputSchema).toMatchObject({ properties: { expectedResetEpoch: { type: "integer", minimum: 0 } } });
+    expect((playTool?.inputSchema as { required?: string[] }).required).not.toContain("expectedResetEpoch");
 
     const created = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
     expect(created.isError, JSON.stringify(created)).not.toBe(true);
@@ -164,7 +136,6 @@ describe("MCP game arena server", () => {
     const connectFourCreated = await client.callTool({ name: "create_game", arguments: { game: "connect-four", playerColor: "black" } });
     const connectFourSnapshot = connectFourCreated.structuredContent as Record<string, unknown>;
     expect(connectFourSnapshot).toMatchObject({ kind: "connect-four", difficulty: "medium" });
-    const connectFourBoard = connectFourSnapshot.board as unknown[][];
     expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, legalMoves: ["a"] }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, board: [] }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...connectFourSnapshot, winningLine: ["A1", "B1", "C1"] }).success).toBe(false);
@@ -176,7 +147,6 @@ describe("MCP game arena server", () => {
     const reversiSnapshot = reversiCreated.structuredContent as Record<string, unknown>;
     expect(reversiCreated.isError, JSON.stringify(reversiCreated)).not.toBe(true);
     expect(reversiSnapshot).toMatchObject({ kind: "reversi", score: { black: 2, white: 2 }, legalMoves: ["C4", "D3", "E6", "F5"] });
-    const reversiBoard = reversiSnapshot.board as unknown[][];
     const ajv = new Ajv({ strict: false });
     for (const tool of tools.tools) {
       const validate = ajv.compile(tool.outputSchema as object);
@@ -185,37 +155,19 @@ describe("MCP game arena server", () => {
       expect(validate(ticTacToeSnapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate(connectFourSnapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate(reversiSnapshot), JSON.stringify(validate.errors)).toBe(true);
-      expect(validate({ ...ticTacToeSnapshot, legalMoves: ["a1"] }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...ticTacToeSnapshot, legalMoves: ["D1"] }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...ticTacToeSnapshot, moveHistory: [ticMove], lastMove: ticMove }), JSON.stringify(validate.errors)).toBe(true);
-      expect(validate({ ...ticTacToeSnapshot, moveHistory: [{ ...ticMove, notation: "a1" }] }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...ticTacToeSnapshot, lastMove: { ...ticMove, notation: "D1" } }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...connectFourSnapshot, legalMoves: ["a"] }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...connectFourSnapshot, moveHistory: [connectMove], lastMove: connectMove }), JSON.stringify(validate.errors)).toBe(true);
-      expect(validate({ ...connectFourSnapshot, moveHistory: [{ ...connectMove, notation: "a" }] }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...connectFourSnapshot, lastMove: { ...connectMove, notation: "H" } }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...connectFourSnapshot, board: connectFourBoard.slice(1) }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...connectFourSnapshot, board: connectFourBoard.map((row, index) => index === 0 ? row.slice(1) : row) }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...connectFourSnapshot, winningLine: ["A1", "B1", "C1"] }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...connectFourSnapshot, winningLine: ["A1", "B1", "C1", "H1"] }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...reversiSnapshot, board: reversiBoard.slice(1) }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...reversiSnapshot, board: reversiBoard.map((row, index) => index === 0 ? row.slice(1) : row) }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...reversiSnapshot, board: reversiBoard.map((row, index) => index === 0 ? ["green", ...row.slice(1)] : row) }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...reversiSnapshot, legalMoves: ["a1"] }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...reversiSnapshot, moveHistory: [{ actor: "player", color: "black", notation: "pass", ply: 1 }] }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...reversiSnapshot, lastMove: { actor: "player", color: "black", notation: "A9", ply: 1 } }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...reversiSnapshot, score: { black: -1, white: 2 } }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...reversiSnapshot, score: { black: 2.5, white: 2 } }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...snapshot, kind: "go" }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...snapshot, internalSecret: "SECRET" }), JSON.stringify(validate.errors)).toBe(false);
+      // The published schema is intentionally only the compact common contract;
+      // success() below still enforces the complete strict game union.
+      expect(validate({ ...ticTacToeSnapshot, legalMoves: ["a1"] }), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...snapshot, kind: "secret" }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...snapshot, internalSecret: "SECRET" }), JSON.stringify(validate.errors)).toBe(true);
       expect(validate({ ...snapshot, difficulty: undefined }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, difficulty: "expert" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, resetEpoch: -1 }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, resetEpoch: 1.5 }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...goSnapshot, captures: { ...(goSnapshot.captures as object), secret: "SECRET" } }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...goSnapshot, board: goBoard.slice(1) }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...goSnapshot, board: goBoard.map((row, index) => index === 0 ? row.slice(1) : row) }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...goSnapshot, boardSize: 13 }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...snapshot, stateVersion: -1 }), JSON.stringify(validate.errors)).toBe(false);
+      const missingGameId = { ...snapshot };
+      delete (missingGameId as { gameId?: unknown }).gameId;
+      expect(validate(missingGameId), JSON.stringify(validate.errors)).toBe(false);
     }
     expect(gameSnapshotSchema.safeParse({ ...goSnapshot, captures: { ...(goSnapshot.captures as object), secret: "SECRET" } }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...goSnapshot, difficulty: undefined }).success).toBe(false);
@@ -253,15 +205,17 @@ describe("MCP game arena server", () => {
     const render = await client.callTool({ name: "render_game", arguments: { gameId: snapshot.gameId } });
     expect(render.structuredContent).toEqual(snapshot);
     const played = await client.callTool({ name: "play_game_move", arguments: {
-      gameId: snapshot.gameId, actor: "player", move: "e2e4", expectedVersion: 0,
+      gameId: snapshot.gameId, actor: "player", move: "e2e4", expectedVersion: 0, expectedResetEpoch: 0,
     } });
     expect(played.isError).not.toBe(true);
+    expect(played.content).toEqual([{ type: "text", text: `MOVE_CONFIRMED ${JSON.stringify({ gameId: snapshot.gameId, resetEpoch: 0, actor: "player", move: "e2e4", previousVersion: 0, stateVersion: 1 })}` }]);
     const state = await client.callTool({ name: "get_game_state", arguments: { gameId: snapshot.gameId } });
     expect(state.structuredContent).toEqual(played.structuredContent);
     const stale = await client.callTool({ name: "play_game_move", arguments: {
-      gameId: snapshot.gameId, actor: "gpt", move: "e7e5", expectedVersion: 0,
+      gameId: snapshot.gameId, actor: "gpt", move: "e7e5", expectedVersion: 0, expectedResetEpoch: 0,
     } });
-    expect(stale).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("stale_version") }] });
+    expect(stale).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/^MOVE_NOT_APPLIED stale_version:/) }] });
+    expect(JSON.stringify(stale)).not.toContain("MOVE_CONFIRMED");
     const missing = await client.callTool({ name: "get_game_state", arguments: { gameId: "missing" } });
     expect(missing).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("not_found") }] });
     const reset = await client.callTool({ name: "reset_game", arguments: { gameId: snapshot.gameId } });
@@ -272,6 +226,12 @@ describe("MCP game arena server", () => {
       resetEpoch: 1,
       moveHistory: [],
     });
+    const omittedEpochAfterReset = await client.callTool({ name: "play_game_move", arguments: {
+      gameId: snapshot.gameId, actor: "player", move: "e2e4", expectedVersion: 0,
+    } });
+    expect(omittedEpochAfterReset).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/^MOVE_NOT_APPLIED stale_version:/) }] });
+    const stateAfterRejectedResetMove = await client.callTool({ name: "get_game_state", arguments: { gameId: snapshot.gameId } });
+    expect(stateAfterRejectedResetMove.structuredContent).toMatchObject({ resetEpoch: 1, stateVersion: 0, moveHistory: [] });
     const invalid = await client.callTool({ name: "get_game_state", arguments: { gameId: "" } });
     expect(invalid.isError).toBe(true);
 
@@ -308,6 +268,41 @@ describe("MCP game arena server", () => {
     const result = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
     expect(result).toEqual({ isError: true, content: [{ type: "text", text: "internal_error: Internal server error." }] });
     expect(JSON.stringify(result)).not.toContain("SECRET_SERVICE_VALUE");
+    await Promise.all([client.close(), server.close()]);
+  });
+
+  it("marks unexpected play failures as unconfirmed without leaking details", async () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({ game: "chess", playerColor: "white" });
+    vi.spyOn(service, "playGameMove").mockImplementation(() => { throw new Error("SECRET_PLAY_FAILURE"); });
+    const server = createMcpServer(service);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const result = await client.callTool({ name: "play_game_move", arguments: {
+      gameId: created.gameId, actor: "player", move: "e2e4", expectedVersion: 0, expectedResetEpoch: 0,
+    } });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "MOVE_CONFIRMATION_UNKNOWN internal_error: Internal server error." }] });
+    expect(JSON.stringify(result)).not.toContain("SECRET_PLAY_FAILURE");
+    expect(service.getGameState({ gameId: created.gameId })).toMatchObject({ stateVersion: 0, moveHistory: [] });
+    await Promise.all([client.close(), server.close()]);
+  });
+
+  it("uses an unconfirmed marker if output validation fails after a move committed", async () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({ game: "chess", playerColor: "white" });
+    const play = service.playGameMove.bind(service);
+    vi.spyOn(service, "playGameMove").mockImplementation(input => ({ ...play(input), internalSecret: "SECRET_POST_COMMIT" } as unknown as ReturnType<ToolService["playGameMove"]>));
+    const server = createMcpServer(service);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const result = await client.callTool({ name: "play_game_move", arguments: {
+      gameId: created.gameId, actor: "player", move: "e2e4", expectedVersion: 0, expectedResetEpoch: 0,
+    } });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "MOVE_CONFIRMATION_UNKNOWN internal_error: Internal server error." }] });
+    expect(JSON.stringify(result)).not.toContain("SECRET_POST_COMMIT");
+    expect(service.getGameState({ gameId: created.gameId })).toMatchObject({ stateVersion: 1, moveHistory: [{ notation: "e2e4" }] });
     await Promise.all([client.close(), server.close()]);
   });
 
