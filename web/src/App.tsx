@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { GameBridge } from "./bridge";
 import { GameClient, isSnapshot } from "./game-client";
 import { ChessBoard } from "./components/ChessBoard";
@@ -32,11 +32,18 @@ type ChatGptHost = {
   toolOutput?: unknown;
   initialState?: unknown;
   widgetState?: unknown;
+  maxHeight?: unknown;
   setWidgetState?: (state: unknown) => void | Promise<void>;
 };
 
 function chatGptHost(): ChatGptHost | undefined {
   return (window as Window & { openai?: ChatGptHost }).openai;
+}
+
+function maxHeightFrom(value: unknown): number | undefined {
+  if (!value || typeof value !== "object") return;
+  const maxHeight = (value as { maxHeight?: unknown }).maxHeight;
+  return typeof maxHeight === "number" && Number.isFinite(maxHeight) && maxHeight > 0 ? Math.round(maxHeight) : undefined;
 }
 
 function snapshotFromHost(candidate: unknown): GameSnapshot | undefined {
@@ -91,6 +98,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const [selected, setSelected] = useState<string>();
   const [gamePreset, setGamePreset] = useState<GamePreset>(() => presetFor(initialSnapshot));
   const [difficultyPreset, setDifficultyPreset] = useState<GameDifficulty>(() => initialSnapshot?.difficulty ?? "medium");
+  const [hostMaxHeight, setHostMaxHeight] = useState<number | undefined>(() => maxHeightFrom(chatGptHost()));
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string>();
@@ -184,7 +192,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
         void action(() => Promise.resolve(next), gptTurn);
       }
     });
-    const context = bridge.onHostContext(() => undefined);
+    const context = bridge.onHostContext(value => setHostMaxHeight(maxHeightFrom(value) ?? maxHeightFrom(chatGptHost())));
     if (bridge.embedded) void bridge.initialize().catch(() => { if (alive && epoch.current === initEpoch) setError("Could not initialize the game host."); });
     return () => {
       alive = false;
@@ -266,7 +274,8 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   }, [busy, difficultyPreset, error, game, gamePreset, selected, starting]);
   const disabled = busy || game?.status === "finished" || game?.turn !== game?.playerColor;
   const hostHydrating = bridge.embedded && !game && !error;
-  return <main className="arena"><header><h1><span>GPT</span> GAME <em>ARENA</em></h1>{!hostHydrating && <form className="new-game-picker" aria-busy={starting} onSubmit={event => { event.preventDefault(); void startGame(); }}><label className="picker-field" htmlFor="game-preset"><span>NEW GAME</span><select id="game-preset" value={gamePreset} disabled={starting} onChange={event => setGamePreset(event.target.value as GamePreset)}>{gamePresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label><label className="picker-field" htmlFor="difficulty-preset"><span>DIFFICULTY</span><select id="difficulty-preset" value={difficultyPreset} disabled={starting} onChange={event => setDifficultyPreset(event.target.value as GameDifficulty)}>{difficultyPresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label><button className="primary" type="submit" disabled={starting}>{starting ? "Starting…" : "Start game"}</button></form>}</header>{hostHydrating && <p className="game-status" role="status">Loading game…</p>}{error && <p className="error" role="alert">{error}</p>}{game && <section className="table"><GameChrome game={game}/><div className="board-column">{game.kind === "chess" ? <ChessBoard game={game} selected={selected} onSquare={chessSquare} disabled={disabled}/> : game.kind === "go" ? <GoBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "tic-tac-toe" ? <TicTacToeBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "reversi" ? <ReversiBoard game={game} onMove={humanMove} disabled={disabled}/> : <ConnectFourBoard game={game} onMove={humanMove} disabled={disabled}/>}<div className="controls">{game.kind === "go" && <button disabled={disabled} onClick={() => humanMove("pass")}>⊘ Pass</button>}<button className="primary" disabled={busy} onClick={() => void action(() => client.reset(game.gameId), undefined, false, game.gameId)}>⟳ Reset</button><button disabled={busy} onClick={() => void action(() => client.state(game.gameId), gptTurn)}>⟳ Refresh</button></div>{game.kind === "go" && <p className="captures">Captures — Black: {game.captures.black}, White: {game.captures.white}</p>}{game.kind === "reversi" && <p className="captures">Disks — Black: {game.score.black}, White: {game.score.white}</p>}<p className="game-status" role="status">{game.winner ? `Winner: ${game.winner}` : game.lastMove ? `Last move: ${game.lastMove.notation}` : "Choose a piece to begin."}</p></div></section>}</main>;
+  const arenaStyle = hostMaxHeight ? { "--host-max-height": `${hostMaxHeight}px` } as CSSProperties : undefined;
+  return <main className="arena" style={arenaStyle}><header><h1><span>GPT</span> GAME <em>ARENA</em></h1>{!hostHydrating && <form className="new-game-picker" aria-busy={starting} onSubmit={event => { event.preventDefault(); void startGame(); }}><label className="picker-field" htmlFor="game-preset"><span>NEW GAME</span><select id="game-preset" value={gamePreset} disabled={starting} onChange={event => setGamePreset(event.target.value as GamePreset)}>{gamePresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label><label className="picker-field" htmlFor="difficulty-preset"><span>DIFFICULTY</span><select id="difficulty-preset" value={difficultyPreset} disabled={starting} onChange={event => setDifficultyPreset(event.target.value as GameDifficulty)}>{difficultyPresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label><button className="primary" type="submit" disabled={starting}>{starting ? "Starting…" : "Start game"}</button></form>}</header>{hostHydrating && <p className="game-status" role="status">Loading game…</p>}{error && <p className="error" role="alert">{error}</p>}{game && <section className="table"><GameChrome game={game}/><div className="board-column">{game.kind === "chess" ? <ChessBoard game={game} selected={selected} onSquare={chessSquare} disabled={disabled}/> : game.kind === "go" ? <GoBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "tic-tac-toe" ? <TicTacToeBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "reversi" ? <ReversiBoard game={game} onMove={humanMove} disabled={disabled}/> : <ConnectFourBoard game={game} onMove={humanMove} disabled={disabled}/>}<div className="controls">{game.kind === "go" && <button disabled={disabled} onClick={() => humanMove("pass")}>⊘ Pass</button>}<button className="primary" disabled={busy} onClick={() => void action(() => client.reset(game.gameId), undefined, false, game.gameId)}>⟳ Reset</button><button disabled={busy} onClick={() => void action(() => client.state(game.gameId), gptTurn)}>⟳ Refresh</button></div>{game.kind === "go" && <p className="captures">Captures — Black: {game.captures.black}, White: {game.captures.white}</p>}{game.kind === "reversi" && <p className="captures">Disks — Black: {game.score.black}, White: {game.score.white}</p>}<p className="game-status" role="status">{game.winner ? `Winner: ${game.winner}` : game.lastMove ? `Last move: ${game.lastMove.notation}` : "Choose a piece to begin."}</p></div></section>}</main>;
 }
 
 function gameTextState(game: GameSnapshot | undefined, gamePreset: GamePreset, difficultyPreset: GameDifficulty, busy: boolean, starting: boolean, selected: string | undefined, error: string | undefined) {

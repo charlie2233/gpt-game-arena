@@ -45,8 +45,8 @@ describe("App", () => {
     expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Start game" }));
     expect(await screen.findByRole("group", { name: "19 by 19 Go board" })).toBeVisible();
-    expect(screen.getByRole("region", { name: "19 by 19 Go board viewport" })).toHaveAttribute("tabindex", "0");
-    expect(screen.getByText("Scroll to explore the full 19×19 board.")).toBeVisible();
+    expect(screen.queryByRole("region", { name: "19 by 19 Go board viewport" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Scroll to explore the full 19×19 board.")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play at A19, empty, legal move" })).toBeEnabled();
     expect(picker).toHaveValue("go-19");
     expect(fetch).toHaveBeenLastCalledWith("/api/tools/create_game", expect.objectContaining({ body: '{"game":"go","playerColor":"black","difficulty":"medium","boardSize":19}' }));
@@ -235,6 +235,16 @@ describe("App", () => {
     expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ method: "ui/message", params: expect.objectContaining({ content: [expect.objectContaining({ text: expect.stringMatching(/HARD difficulty.*get_game_state.*exactly one string.*same freshly fetched snapshot/i) })] }) }), "*"); expect(screen.getByText("GPT thinking…")).toBeVisible(); expect(screen.getByRole("button", { name: /white pawn on e2/i })).toBeDisabled(); await vi.advanceTimersByTimeAsync(1_000); window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 4, error: { message: "temporary" } } })); await vi.advanceTimersByTimeAsync(1_000); await respond(5, { structuredContent: newer }); await vi.advanceTimersByTimeAsync(0); expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeEnabled(); bridge.dispose(); vi.useRealTimers();
   });
   it("disables board interactions while GPT owns the turn", () => { render(<App initialGame={{ ...chess(), turn: "black" }}/>); expect(screen.getByRole("button", { name: /white pawn on e2/i })).toBeDisabled(); });
+  it("tracks the ChatGPT host maximum height for responsive board sizing", async () => {
+    const target = { postMessage: vi.fn() } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    render(<App bridge={bridge} initialGame={chess()}/>);
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: { hostCapabilities: { serverTools: {}, message: {} }, hostContext: { maxHeight: 640 } } } }));
+    await waitFor(() => expect(document.querySelector("main.arena")).toHaveStyle("--host-max-height: 640px"));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { maxHeight: 520 } } }));
+    await waitFor(() => expect(document.querySelector("main.arena")).toHaveStyle("--host-max-height: 520px"));
+    bridge.dispose();
+  });
   it("ignores a superseded stale human completion", async () => {
     let resolveOld!: (value: Response) => void; const old = new Promise<Response>(resolve => { resolveOld = resolve; }); const user = userEvent.setup(); vi.mocked(fetch).mockReturnValueOnce(old).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: go() }) } as Response);
     render(<App initialGame={chess()}/>); await user.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i })); await user.click(screen.getByRole("button", { name: /empty e4, legal destination/i })); await user.selectOptions(screen.getByRole("combobox", { name: "NEW GAME" }), "go-9"); await user.click(screen.getByRole("button", { name: "Start game" })); await screen.findByRole("button", { name: /Play at A9, empty, legal move/i }); resolveOld({ ok: true, json: async () => ({ structuredContent: { ...chess(99), turn: "black" } }) } as Response); await Promise.resolve(); await Promise.resolve(); expect(screen.getByRole("group", { name: /go board/i })).toBeVisible(); expect(fetch).toHaveBeenCalledTimes(2);

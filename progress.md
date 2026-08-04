@@ -35,6 +35,20 @@ Original prompt: also implement select difficuktuy
 - Historical gate: deploy the then-current v2 widget over public HTTPS and refresh ChatGPT app metadata.
 - Run an actual ChatGPT-host smoke test and the documented Node 18 compatibility smoke.
 
+## Compact responsive boards
+
+### Original prompt
+
+- make the chess plate smaller for those exceeding the screen, kinda like tencent go app u know, the screen is definitely big enough
+
+### Completed
+
+- [x] Reproduced the 1280×720 chess board extending below the browser viewport.
+- [x] Added a centered, height-aware board rail capped at 34rem on wide desktops and 26rem in ChatGPT-sized panes.
+- [x] Removed forced nested scrolling from 13×13 and 19×19 Go so the full board scales as one overview.
+- [x] Added ChatGPT `maxHeight` handling and bumped the widget cache URI to v10.
+- [x] Passed 166 automated tests, typecheck, build, a 21-case responsive matrix, and a hosted ChatGPT chess turn with the full 416px board visible (`e2e4`, then GPT `e7e5`, no 502).
+
 ## Add more games
 
 ### Objective

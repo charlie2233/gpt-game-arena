@@ -14,7 +14,7 @@ import {
 } from "./tool-contracts.js";
 import { ToolService } from "./tool-service.js";
 
-export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v7/widget.html";
+export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v10/widget.html";
 export const WIDGET_DESCRIPTION = "An interactive chess, Reversi, Tic-Tac-Toe, Connect Four, or 9x9, 13x13, or 19x19 Go board for playing turn by turn against GPT.";
 export type WidgetLoader = () => string | undefined | Promise<string | undefined>;
 
