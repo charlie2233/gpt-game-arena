@@ -1,4 +1,5 @@
 import { ChessGame } from "./domain/chess-game.js";
+import { GameRuleError } from "./domain/errors.js";
 import { ConnectFourGame } from "./domain/connect-four-game.js";
 import { GoGame } from "./domain/go-game.js";
 import { ReversiGame } from "./domain/reversi-game.js";
@@ -27,9 +28,16 @@ export interface GameSessionDescriptor {
 }
 
 export interface GameSessionMove {
+  type: "move";
   actor: GameActor;
   move: string;
 }
+
+export interface GameSessionEnd {
+  type: "end";
+}
+
+export type GameSessionEvent = GameSessionMove | GameSessionEnd;
 
 export function createGameSession(descriptor: GameSessionDescriptor): GameSession {
   const {
@@ -70,12 +78,15 @@ export function descriptorFromSnapshot(snapshot: GameSnapshot): GameSessionDescr
 
 export function replayGameSession(
   descriptor: GameSessionDescriptor,
-  moves: readonly GameSessionMove[],
+  events: readonly GameSessionEvent[],
 ): GameSession {
-  const session = createGameSession(descriptor);
-  moves.forEach(({ actor, move }, expectedVersion) => {
-    session.play(actor, move, expectedVersion);
-  });
+  let session = createGameSession(descriptor);
+  for (const event of events) {
+    const expectedVersion = session.snapshot().stateVersion;
+    session = event.type === "move"
+      ? playEvent(session, event, expectedVersion)
+      : endGameSession(session, expectedVersion);
+  }
   return session;
 }
 
@@ -83,8 +94,62 @@ export function cloneGameSession(session: GameSession): GameSession {
   const snapshot = session.snapshot();
   return replayGameSession(
     descriptorFromSnapshot(snapshot),
-    snapshot.moveHistory.map(({ actor, notation }) => ({ actor, move: notation })),
+    eventsFromSnapshot(snapshot),
   );
+}
+
+export function endGameSession(
+  session: GameSession,
+  expectedVersion: number,
+): GameSession {
+  const snapshot = session.snapshot();
+  if (snapshot.status === "finished") {
+    throw new GameRuleError("game_finished", "This game has already finished.");
+  }
+  if (expectedVersion !== snapshot.stateVersion) {
+    throw new GameRuleError("stale_version", "The supplied game version is stale.");
+  }
+  return new EndedGameSession(endedSnapshot(snapshot));
+}
+
+function eventsFromSnapshot(snapshot: GameSnapshot): GameSessionEvent[] {
+  const events: GameSessionEvent[] = snapshot.moveHistory.map(({ actor, notation }) => ({
+    type: "move",
+    actor,
+    move: notation,
+  }));
+  if (snapshot.finishReason === "ended") {
+    events.push({ type: "end" });
+  }
+  return events;
+}
+
+function playEvent(session: GameSession, event: GameSessionMove, expectedVersion: number): GameSession {
+  session.play(event.actor, event.move, expectedVersion);
+  return session;
+}
+
+class EndedGameSession implements GameSession {
+  constructor(private readonly value: GameSnapshot) {}
+
+  snapshot(): GameSnapshot {
+    return structuredClone(this.value);
+  }
+
+  play(): never {
+    throw new GameRuleError("game_finished", "This game has already finished.");
+  }
+}
+
+function endedSnapshot(snapshot: GameSnapshot): GameSnapshot {
+  return {
+    ...snapshot,
+    status: "finished" as const,
+    finishReason: "ended" as const,
+    legalMoves: [],
+    stateVersion: snapshot.stateVersion + 1,
+    message: "Game ended.",
+  };
 }
 
 function unhandledGameKind(kind: never): never {

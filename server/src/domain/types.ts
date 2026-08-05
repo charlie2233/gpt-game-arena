@@ -24,6 +24,8 @@ export interface BaseGameSnapshot {
   turn: StoneColor;
   status: GameStatus;
   winner?: StoneColor | "draw";
+  /** Present only when the player explicitly ended the game. */
+  finishReason?: "ended";
   legalMoves: string[];
   moveHistory: MoveRecord[];
   lastMove?: MoveRecord;

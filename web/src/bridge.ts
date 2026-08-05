@@ -86,8 +86,11 @@ export class GameBridge {
   private async rest<N extends ToolName>(name: N, input: ToolInput[N]): Promise<ToolResult> {
     let response: Response;
     try { response = await fetch(`/api/tools/${name}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) }); } catch { throw new Error("Could not reach the local game service."); }
-    const body = await response.json().catch(() => undefined) as ToolResult & { error?: { message?: string } } | undefined;
-    if (!response.ok || !body || body.isError) throw new Error(body?.error?.message || body?.content?.[0]?.text || "Game service request failed.");
+    const body = await response.json().catch(() => undefined) as ToolResult & { error?: { code?: string; message?: string } } | undefined;
+    if (!response.ok || !body || body.isError) {
+      const message = body?.error?.message || body?.content?.[0]?.text || "Game service request failed.";
+      throw new Error(body?.error?.code ? `${body.error.code}: ${message}` : message);
+    }
     return body;
   }
 }

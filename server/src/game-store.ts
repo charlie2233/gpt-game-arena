@@ -40,12 +40,24 @@ const persistedMoveSchema = z.object({
   move: z.string().min(1).max(32),
 }).strict();
 
+const persistedEndSchema = z.object({
+  type: z.literal("end"),
+}).strict();
+
+const persistedEventSchema = z.discriminatedUnion("type", [persistedMoveSchema, persistedEndSchema]);
+const persistedEventsSchema = z.array(persistedEventSchema).max(maxPersistedEvents).superRefine((events, context) => {
+  const firstEnd = events.findIndex(event => event.type === "end");
+  if (firstEnd >= 0 && (firstEnd !== events.length - 1 || events.some((event, index) => index > firstEnd && event.type === "end"))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "The end event must occur once and be terminal." });
+  }
+});
+
 const persistedSessionBaseSchema = z.object({
   gameId: z.string().min(1).max(256),
   playerColor: z.enum(["white", "black"]),
   difficulty: z.enum(["easy", "medium", "hard"]),
   resetEpoch: z.number().int().nonnegative().optional(),
-  events: z.array(persistedMoveSchema).max(maxPersistedEvents),
+  events: persistedEventsSchema,
   lastAccessedAt: z.number().int().nonnegative(),
 });
 
@@ -70,16 +82,20 @@ type PersistedSession = z.infer<typeof persistedSessionSchema>;
 
 function persistedSessionFromStored({ session, lastAccessedAt }: StoredSession): PersistedSession {
   const snapshot = session.snapshot();
+  const events: z.infer<typeof persistedEventSchema>[] = snapshot.moveHistory.map(({ actor, notation }) => ({
+    type: "move",
+    actor,
+    move: notation,
+  }));
+  if (snapshot.finishReason === "ended") {
+    events.push({ type: "end" });
+  }
   const common = {
     gameId: snapshot.gameId,
     playerColor: snapshot.playerColor,
     difficulty: snapshot.difficulty,
     resetEpoch: snapshot.resetEpoch ?? 0,
-    events: snapshot.moveHistory.map(({ actor, notation }) => ({
-      type: "move" as const,
-      actor,
-      move: notation,
-    })),
+    events,
     lastAccessedAt,
   };
 
@@ -223,7 +239,9 @@ export class GameStore {
             resetEpoch: record.resetEpoch ?? 0,
             ...(record.kind === "go" ? { boardSize: record.boardSize } : {}),
           },
-          record.events.map(({ actor, move }) => ({ actor, move })),
+          record.events.map(event => event.type === "move"
+            ? { type: "move", actor: event.actor, move: event.move }
+            : { type: "end" }),
         );
         this.sessions.set(record.gameId, { session, lastAccessedAt: record.lastAccessedAt });
       }

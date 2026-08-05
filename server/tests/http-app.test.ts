@@ -2,7 +2,7 @@ import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
 import { createHttpApp, FixedWindowLimiter } from "../src/http-app.js";
-import { WIDGET_RESOURCE_URI } from "../src/mcp-server.js";
+import { LEGACY_WIDGET_RESOURCE_URIS, WIDGET_RESOURCE_URI } from "../src/mcp-server.js";
 import { toolInputSchemas } from "../src/tool-contracts.js";
 import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
@@ -56,6 +56,23 @@ describe("HTTP game arena app", () => {
     expect(played.status).toBe(200);
     const state = await request(app).post("/api/tools/get_game_state").send({ gameId });
     expect(state.body.structuredContent).toEqual(played.body.structuredContent);
+    const unconfirmed = await request(app).post("/api/tools/end_game").send({
+      gameId, confirmed: false, expectedVersion: 1, expectedResetEpoch: 0,
+    });
+    expect(unconfirmed.status).toBe(400);
+    const staleEnd = await request(app).post("/api/tools/end_game").send({
+      gameId, confirmed: true, expectedVersion: 0, expectedResetEpoch: 0,
+    });
+    expect(staleEnd.status).toBe(409);
+    expect(service.getGameState({ gameId })).toEqual(played.body.structuredContent);
+    const ended = await request(app).post("/api/tools/end_game").send({
+      gameId, confirmed: true, expectedVersion: 1, expectedResetEpoch: 0,
+    });
+    expect(ended.status).toBe(200);
+    expect(ended.body.content[0].text).toMatch(/^END_CONFIRMED /);
+    expect(ended.body.structuredContent).toMatchObject({
+      gameId, status: "finished", finishReason: "ended", stateVersion: 2, legalMoves: [], message: "Game ended.",
+    });
     const reset = await request(app).post("/api/tools/reset_game").send({ gameId });
     expect(reset.body.structuredContent).toMatchObject({ gameId, difficulty: "medium", stateVersion: 0, moveHistory: [] });
   });
@@ -162,6 +179,7 @@ describe("HTTP game arena app", () => {
       create_game: { game: "chess", playerColor: "white" },
       get_game_state: { gameId: "game" },
       play_game_move: { gameId: "game", actor: "player", move: "e2e4", expectedVersion: 0 },
+      end_game: { gameId: "game", confirmed: true, expectedVersion: 0, expectedResetEpoch: 0 },
       reset_game: { gameId: "game" },
       render_game: { gameId: "game" },
     } as const;
@@ -187,7 +205,7 @@ describe("HTTP game arena app", () => {
     expect(initialize.body.result.serverInfo.name).toBe("gpt-game-arena");
     const list = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
     expect(list.status).toBe(200);
-    expect(list.body.result.tools).toHaveLength(5);
+    expect(list.body.result.tools).toHaveLength(6);
     const call = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
       jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "create_game", arguments: { game: "go", playerColor: "black", boardSize: 13, difficulty: "hard" } },
     });
@@ -293,8 +311,18 @@ describe("HTTP game arena app", () => {
     expect(resource.text).not.toContain("SECRET_LOADER_VALUE");
     expect(resource.body.result.contents[0].text).toContain("npm run build --workspace web");
 
+    const legacyResource = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
+      jsonrpc: "2.0", id: 5, method: "resources/read", params: { uri: LEGACY_WIDGET_RESOURCE_URIS[0] },
+    });
+    expect(legacyResource.status).toBe(200);
+    expect(legacyResource.text).not.toContain("SECRET_LOADER_VALUE");
+    expect(legacyResource.body.result.contents[0]).toMatchObject({
+      uri: LEGACY_WIDGET_RESOURCE_URIS[0],
+      text: expect.stringContaining("npm run build --workspace web"),
+    });
+
     const mcpTool = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
-      jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "create_game", arguments: { game: "chess", playerColor: "white" } },
+      jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "create_game", arguments: { game: "chess", playerColor: "white" } },
     });
     expect(mcpTool.status).toBe(200);
     expect(mcpTool.body.result).toEqual({ isError: true, content: [{ type: "text", text: "internal_error: Internal server error." }] });

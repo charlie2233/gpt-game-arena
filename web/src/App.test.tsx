@@ -237,7 +237,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>); fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i })); fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
     const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
     await respond(1, { hostCapabilities: { serverTools: {}, message: {} } }); await vi.advanceTimersByTimeAsync(0); await respond(2, { structuredContent: after }); await vi.advanceTimersByTimeAsync(0); await respond(3, {});
-    expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ method: "ui/message", params: expect.objectContaining({ content: [expect.objectContaining({ text: expect.stringMatching(/FAST_TURN.*"expectedResetEpoch":0.*"expectedVersion":1.*candidateMoves.*Do not call get_game_state.*MOVE_CONFIRMED/i) })] }) }), "*"); expect(screen.getByText("GPT thinking…")).toBeVisible(); expect(screen.getByRole("button", { name: /white pawn on e2/i })).toBeDisabled(); await vi.advanceTimersByTimeAsync(2_000); window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 4, error: { message: "temporary" } } })); await vi.advanceTimersByTimeAsync(3_000); await respond(5, { structuredContent: newer }); await vi.advanceTimersByTimeAsync(0); expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeEnabled(); bridge.dispose(); vi.useRealTimers();
+    expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ method: "ui/message", params: expect.objectContaining({ content: [expect.objectContaining({ text: expect.stringMatching(/FAST_TURN.*"expectedResetEpoch":0.*"expectedVersion":1.*candidateMoves.*Do not call get_game_state.*MOVE_CONFIRMED/i) })] }) }), "*"); expect(screen.getByText("GPT thinking…")).toBeVisible(); expect(screen.getByRole("button", { name: /white pawn on e2/i })).toBeDisabled(); const endWhileThinking = screen.getByRole("button", { name: "End game" }); expect(endWhileThinking).toBeEnabled(); expect(JSON.parse(window.render_game_to_text!()).endGame).toMatchObject({ available: true, enabled: true }); fireEvent.click(endWhileThinking); const thinkingDialog = screen.getByRole("alertdialog", { name: "End this game?" }); expect(within(thinkingDialog).getByRole("button", { name: "End game" })).toBeEnabled(); fireEvent.click(within(thinkingDialog).getByRole("button", { name: "Keep playing" })); expect(screen.getByRole("button", { name: "End game" })).toBeEnabled(); await vi.advanceTimersByTimeAsync(2_000); window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 4, error: { message: "temporary" } } })); await vi.advanceTimersByTimeAsync(3_000); await respond(5, { structuredContent: newer }); await vi.advanceTimersByTimeAsync(0); expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeEnabled(); bridge.dispose(); vi.useRealTimers();
   });
   it("keeps ChatGPT anchored and accepts an authoritative GPT move outside the prompt shortlist", async () => {
     vi.useFakeTimers();
@@ -467,8 +467,128 @@ describe("App", () => {
     await vi.advanceTimersByTimeAsync(0); const prompts = () => postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "ui/message"); expect(prompts()).toHaveLength(2); expect(prompts()[0][0]).toEqual(expect.objectContaining({ params: expect.objectContaining({ content: [expect.objectContaining({ text: expect.stringContaining('"gameId":"chess-1"') })] }) })); await respond(5, {}); await vi.advanceTimersByTimeAsync(2_000); await respond(6, { structuredContent: done }); await vi.advanceTimersByTimeAsync(0);
     expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeEnabled(); const directGptCalls = postMessage.mock.calls.filter(([request]) => { const value = request as { method?: string; params?: { arguments?: { actor?: string } } }; return value.method === "tools/call" && value.params?.arguments?.actor === "gpt"; }); expect(directGptCalls).toHaveLength(0); expect(prompts()).toHaveLength(2); bridge.dispose(); vi.useRealTimers();
   });
+  it("opens and cancels the inline end-game confirmation without calling the service", async () => {
+    const user = userEvent.setup();
+    render(<App initialGame={{ ...chess(4), resetEpoch: 2 }}/>);
+
+    await user.click(screen.getByRole("button", { name: "End game" }));
+
+    const dialog = screen.getByRole("alertdialog", { name: "End this game?" });
+    expect(dialog).toHaveTextContent("The board will be frozen. Reset or start a New Game afterward.");
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    const keepPlaying = within(dialog).getByRole("button", { name: "Keep playing" });
+    const confirmEnd = within(dialog).getByRole("button", { name: "End game" });
+    expect(keepPlaying).toHaveFocus();
+    expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "DIFFICULTY" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
+    confirmEnd.focus();
+    fireEvent.keyDown(dialog, { key: "Tab" });
+    expect(keepPlaying).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    expect(confirmEnd).toHaveFocus();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(JSON.parse(window.render_game_to_text!()).endGame).toMatchObject({ available: true, enabled: true, confirmation: { gameId: "chess-1", expectedVersion: 4, expectedResetEpoch: 2 } });
+
+    await user.click(within(dialog).getByRole("button", { name: "Keep playing" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "End game" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "End game" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toBeEnabled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("confirms end_game with the captured version and renders only the authoritative finish", async () => {
+    const user = userEvent.setup();
+    const start = { ...chess(4), resetEpoch: 2 };
+    const ended: ChessSnapshot = { ...start, status: "finished", finishReason: "ended", legalMoves: [], stateVersion: 5, message: "Game ended." };
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: ended }) } as Response);
+    render(<App initialGame={start}/>);
+
+    await user.click(screen.getByRole("button", { name: "End game" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "End game" }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Game ended."));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith("/api/tools/end_game", expect.objectContaining({ body: '{"gameId":"chess-1","confirmed":true,"expectedVersion":4,"expectedResetEpoch":2}' }));
+    expect(screen.queryByRole("button", { name: "End game" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reset/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /refresh/i })).toBeEnabled();
+    expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ mode: "finished", endGame: { available: false, confirmation: null }, game: { finishReason: "ended", message: "Game ended.", stateVersion: 5 } });
+  });
+  it("keeps the active board when a stale end request is rejected", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false, json: async () => ({ error: { code: "stale_version", message: "The requested game operation could not be completed." } }) } as Response);
+    render(<App initialGame={chess(3)}/>);
+
+    await user.click(screen.getByRole("button", { name: "End game" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "End game" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("stale_version");
+    expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "End game" })).toBeEnabled();
+    expect(JSON.parse(window.render_game_to_text!()).mode).toBe("active");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("reconciles one ambiguous end result with exactly one authoritative state read", async () => {
+    const user = userEvent.setup();
+    const start = { ...chess(6), resetEpoch: 3 };
+    const ended: ChessSnapshot = { ...start, status: "finished", finishReason: "ended", legalMoves: [], stateVersion: 7, message: "Game ended." };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ isError: true, content: [{ type: "text", text: "END_CONFIRMATION_UNKNOWN: response lost" }] }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: ended }) } as Response);
+    render(<App initialGame={start}/>);
+
+    await user.click(screen.getByRole("button", { name: "End game" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "End game" }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Game ended."));
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(["/api/tools/end_game", "/api/tools/get_game_state"]);
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[1][1] as RequestInit).body as string)).toEqual({ gameId: "chess-1" });
+  });
+  it("reconciles a generic transport failure after end_game without repeating the mutation", async () => {
+    const user = userEvent.setup();
+    const start = { ...chess(8), resetEpoch: 4 };
+    const ended: ChessSnapshot = { ...start, status: "finished", finishReason: "ended", legalMoves: [], stateVersion: 9, message: "Game ended." };
+    vi.mocked(fetch)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: ended }) } as Response);
+    render(<App initialGame={start}/>);
+
+    await user.click(screen.getByRole("button", { name: "End game" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "End game" }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Game ended."));
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(["/api/tools/end_game", "/api/tools/get_game_state"]);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === "/api/tools/end_game")).toHaveLength(1);
+  });
+  it("accepts an externally confirmed manual end while GPT polling is active", async () => {
+    vi.useFakeTimers();
+    const target = { postMessage: vi.fn() } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const start = chess(0, "hard");
+    const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move.");
+    const ended: ChessSnapshot = { ...after, status: "finished", finishReason: "ended", legalMoves: [], stateVersion: 2, message: "Game ended." };
+    const reply = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await vi.advanceTimersByTimeAsync(0); };
+    render(<App bridge={bridge} initialGame={start}/>);
+    fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
+    fireEvent.click(screen.getByRole("button", { name: /empty e4/i }));
+    await reply(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await reply(2, { structuredContent: after });
+    await reply(3, {});
+
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: ended } } }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Game ended.");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("GPT move not confirmed")).not.toBeInTheDocument();
+    bridge.dispose();
+    await vi.advanceTimersByTimeAsync(0);
+  });
   it("renders Reversi score, winning highlights, and deterministic text rows for every new board", () => {
     const finished: TicTacToeSnapshot = { ...tic(), turn: "black", status: "finished", winner: "black", legalMoves: [], moveHistory: [{ actor: "player", color: "black", notation: "A3", ply: 1 }, { actor: "gpt", color: "white", notation: "A2", ply: 2 }, { actor: "player", color: "black", notation: "B3", ply: 3 }, { actor: "gpt", color: "white", notation: "B2", ply: 4 }, { actor: "player", color: "black", notation: "C3", ply: 5 }], lastMove: { actor: "player", color: "black", notation: "C3", ply: 5 }, stateVersion: 5, message: "Black wins.", board: [["black", "black", "black"], ["white", "white", null], [null, null, null]], winningLine: ["A3", "B3", "C3"] };
-    expect(isSnapshot(finished)).toBe(true); render(<App initialGame={finished}/>); expect(screen.getByRole("button", { name: /A3, X/i })).toHaveClass("winning"); expect(screen.getByRole("status")).toHaveTextContent("Winner: black"); const ticText = JSON.parse(window.render_game_to_text!()); expect(ticText.coordinateSystem).toBe("Tic-Tac-Toe columns A-C run left-to-right and ranks 3-1 run top-to-bottom."); expect(ticText.game).toMatchObject({ status: "finished", winner: "black", stateVersion: 5, message: "Black wins.", lastMove: { actor: "player", color: "black", notation: "C3", ply: 5 }, legalMoves: [], board: ["BBB", "WW.", "..."], winningLine: ["A3", "B3", "C3"] }); cleanup(); const opening = reversi(); render(<App initialGame={opening}/>); expect(screen.getByText("Disks — Black: 2, White: 2")).toBeVisible(); const revText = JSON.parse(window.render_game_to_text!()); expect(revText.coordinateSystem).toBe("Reversi columns A-H run left-to-right and ranks 8-1 run top-to-bottom."); expect(revText.game.board).toEqual(["........", "........", "........", "...BW...", "...WB...", "........", "........", "........"]); expect(revText.game.score).toEqual({ black: 2, white: 2 }); cleanup(); const winningFour: ConnectFourSnapshot = { ...four(), turn: "black", status: "finished", winner: "black", legalMoves: [], moveHistory: [{ actor: "player", color: "black", notation: "A", ply: 1 }, { actor: "gpt", color: "white", notation: "B", ply: 2 }, { actor: "player", color: "black", notation: "A", ply: 3 }, { actor: "gpt", color: "white", notation: "B", ply: 4 }, { actor: "player", color: "black", notation: "A", ply: 5 }, { actor: "gpt", color: "white", notation: "B", ply: 6 }, { actor: "player", color: "black", notation: "A", ply: 7 }], lastMove: { actor: "player", color: "black", notation: "A", ply: 7 }, stateVersion: 7, message: "Black wins.", board: [[null, null, null, null, null, null, null], [null, null, null, null, null, null, null], ["black", null, null, null, null, null, null], ["black", "white", null, null, null, null, null], ["black", "white", null, null, null, null, null], ["black", "white", null, null, null, null, null]], winningLine: ["A4", "A3", "A2", "A1"] }; expect(isSnapshot(winningFour)).toBe(true); render(<App initialGame={winningFour}/>); expect(screen.getAllByRole("button", { name: /Drop in column/ })).toHaveLength(7); const rows = screen.getAllByRole("row"); expect(rows).toHaveLength(6); expect(rows.every(row => within(row).getAllByRole("gridcell").length === 7)).toBe(true); const cells = screen.getAllByRole("gridcell"); expect(cells).toHaveLength(42); expect(cells.every(cell => cell.classList.contains("connect-cell"))).toBe(true); expect(screen.getByRole("gridcell", { name: "black disk at A1, winning disk" })).toHaveClass("connect-cell", "winning"); expect(screen.getByRole("gridcell", { name: "empty at G6" })).toBeVisible(); expect(screen.getByRole("status")).toHaveTextContent("Winner: black"); const fourText = JSON.parse(window.render_game_to_text!()); expect(fourText.coordinateSystem).toBe("Connect Four columns A-G run left-to-right and ranks 6-1 run top-to-bottom."); expect(fourText.game).toMatchObject({ status: "finished", winner: "black", stateVersion: 7, message: "Black wins.", lastMove: { actor: "player", color: "black", notation: "A", ply: 7 }, legalMoves: [], board: [".......", ".......", "B......", "BW.....", "BW.....", "BW....."], winningLine: ["A4", "A3", "A2", "A1"] });
+    expect(isSnapshot(finished)).toBe(true); render(<App initialGame={finished}/>); expect(screen.getByRole("button", { name: /A3, X/i })).toHaveClass("winning"); expect(screen.getByRole("status")).toHaveTextContent("Black wins."); const ticText = JSON.parse(window.render_game_to_text!()); expect(ticText.coordinateSystem).toBe("Tic-Tac-Toe columns A-C run left-to-right and ranks 3-1 run top-to-bottom."); expect(ticText.game).toMatchObject({ status: "finished", winner: "black", stateVersion: 5, message: "Black wins.", lastMove: { actor: "player", color: "black", notation: "C3", ply: 5 }, legalMoves: [], board: ["BBB", "WW.", "..."], winningLine: ["A3", "B3", "C3"] }); cleanup(); const opening = reversi(); render(<App initialGame={opening}/>); expect(screen.getByText("Disks — Black: 2, White: 2")).toBeVisible(); const revText = JSON.parse(window.render_game_to_text!()); expect(revText.coordinateSystem).toBe("Reversi columns A-H run left-to-right and ranks 8-1 run top-to-bottom."); expect(revText.game.board).toEqual(["........", "........", "........", "...BW...", "...WB...", "........", "........", "........"]); expect(revText.game.score).toEqual({ black: 2, white: 2 }); cleanup(); const winningFour: ConnectFourSnapshot = { ...four(), turn: "black", status: "finished", winner: "black", legalMoves: [], moveHistory: [{ actor: "player", color: "black", notation: "A", ply: 1 }, { actor: "gpt", color: "white", notation: "B", ply: 2 }, { actor: "player", color: "black", notation: "A", ply: 3 }, { actor: "gpt", color: "white", notation: "B", ply: 4 }, { actor: "player", color: "black", notation: "A", ply: 5 }, { actor: "gpt", color: "white", notation: "B", ply: 6 }, { actor: "player", color: "black", notation: "A", ply: 7 }], lastMove: { actor: "player", color: "black", notation: "A", ply: 7 }, stateVersion: 7, message: "Black wins.", board: [[null, null, null, null, null, null, null], [null, null, null, null, null, null, null], ["black", null, null, null, null, null, null], ["black", "white", null, null, null, null, null], ["black", "white", null, null, null, null, null], ["black", "white", null, null, null, null, null]], winningLine: ["A4", "A3", "A2", "A1"] }; expect(isSnapshot(winningFour)).toBe(true); render(<App initialGame={winningFour}/>); expect(screen.getAllByRole("button", { name: /Drop in column/ })).toHaveLength(7); const rows = screen.getAllByRole("row"); expect(rows).toHaveLength(6); expect(rows.every(row => within(row).getAllByRole("gridcell").length === 7)).toBe(true); const cells = screen.getAllByRole("gridcell"); expect(cells).toHaveLength(42); expect(cells.every(cell => cell.classList.contains("connect-cell"))).toBe(true); expect(screen.getByRole("gridcell", { name: "black disk at A1, winning disk" })).toHaveClass("connect-cell", "winning"); expect(screen.getByRole("gridcell", { name: "empty at G6" })).toBeVisible(); expect(screen.getByRole("status")).toHaveTextContent("Black wins."); const fourText = JSON.parse(window.render_game_to_text!()); expect(fourText.coordinateSystem).toBe("Connect Four columns A-G run left-to-right and ranks 6-1 run top-to-bottom."); expect(fourText.game).toMatchObject({ status: "finished", winner: "black", stateVersion: 7, message: "Black wins.", lastMove: { actor: "player", color: "black", notation: "A", ply: 7 }, legalMoves: [], board: [".......", ".......", "B......", "BW.....", "BW.....", "BW....."], winningLine: ["A4", "A3", "A2", "A1"] });
   });
 });

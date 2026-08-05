@@ -17,6 +17,7 @@ const baseSnapshotSchema = z.object({
   turn: z.enum(["white", "black"]),
   status: z.enum(["active", "finished"]),
   winner: z.enum(["white", "black", "draw"]).optional(),
+  finishReason: z.literal("ended").optional(),
   legalMoves: z.array(z.string()),
   moveHistory: z.array(moveRecordSchema),
   lastMove: moveRecordSchema.optional(),

@@ -5,14 +5,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 
-import { createMcpServer, WIDGET_DESCRIPTION, WIDGET_RESOURCE_URI } from "../src/mcp-server.js";
+import { createMcpServer, LEGACY_WIDGET_RESOURCE_URIS, WIDGET_DESCRIPTION, WIDGET_RESOURCE_URI } from "../src/mcp-server.js";
 import { gameSnapshotSchema, toolInputSchemas } from "../src/tool-contracts.js";
 import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
 
 describe("MCP game arena server", () => {
-  it("registers five game tools and the widget resource", async () => {
-    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v11/widget.html");
+  it("registers six game tools and the widget resource", async () => {
+    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v12/widget.html");
     expect(WIDGET_DESCRIPTION).toContain("chess");
     expect(WIDGET_DESCRIPTION).toContain("Reversi");
     expect(WIDGET_DESCRIPTION).toContain("Tic-Tac-Toe");
@@ -27,12 +27,13 @@ describe("MCP game arena server", () => {
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
-      "create_game", "get_game_state", "play_game_move", "render_game", "reset_game",
+      "create_game", "end_game", "get_game_state", "play_game_move", "render_game", "reset_game",
     ]);
     const expectedAnnotations = {
       create_game: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
       get_game_state: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
       play_game_move: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
+      end_game: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false },
       reset_game: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false },
       render_game: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
     } as const;
@@ -53,6 +54,9 @@ describe("MCP game arena server", () => {
     expect(tools.tools.find((tool) => tool.name === "get_game_state")?.title).toBe("Get game state");
     expect(tools.tools.find((tool) => tool.name === "play_game_move")?.title).toBe("Play game move");
     expect(tools.tools.find((tool) => tool.name === "play_game_move")?.description).toContain("MOVE_CONFIRMED");
+    expect(tools.tools.find((tool) => tool.name === "end_game")?.title).toBe("End game");
+    expect(tools.tools.find((tool) => tool.name === "end_game")?.description).toContain("explicitly confirms");
+    expect(tools.tools.find((tool) => tool.name === "end_game")?.description).toContain("END_CONFIRMED");
     expect(tools.tools.find((tool) => tool.name === "reset_game")?.title).toBe("Reset game");
     const createTool = tools.tools.find((tool) => tool.name === "create_game");
     for (const game of ["chess", "Reversi", "Tic-Tac-Toe", "Connect Four", "Go"]) {
@@ -104,6 +108,19 @@ describe("MCP game arena server", () => {
     const playTool = tools.tools.find((tool) => tool.name === "play_game_move");
     expect(playTool?.inputSchema).toMatchObject({ properties: { expectedResetEpoch: { type: "integer", minimum: 0 } } });
     expect((playTool?.inputSchema as { required?: string[] }).required).not.toContain("expectedResetEpoch");
+    const endTool = tools.tools.find((tool) => tool.name === "end_game");
+    expect(endTool?.inputSchema).toMatchObject({
+      properties: {
+        confirmed: { const: true },
+        expectedVersion: { type: "integer", minimum: 0 },
+        expectedResetEpoch: { type: "integer", minimum: 0 },
+      },
+      required: expect.arrayContaining(["gameId", "confirmed", "expectedVersion", "expectedResetEpoch"]),
+    });
+    expect((endTool?.inputSchema as { properties?: Record<string, unknown> }).properties).not.toHaveProperty("actor");
+    expect(toolInputSchemas.end_game.safeParse({ gameId: "game", confirmed: true, expectedVersion: 0, expectedResetEpoch: 0 }).success).toBe(true);
+    expect(toolInputSchemas.end_game.safeParse({ gameId: "game", confirmed: false, expectedVersion: 0, expectedResetEpoch: 0 }).success).toBe(false);
+    expect(toolInputSchemas.end_game.safeParse({ gameId: "game", confirmed: true, expectedVersion: 0 }).success).toBe(false);
 
     const created = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
     expect(created.isError, JSON.stringify(created)).not.toBe(true);
@@ -216,6 +233,29 @@ describe("MCP game arena server", () => {
     } });
     expect(stale).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/^MOVE_NOT_APPLIED stale_version:/) }] });
     expect(JSON.stringify(stale)).not.toContain("MOVE_CONFIRMED");
+    const ended = await client.callTool({ name: "end_game", arguments: {
+      gameId: snapshot.gameId, confirmed: true, expectedVersion: 1, expectedResetEpoch: 0,
+    } });
+    expect(ended.isError).not.toBe(true);
+    expect(ended.structuredContent).toMatchObject({
+      gameId: snapshot.gameId,
+      status: "finished",
+      finishReason: "ended",
+      stateVersion: 2,
+      legalMoves: [],
+      message: "Game ended.",
+    });
+    expect(ended.content).toEqual([{ type: "text", text: `END_CONFIRMED ${JSON.stringify({
+      gameId: snapshot.gameId,
+      resetEpoch: 0,
+      finishReason: "ended",
+      previousVersion: 1,
+      stateVersion: 2,
+    })}` }]);
+    const repeatedEnd = await client.callTool({ name: "end_game", arguments: {
+      gameId: snapshot.gameId, confirmed: true, expectedVersion: 2, expectedResetEpoch: 0,
+    } });
+    expect(repeatedEnd).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/^END_NOT_APPLIED game_finished:/) }] });
     const missing = await client.callTool({ name: "get_game_state", arguments: { gameId: "missing" } });
     expect(missing).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("not_found") }] });
     const reset = await client.callTool({ name: "reset_game", arguments: { gameId: snapshot.gameId } });
@@ -240,6 +280,12 @@ describe("MCP game arena server", () => {
     expect((resource.contents[0] as { _meta?: unknown })._meta).toEqual({
       ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
       "openai/widgetDescription": WIDGET_DESCRIPTION,
+    });
+    const legacyResource = await client.readResource({ uri: LEGACY_WIDGET_RESOURCE_URIS[0] });
+    expect(legacyResource.contents[0]).toMatchObject({
+      uri: LEGACY_WIDGET_RESOURCE_URIS[0],
+      mimeType: RESOURCE_MIME_TYPE,
+      text: "<!doctype html><title>fixture</title>",
     });
 
     await Promise.all([client.close(), server.close()]);
@@ -285,6 +331,23 @@ describe("MCP game arena server", () => {
     expect(result).toEqual({ isError: true, content: [{ type: "text", text: "MOVE_CONFIRMATION_UNKNOWN internal_error: Internal server error." }] });
     expect(JSON.stringify(result)).not.toContain("SECRET_PLAY_FAILURE");
     expect(service.getGameState({ gameId: created.gameId })).toMatchObject({ stateVersion: 0, moveHistory: [] });
+    await Promise.all([client.close(), server.close()]);
+  });
+
+  it("marks unexpected end failures as unconfirmed without leaking details", async () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({ game: "chess", playerColor: "white" });
+    vi.spyOn(service, "endGame").mockImplementation(() => { throw new Error("SECRET_END_FAILURE"); });
+    const server = createMcpServer(service);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const result = await client.callTool({ name: "end_game", arguments: {
+      gameId: created.gameId, confirmed: true, expectedVersion: 0, expectedResetEpoch: 0,
+    } });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "END_CONFIRMATION_UNKNOWN internal_error: Internal server error." }] });
+    expect(JSON.stringify(result)).not.toContain("SECRET_END_FAILURE");
+    expect(service.getGameState({ gameId: created.gameId })).toMatchObject({ status: "active", stateVersion: 0 });
     await Promise.all([client.close(), server.close()]);
   });
 

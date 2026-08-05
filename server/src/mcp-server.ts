@@ -14,7 +14,8 @@ import {
 } from "./tool-contracts.js";
 import { ToolService } from "./tool-service.js";
 
-export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v11/widget.html";
+export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v12/widget.html";
+export const LEGACY_WIDGET_RESOURCE_URIS = ["ui://gpt-game-arena/v11/widget.html"] as const;
 export const WIDGET_DESCRIPTION = "An interactive chess, Reversi, Tic-Tac-Toe, Connect Four, or 9x9, 13x13, or 19x19 Go board for playing turn by turn against GPT.";
 export type WidgetLoader = () => string | undefined | Promise<string | undefined>;
 
@@ -26,17 +27,9 @@ export function createMcpServer(service: ToolService, options: McpServerOptions 
   const server = new McpServer({ name: "gpt-game-arena", version: "0.1.0" });
   const loadWidgetHtml = options.loadWidgetHtml ?? defaultWidgetLoader;
 
-  registerAppResource(server, "GPT Game Arena", WIDGET_RESOURCE_URI, { mimeType: RESOURCE_MIME_TYPE }, async () => ({
-    contents: [{
-      uri: WIDGET_RESOURCE_URI,
-      mimeType: RESOURCE_MIME_TYPE,
-      text: await loadWidgetHtmlSafely(loadWidgetHtml),
-      _meta: {
-        ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
-        "openai/widgetDescription": WIDGET_DESCRIPTION,
-      },
-    }],
-  }));
+  for (const resourceUri of [WIDGET_RESOURCE_URI, ...LEGACY_WIDGET_RESOURCE_URIS]) {
+    registerWidgetResource(server, resourceUri, loadWidgetHtml);
+  }
 
   registerTool(server, service, "create_game", "Create game", "Use this when starting chess, Reversi, Tic-Tac-Toe, Connect Four, or Go. Set difficulty to easy, medium, or hard; an omitted difficulty defaults to medium. For Go, set boardSize to 9, 13, or 19; an omitted boardSize defaults to 9.", {
     readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false,
@@ -46,6 +39,9 @@ export function createMcpServer(service: ToolService, options: McpServerOptions 
   }, { ui: { visibility: ["model", "app"] } });
   registerTool(server, service, "play_game_move", "Play game move", "Use this when applying exactly one legal move with expectedResetEpoch and expectedVersion. Only claim that a move landed after a matching MOVE_CONFIRMED receipt. MOVE_NOT_APPLIED is definite; MOVE_CONFIRMATION_UNKNOWN requires a read-only state check and must never trigger a repeated mutation.", {
     readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false,
+  }, { ui: { visibility: ["model", "app"] } });
+  registerTool(server, service, "end_game", "End game", "Use this when, and only when, the player explicitly confirms ending the active game. Supply confirmed true and the authoritative expectedResetEpoch and expectedVersion; only claim that it ended after a matching END_CONFIRMED receipt. END_NOT_APPLIED is definite; END_CONFIRMATION_UNKNOWN requires a read-only state check and must never trigger a repeated mutation.", {
+    readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false,
   }, { ui: { visibility: ["model", "app"] } });
   registerTool(server, service, "reset_game", "Reset game", "Use this when current game progress should be erased and reset.", {
     readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false,
@@ -58,6 +54,20 @@ export function createMcpServer(service: ToolService, options: McpServerOptions 
   });
 
   return server;
+}
+
+function registerWidgetResource(server: McpServer, resourceUri: string, loadWidgetHtml: WidgetLoader): void {
+  registerAppResource(server, "GPT Game Arena", resourceUri, { mimeType: RESOURCE_MIME_TYPE }, async () => ({
+    contents: [{
+      uri: resourceUri,
+      mimeType: RESOURCE_MIME_TYPE,
+      text: await loadWidgetHtmlSafely(loadWidgetHtml),
+      _meta: {
+        ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
+        "openai/widgetDescription": WIDGET_DESCRIPTION,
+      },
+    }],
+  }));
 }
 
 function registerTool(
@@ -84,8 +94,10 @@ function registerTool(
     try {
       return executeTool(service, name, input);
     } catch (error) {
-      if (isGameRuleError(error)) return toToolFailure(error, name === "play_game_move");
-      return { isError: true, content: [{ type: "text" as const, text: `${name === "play_game_move" ? "MOVE_CONFIRMATION_UNKNOWN " : ""}internal_error: Internal server error.` }] };
+      const mutation = name === "play_game_move" ? "move" : name === "end_game" ? "end" : undefined;
+      if (isGameRuleError(error)) return toToolFailure(error, mutation);
+      const prefix = mutation === "move" ? "MOVE_CONFIRMATION_UNKNOWN " : mutation === "end" ? "END_CONFIRMATION_UNKNOWN " : "";
+      return { isError: true, content: [{ type: "text" as const, text: `${prefix}internal_error: Internal server error.` }] };
     }
   });
 }

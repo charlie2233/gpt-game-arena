@@ -29,6 +29,7 @@ export const mcpGameSnapshotSummarySchema = z4.object({
   status: z4.enum(["active", "finished"]),
   stateVersion: z4.number().int().nonnegative(),
   resetEpoch: z4.number().int().nonnegative().optional(),
+  finishReason: z4.literal("ended").optional(),
   legalMoves: z4.array(z4.string()),
   message: z4.string(),
 }).passthrough();
@@ -47,6 +48,12 @@ export const toolInputSchemas = {
     move: boundedMoveString,
     expectedVersion: z.number().int().nonnegative(),
     expectedResetEpoch: z.number().int().nonnegative().optional(),
+  }).strict(),
+  end_game: z.object({
+    gameId: boundedString,
+    confirmed: z.literal(true),
+    expectedVersion: z.number().int().nonnegative(),
+    expectedResetEpoch: z.number().int().nonnegative(),
   }).strict(),
   reset_game: z.object({ gameId: boundedString }).strict(),
   render_game: z.object({ gameId: boundedString }).strict(),
@@ -72,6 +79,7 @@ export const mcpToolInputSchemas = {
   create_game: mcpInputSchema(toolInputSchemas.create_game),
   get_game_state: mcpInputSchema(toolInputSchemas.get_game_state),
   play_game_move: mcpInputSchema(toolInputSchemas.play_game_move),
+  end_game: mcpInputSchema(toolInputSchemas.end_game),
   reset_game: mcpInputSchema(toolInputSchemas.reset_game),
   render_game: mcpInputSchema(toolInputSchemas.render_game),
 } as const;
@@ -99,6 +107,18 @@ export function executeTool(service: ToolService, name: ToolName, input: unknown
           stateVersion: snapshot.stateVersion,
         })}`);
       }
+    case "end_game":
+      {
+        const parsed = toolInputSchemas.end_game.parse(input);
+        const snapshot = service.endGame(parsed);
+        return success(snapshot, `END_CONFIRMED ${JSON.stringify({
+          gameId: snapshot.gameId,
+          resetEpoch: snapshot.resetEpoch ?? 0,
+          finishReason: snapshot.finishReason,
+          previousVersion: parsed.expectedVersion,
+          stateVersion: snapshot.stateVersion,
+        })}`);
+      }
     case "reset_game":
       return success(service.resetGame(toolInputSchemas.reset_game.parse(input)), "Reset game.");
     case "render_game":
@@ -106,7 +126,7 @@ export function executeTool(service: ToolService, name: ToolName, input: unknown
   }
 }
 
-export function toToolFailure(error: GameRuleError, moveAttempt = false): ToolFailure {
+export function toToolFailure(error: GameRuleError, attempt?: "move" | "end"): ToolFailure {
   const messages: Record<GameRuleError["code"], string> = {
     not_found: "The game was not found.",
     stale_version: "The game has changed; refresh its state before trying again.",
@@ -114,7 +134,8 @@ export function toToolFailure(error: GameRuleError, moveAttempt = false): ToolFa
     illegal_move: "That move is not legal for the current game state.",
     game_finished: "The game is already finished.",
   };
-  return { isError: true, content: [{ type: "text", text: `${moveAttempt ? "MOVE_NOT_APPLIED " : ""}${error.code}: ${messages[error.code]}` }] };
+  const prefix = attempt === "move" ? "MOVE_NOT_APPLIED " : attempt === "end" ? "END_NOT_APPLIED " : "";
+  return { isError: true, content: [{ type: "text", text: `${prefix}${error.code}: ${messages[error.code]}` }] };
 }
 
 export function isGameRuleError(error: unknown): error is GameRuleError {

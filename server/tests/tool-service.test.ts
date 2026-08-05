@@ -104,6 +104,93 @@ describe("ToolService", () => {
     }), "stale_version");
   });
 
+  it("ends an active game authoritatively even while GPT owns the turn", () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({ game: "chess", playerColor: "white", difficulty: "hard" });
+    const moved = service.playGameMove({
+      gameId: created.gameId,
+      actor: "player",
+      move: "e2e4",
+      expectedVersion: 0,
+      expectedResetEpoch: 0,
+    });
+    expect(moved.turn).toBe("black");
+    const ended = service.endGame({
+      gameId: created.gameId,
+      confirmed: true,
+      expectedVersion: 1,
+      expectedResetEpoch: 0,
+    });
+
+    expect(ended).toMatchObject({
+      gameId: created.gameId,
+      status: "finished",
+      finishReason: "ended",
+      stateVersion: 2,
+      resetEpoch: 0,
+      legalMoves: [],
+      message: "Game ended.",
+    });
+    expect(ended).not.toHaveProperty("winner");
+    expect(ended.board).toEqual(moved.board);
+    expect(ended.moveHistory).toEqual(moved.moveHistory);
+    expect(ended.lastMove).toEqual(moved.lastMove);
+    expect(ended.turn).toBe(moved.turn);
+    expect(service.getGameState({ gameId: created.gameId })).toEqual(ended);
+  });
+
+  it("rejects stale, repeated, and post-end mutations without changing the game, then resets cleanly", () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({ game: "go", playerColor: "black", boardSize: 13 });
+
+    expectRuleError(() => service.endGame({
+      gameId: created.gameId,
+      confirmed: true,
+      expectedVersion: 1,
+      expectedResetEpoch: 0,
+    }), "stale_version");
+    expectRuleError(() => service.endGame({
+      gameId: created.gameId,
+      confirmed: true,
+      expectedVersion: 0,
+      expectedResetEpoch: 1,
+    }), "stale_version");
+    expect(service.getGameState({ gameId: created.gameId })).toEqual(created);
+
+    const ended = service.endGame({
+      gameId: created.gameId,
+      confirmed: true,
+      expectedVersion: 0,
+      expectedResetEpoch: 0,
+    });
+    expectRuleError(() => service.endGame({
+      gameId: created.gameId,
+      confirmed: true,
+      expectedVersion: ended.stateVersion,
+      expectedResetEpoch: 0,
+    }), "game_finished");
+    expectRuleError(() => service.playGameMove({
+      gameId: created.gameId,
+      actor: "player",
+      move: "D4",
+      expectedVersion: ended.stateVersion,
+      expectedResetEpoch: 0,
+    }), "game_finished");
+    expect(service.getGameState({ gameId: created.gameId })).toEqual(ended);
+
+    const reset = service.resetGame({ gameId: created.gameId });
+    expect(reset).toMatchObject({
+      gameId: created.gameId,
+      kind: "go",
+      boardSize: 13,
+      status: "active",
+      stateVersion: 0,
+      resetEpoch: 1,
+      moveHistory: [],
+    });
+    expect(reset).not.toHaveProperty("finishReason");
+  });
+
   it("rejects a delayed pre-reset move even when stateVersion returns to zero", () => {
     const service = new ToolService(new GameStore());
     const created = service.createGame({ game: "tic-tac-toe", playerColor: "white" });
@@ -227,6 +314,9 @@ describe("ToolService", () => {
     expectRuleError(() => service.playGameMove({
       gameId: "missing", actor: "player", move: "A1", expectedVersion: 0,
     }), "not_found");
+    expectRuleError(() => service.endGame({
+      gameId: "missing", confirmed: true, expectedVersion: 0, expectedResetEpoch: 0,
+    }), "not_found");
     expectRuleError(() => service.resetGame({ gameId: "missing" }), "not_found");
   });
 
@@ -345,6 +435,45 @@ describe("ToolService", () => {
     expect(movedAfterRestart.resetEpoch).toBe(1);
   });
 
+  it("persists a terminal end event and restores the exact finished snapshot", () => {
+    const persistencePath = temporaryStorePath();
+    const service = new ToolService(new GameStore({ persistencePath, now: () => 321 }));
+    const created = service.createGame({ game: "connect-four", playerColor: "black", difficulty: "easy" });
+    const moved = service.playGameMove({
+      gameId: created.gameId,
+      actor: "player",
+      move: "D",
+      expectedVersion: 0,
+      expectedResetEpoch: 0,
+    });
+    const ended = service.endGame({
+      gameId: created.gameId,
+      confirmed: true,
+      expectedVersion: moved.stateVersion,
+      expectedResetEpoch: 0,
+    });
+
+    const document = JSON.parse(readFileSync(persistencePath, "utf8")) as {
+      formatVersion: number;
+      sessions: Array<{ events: unknown[] }>;
+    };
+    expect(document.formatVersion).toBe(1);
+    expect(document.sessions[0].events).toEqual([
+      { type: "move", actor: "player", move: "D" },
+      { type: "end" },
+    ]);
+
+    const restarted = new ToolService(new GameStore({ persistencePath, now: () => 321 }));
+    expect(restarted.getGameState({ gameId: created.gameId })).toEqual(ended);
+    expectRuleError(() => restarted.playGameMove({
+      gameId: created.gameId,
+      actor: "gpt",
+      move: "D",
+      expectedVersion: ended.stateVersion,
+      expectedResetEpoch: 0,
+    }), "game_finished");
+  });
+
   it("loads legacy persisted sessions without a reset epoch as epoch zero", () => {
     const persistencePath = temporaryStorePath();
     writeFileSync(persistencePath, JSON.stringify({
@@ -380,6 +509,28 @@ describe("ToolService", () => {
         playerColor: "white",
         difficulty: "medium",
         events: [{ type: "move", actor: "player", move: "a1a8" }],
+        lastAccessedAt: Date.now(),
+      }],
+    })],
+    ["a non-terminal end event", JSON.stringify({
+      formatVersion: 1,
+      sessions: [{
+        gameId: "broken-ended-game",
+        kind: "chess",
+        playerColor: "white",
+        difficulty: "medium",
+        events: [{ type: "end" }, { type: "move", actor: "player", move: "e2e4" }],
+        lastAccessedAt: Date.now(),
+      }],
+    })],
+    ["multiple end events", JSON.stringify({
+      formatVersion: 1,
+      sessions: [{
+        gameId: "twice-ended-game",
+        kind: "chess",
+        playerColor: "white",
+        difficulty: "medium",
+        events: [{ type: "end" }, { type: "end" }],
         lastAccessedAt: Date.now(),
       }],
     })],

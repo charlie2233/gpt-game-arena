@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { isSnapshot } from "./game-client";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { GameBridge } from "./bridge";
+import { GameClient, isSnapshot } from "./game-client";
 
 const chess = { gameId: "g", kind: "chess", difficulty: "medium", playerColor: "white", turn: "white", status: "active", legalMoves: [], moveHistory: [], stateVersion: 0, message: "ok", board: Array.from({ length: 64 }, (_, i) => ({ square: `${"abcdefgh"[i % 8]}${Math.floor(i / 8) + 1}` })) };
 const base = { gameId: "new", difficulty: "hard", playerColor: "black", turn: "black", status: "active", moveHistory: [], stateVersion: 0, message: "Black to move." } as const;
@@ -10,6 +11,14 @@ describe("authoritative snapshot validation", () => {
   it("rejects shallow malformed host outputs", () => { expect(isSnapshot(chess)).toBe(true); expect(isSnapshot({ ...chess, difficulty: undefined })).toBe(false); expect(isSnapshot({ ...chess, difficulty: "expert" })).toBe(false); expect(isSnapshot({ ...chess, board: chess.board.slice(1) })).toBe(false); expect(isSnapshot({ ...chess, stateVersion: -1 })).toBe(false); expect(isSnapshot({ ...chess, board: [{ square: "e2", color: "white" }, ...chess.board.slice(1)] })).toBe(false); });
   it("requires a normalized bounded game id", () => { for (const gameId of ["", " ", " g", "g ", "x".repeat(129)]) expect(isSnapshot({ ...chess, gameId })).toBe(false); expect(isSnapshot({ ...chess, gameId: "x".repeat(128) })).toBe(true); });
   it("accepts an optional nonnegative reset epoch", () => { expect(isSnapshot({ ...chess, resetEpoch: 0 })).toBe(true); expect(isSnapshot({ ...chess, resetEpoch: 3 })).toBe(true); expect(isSnapshot({ ...chess, resetEpoch: -1 })).toBe(false); expect(isSnapshot({ ...chess, resetEpoch: 1.5 })).toBe(false); });
+  it("accepts only the optional manual-finish field defined by the contract", () => {
+    const ended = { ...chess, status: "finished", finishReason: "ended", stateVersion: 1, message: "Game ended." };
+    expect(isSnapshot(ended)).toBe(true);
+    expect(isSnapshot({ ...chess, finishReason: "ended" })).toBe(false);
+    expect(isSnapshot({ ...ended, finishReason: "resignation" })).toBe(false);
+    expect(isSnapshot({ ...ended, endedBy: "player" })).toBe(false);
+    expect(isSnapshot({ ...ended, unexpectedFinishField: true })).toBe(false);
+  });
   it("accepts supported Go sizes and rejects mismatched or unsupported boards", () => {
     const go = (boardSize: number, rows = boardSize) => ({ gameId: "go", kind: "go", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["pass"], moveHistory: [], stateVersion: 0, message: "ok", boardSize, board: Array.from({ length: rows }, () => Array.from({ length: boardSize }, () => null)), captures: { black: 0, white: 0 }, consecutivePasses: 0 });
     expect(isSnapshot(go(9))).toBe(true);
@@ -48,5 +57,22 @@ describe("authoritative snapshot validation", () => {
     expect(isSnapshot({ ...reversi(), winningLine: ["A1", "B1", "C1"] })).toBe(false);
     expect(isSnapshot({ ...reversi(), score: { black: 2, white: 2, extra: true } })).toBe(false);
     expect(isSnapshot({ ...reversi(), moveHistory: [{ actor: "player", color: "black", notation: "C4", ply: 1, extra: true }] })).toBe(false);
+  });
+});
+
+describe("GameClient end_game", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends an explicit confirmation with the captured version and reset epoch", async () => {
+    const ended = { ...chess, status: "finished", finishReason: "ended", stateVersion: 5, message: "Game ended." };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ structuredContent: ended }) } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GameClient(new GameBridge(window));
+
+    await expect(client.end("g", 4, 2)).resolves.toMatchObject({ status: "finished", finishReason: "ended" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/tools/end_game", expect.objectContaining({
+      method: "POST",
+      body: '{"gameId":"g","confirmed":true,"expectedVersion":4,"expectedResetEpoch":2}',
+    }));
   });
 });

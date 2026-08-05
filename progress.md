@@ -114,3 +114,35 @@ Original prompt: also implement select difficuktuy
 - [x] Hosted ChatGPT v11 check: K9 → K18 landed in board history, and GPT narrated exactly K18 only after the authoritative board update.
 - [x] Hosted scroll check: the ChatGPT scroll container stayed at 479 px and the widget top stayed at -73 px while GPT was thinking; after completion it shifted only 35 px and the board remained visible instead of jumping to the conversation end.
 - [ ] Replace the temporary `trycloudflare.com` acceptance tunnel with an approved stable deployment before calling the app permanently hosted.
+
+## Authoritative End Game
+
+### Original prompt
+
+- add a endgame button
+
+### Implemented
+
+- [x] Added a dedicated `end_game` tool requiring explicit confirmation plus the exact reset epoch and state version.
+- [x] Added a two-step inline confirmation (`Keep playing` / `End game`) that locks outside controls, traps keyboard focus, and never changes the board optimistically.
+- [x] Preserved the board and move history while freezing the authoritative game with `finishReason: "ended"` and `Game ended.`
+- [x] Persisted one terminal end event so an ended game stays ended after a server restart.
+- [x] Added one-read recovery for an ambiguous end receipt without ever repeating the mutation.
+- [x] Kept End Game available during GPT polling so a slow or stuck GPT turn can still be stopped.
+- [x] Kept Reset, Refresh, and New Game available after ending; controls wrap into a compact mobile grid.
+- [x] Bumped the widget cache URI to v12 and registered accurate destructive tool annotations.
+- [x] Kept the v11 resource readable so historical ChatGPT boards continue loading after the v12 cache bump.
+
+### Verification status
+
+- [x] Full automated matrix passes: 113 server + 76 web = 189 tests.
+- [x] Workspace typecheck, production builds, and `git diff --check` pass.
+- [x] The skill-provided 1280x720 browser interaction shows the full board, confirmation copy, and both confirmation actions with no console-error artifact.
+- [x] Hosted ChatGPT v12 acceptance passed through the v13 developer connection: cancel left a fresh game active; one confirmed end survived reload as `Game ended.` with every square disabled and Reset/Refresh available.
+- [x] Hosted compatibility check passed: the historical v11 Go board loaded again after the legacy resource was restored instead of showing `Failed to fetch template`.
+- [ ] Replace the temporary `trycloudflare.com` acceptance tunnel with an approved stable deployment before calling this update permanently hosted.
+
+### Separate Go-strength diagnosis
+
+- Medium 19×19 Go currently sorts legal coordinates as strings and recommends the midpoint. That exactly reproduces the screenshot sequence `K19, K18, K2, K3, K17` and explains the weak vertical white shape.
+- Replacing the Medium Go selector with positional/tactical scoring is a separate follow-up; End Game does not change move strength.

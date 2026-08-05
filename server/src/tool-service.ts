@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { GameActor, GameDifficulty, GameKind, GameSnapshot, GoBoardSize, StoneColor } from "./domain/types.js";
 import { GameRuleError } from "./domain/errors.js";
-import { cloneGameSession, createGameSession } from "./game-session.js";
+import { cloneGameSession, createGameSession, endGameSession } from "./game-session.js";
 import { GameStore } from "./game-store.js";
 import { parseGameSnapshot } from "./snapshot-schema.js";
 
@@ -40,6 +40,22 @@ export class ToolService {
     }
     const replacement = cloneGameSession(current);
     const snapshot = parseGameSnapshot(replacement.play(input.actor, input.move, input.expectedVersion));
+    this.store.replace(replacement);
+    return snapshot;
+  }
+
+  endGame(input: {
+    gameId: string;
+    confirmed: true;
+    expectedVersion: number;
+    expectedResetEpoch: number;
+  }): GameSnapshot {
+    const current = this.store.get(input.gameId);
+    if ((current.snapshot().resetEpoch ?? 0) !== input.expectedResetEpoch) {
+      throw new GameRuleError("stale_version", "The game reset epoch has changed.");
+    }
+    const replacement = endGameSession(cloneGameSession(current), input.expectedVersion);
+    const snapshot = parseGameSnapshot(replacement.snapshot());
     this.store.replace(replacement);
     return snapshot;
   }
