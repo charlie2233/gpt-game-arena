@@ -29,10 +29,12 @@ describe("App", () => {
   afterEach(() => { cleanup(); vi.useRealTimers(); Reflect.deleteProperty(window, "openai"); });
   beforeEach(() => { vi.stubGlobal("fetch", vi.fn()); });
   it("selects a legal chess destination then plays a deterministic standalone GPT reply", async () => {
-    const reply = { ...chess(1), turn: "black", legalMoves: ["a7a5", "a7a6"] }; const gpt = { ...chess(2), turn: "white", legalMoves: ["d2d4"] };
+    const reply: ChessSnapshot = { ...chess(1), turn: "black", legalMoves: ["a7a5", "a7a6"] }; const gpt = { ...chess(2), turn: "white", legalMoves: ["d2d4"] };
+    const gptMove = chooseStandaloneMove(reply);
+    expect(gptMove).toBe("a7a5");
     vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: chess() }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reply }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: gpt }) } as Response);
     render(<App />); await screen.findByRole("button", { name: /white pawn on e2, movable source/i }); const user = userEvent.setup(); await user.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i })); await user.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3)); expect(fetch).toHaveBeenLastCalledWith("/api/tools/play_game_move", expect.objectContaining({ body: expect.stringContaining("a7a6") }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3)); expect(fetch).toHaveBeenLastCalledWith("/api/tools/play_game_move", expect.objectContaining({ body: expect.stringContaining(gptMove as string) }));
   });
   it("renders Go legal coordinates and Pass", async () => { vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: chess() }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: go() }) } as Response); render(<App />); const user = userEvent.setup(); const picker = await screen.findByRole("combobox", { name: "NEW GAME" }); await user.selectOptions(picker, "go-9"); await user.click(screen.getByRole("button", { name: "Start game" })); expect(await screen.findByRole("button", { name: /Play at A9, empty, legal move/i })).toBeEnabled(); expect(fetch).toHaveBeenLastCalledWith("/api/tools/create_game", expect.objectContaining({ body: '{"game":"go","playerColor":"black","difficulty":"medium"}' })); expect(screen.getByRole("button", { name: /pass/i })).toBeEnabled(); });
   it("starts standard 19x19 Go from the game chooser", async () => {
@@ -423,15 +425,15 @@ describe("App", () => {
   it("plays a reachable Reversi opening and sends the exact deterministic GPT request", async () => {
     const after: ReversiSnapshot = { ...reversi(), turn: "white", legalMoves: ["C3", "C5", "E3"], moveHistory: [{ actor: "player", color: "black", notation: "C4", ply: 1 }], lastMove: { actor: "player", color: "black", notation: "C4", ply: 1 }, stateVersion: 1, message: "White to move.", board: [[null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, "black", "white", null, null, null], [null, null, "black", "black", "black", null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null]], score: { black: 4, white: 1 } };
     const gptMove = chooseStandaloneMove(after);
-    expect(gptMove).toBe("C3");
+    expect(gptMove).toBe("E3");
     expect(after.legalMoves).toContain(gptMove);
-    const gpt: ReversiSnapshot = { ...after, turn: "black", legalMoves: ["C2", "D3", "E6", "F5"], moveHistory: [...after.moveHistory, { actor: "gpt", color: "white", notation: "C3", ply: 2 }], lastMove: { actor: "gpt", color: "white", notation: "C3", ply: 2 }, stateVersion: 2, message: "Black to move.", board: [[null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, "black", "white", null, null, null], [null, null, "black", "white", "black", null, null, null], [null, null, "white", null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null]], score: { black: 3, white: 3 } };
+    const gpt = reversiFixturePlay(after, gptMove as ReversiCoordinate);
     vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: after }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: gpt }) } as Response);
     render(<App initialGame={reversi()}/>);
     await userEvent.setup().click(screen.getByRole("button", { name: "C4, empty, legal move" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     expect(JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string)).toEqual({ gameId: "rev", actor: "player", move: "C4", expectedVersion: 0, expectedResetEpoch: 0 });
-    expect(JSON.parse((vi.mocked(fetch).mock.calls[1][1] as RequestInit).body as string)).toEqual({ gameId: "rev", actor: "gpt", move: "C3", expectedVersion: 1, expectedResetEpoch: 0 });
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[1][1] as RequestInit).body as string)).toEqual({ gameId: "rev", actor: "gpt", move: "E3", expectedVersion: 1, expectedResetEpoch: 0 });
     expect(screen.queryByRole("button", { name: /pass/i })).not.toBeInTheDocument();
   });
   it("renders each Reversi history entry from its authoritative actor and color", () => {

@@ -14,8 +14,8 @@ import {
 } from "./tool-contracts.js";
 import { ToolService } from "./tool-service.js";
 
-export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v12/widget.html";
-export const LEGACY_WIDGET_RESOURCE_URIS = ["ui://gpt-game-arena/v11/widget.html"] as const;
+export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v14/widget.html";
+export const LEGACY_WIDGET_RESOURCE_URIS = ["ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"] as const;
 export const WIDGET_DESCRIPTION = "An interactive chess, Reversi, Tic-Tac-Toe, Connect Four, or 9x9, 13x13, or 19x19 Go board for playing turn by turn against GPT.";
 export type WidgetLoader = () => string | undefined | Promise<string | undefined>;
 

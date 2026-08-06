@@ -146,3 +146,31 @@ Original prompt: also implement select difficuktuy
 
 - Medium 19×19 Go currently sorts legal coordinates as strings and recommends the midpoint. That exactly reproduces the screenshot sequence `K19, K18, K2, K3, K17` and explains the weak vertical white shape.
 - Replacing the Medium Go selector with positional/tactical scoring is a separate follow-up; End Game does not change move strength.
+
+## Game-aware AI search
+
+### Original prompts
+
+- he still actin stupid wth ;et hiom think in go, then let me playbagain
+- bro let him be smarter on all games he kinda stupid wth
+- moret think thean prompt bro
+
+### Implemented
+
+- [x] Removed every Medium sorted-midpoint choice and routed Medium through game-aware evaluation.
+- [x] Added complete Hard Tic-Tac-Toe minimax, fixed-depth alpha-beta search for Connect Four, and mobility/positional alpha-beta search for Reversi.
+- [x] Added real `chess.js` position replay plus bounded two-ply Medium and three-ply Hard Chess search, with the existing static evaluator as a safe fallback for synthetic snapshots.
+- [x] Reworked sparse Go openings to prioritize unclaimed corner anchors, whole-board spacing, and third/fourth-line play while retaining capture, atari rescue, self-atari, eye-fill, and pass safeguards.
+- [x] Removed weak lexicographic Go fillers from Medium/Hard FAST_TURN shortlists.
+- [x] Kept the prompt compact and receipt-gated; game-specific text now supports the actual engines without treating candidate order as a verdict.
+- [x] Bumped the final widget cache URI to v14 while retaining v13, v12, and v11 compatibility resources.
+
+### Verification status
+
+- [x] Focused strategy suite passes 23/23, including Chess mate and opening-latency limits, Tic-Tac-Toe fork defense, Connect Four support-blunder defense, exact forced-pass Reversi endgames, and the reproduced 19×19 Go edge-ladder regression.
+- [x] Hard Chess uses independent bounded root budgets: ordinary openings measured around 0.3–0.7 s in review, while the automated opening regression stays below 2 s.
+- [x] Full automated matrix passes: 113 server + 86 web = 199 tests; workspace typecheck, production builds, and `git diff --check` pass.
+- [x] The required browser game client produced final screenshots and deterministic text state with no error artifact; the 1280×720 Chess board and controls remain fully visible.
+- [x] Hosted ChatGPT acceptance passed after refreshing the developer connection to the new engine: Black `D16` received the confirmed Hard reply `D4` in the opposite open corner, replacing the stale v12 `D10` behavior; final handoff uses the v14 cache URI.
+- [x] The hosted board was reset after acceptance and left as a fresh empty Hard 19×19 game with the user to move as Black.
+- [ ] Replace the temporary `trycloudflare.com` acceptance tunnel with an approved stable deployment before calling this update permanently hosted.

@@ -12,7 +12,8 @@ import { ToolService } from "../src/tool-service.js";
 
 describe("MCP game arena server", () => {
   it("registers six game tools and the widget resource", async () => {
-    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v12/widget.html");
+    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v14/widget.html");
+    expect(LEGACY_WIDGET_RESOURCE_URIS).toEqual(["ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"]);
     expect(WIDGET_DESCRIPTION).toContain("chess");
     expect(WIDGET_DESCRIPTION).toContain("Reversi");
     expect(WIDGET_DESCRIPTION).toContain("Tic-Tac-Toe");
