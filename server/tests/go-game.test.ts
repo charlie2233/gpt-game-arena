@@ -44,6 +44,84 @@ describe("GoGame", () => {
     expect(game.play("player", "A1", 0).difficulty).toBe(difficulty);
   });
 
+  it("starts an imported position behind a review gate and advances one authoritative version when confirmed", () => {
+    const game = GoGame.create("go-photo", "white", 9, "hard", 0, {
+      source: "imported",
+      blackStones: ["J9", "D4"],
+      whiteStones: ["E4", "E5"],
+      turn: "white",
+      captures: { black: 2, white: 3 },
+    });
+
+    const snapshot = game.snapshot();
+    expect(snapshot).toMatchObject({
+      gameId: "go-photo",
+      playerColor: "white",
+      turn: "white",
+      difficulty: "hard",
+      stateVersion: 0,
+      resetEpoch: 0,
+      importReview: "pending",
+      moveHistory: [],
+      captures: { black: 2, white: 3 },
+      legalMoves: [],
+      message: "Imported position awaiting confirmation.",
+      initialPosition: {
+        source: "imported",
+        blackStones: ["D4", "J9"],
+        whiteStones: ["E4", "E5"],
+        turn: "white",
+        captures: { black: 2, white: 3 },
+      },
+    });
+    expect(snapshot.board[0][8]).toBe("black");
+    expect(snapshot.board[5][3]).toBe("black");
+    expect(snapshot.board[5][4]).toBe("white");
+    expect(snapshot.board[4][4]).toBe("white");
+    expect(snapshot).not.toHaveProperty("lastMove");
+
+    expectRuleError(() => game.play("player", "A1", 0), "import_review_required");
+    expect(game.snapshot()).toEqual(snapshot);
+
+    const confirmed = game.confirmImportedPosition(0);
+    expect(confirmed).toMatchObject({
+      stateVersion: 1,
+      importReview: "confirmed",
+      message: "Imported position confirmed. White to move.",
+    });
+    expect(confirmed.legalMoves).not.toContain("D4");
+    expect(confirmed.legalMoves).not.toContain("E4");
+    expectRuleError(() => game.confirmImportedPosition(0), "stale_version");
+    expectRuleError(() => game.confirmImportedPosition(1), "import_review_unavailable");
+
+    const played = game.play("player", "A1", 1);
+    expect(played).toMatchObject({ stateVersion: 2, importReview: "confirmed", turn: "black", lastMove: { actor: "player", color: "white", notation: "A1" } });
+    expect(played.board[8][0]).toBe("white");
+    expect(played.initialPosition).toEqual(snapshot.initialPosition);
+  });
+
+  it("does not allow ordinary Go games to be import-confirmed", () => {
+    const game = GoGame.create("go-new", "black");
+
+    expectRuleError(() => game.confirmImportedPosition(0), "import_review_unavailable");
+    expect(game.snapshot()).not.toHaveProperty("importReview");
+  });
+
+  it.each([
+    { label: "duplicate stones", blackStones: ["D4", "D4"], whiteStones: [] },
+    { label: "overlapping colors", blackStones: ["D4"], whiteStones: ["D4"] },
+    { label: "out-of-range coordinates", blackStones: ["T19"], whiteStones: [] },
+    { label: "groups with no liberties", blackStones: ["A1"], whiteStones: ["A2", "B1"] },
+  ])("rejects imported $label without producing a game", ({ blackStones, whiteStones }) => {
+    expectRuleError(() => GoGame.create("bad-photo", "black", 9, "medium", 0, {
+      source: "imported",
+      blackStones,
+      whiteStones,
+      turn: "black",
+      captures: { black: 0, white: 0 },
+    }), "invalid_position");
+  });
+
   it.each([
     { boardSize: 13 as const, edge: "N13", legalMoveCount: 170 },
     { boardSize: 19 as const, edge: "T19", legalMoveCount: 362 },
@@ -176,15 +254,26 @@ describe("GoGame", () => {
   });
 
   it("returns snapshots that cannot mutate live game state", () => {
-    const game = GoGame.create("go-1", "black");
+    const game = GoGame.create("go-1", "black", 9, "medium", 0, {
+      source: "imported",
+      blackStones: ["D4"],
+      whiteStones: ["E4"],
+      turn: "black",
+      captures: { black: 0, white: 0 },
+    });
+    game.confirmImportedPosition(0);
     const snapshot = game.snapshot();
     snapshot.board[8][0] = "black";
     snapshot.captures.black = 99;
     snapshot.legalMoves.pop();
+    snapshot.initialPosition?.blackStones.push("A1");
+    if (snapshot.initialPosition) snapshot.initialPosition.captures.black = 99;
 
     const current = game.snapshot();
     expect(current.board[8][0]).toBeNull();
     expect(current.captures.black).toBe(0);
-    expect(current.legalMoves).toHaveLength(82);
+    expect(current.importReview).toBe("confirmed");
+    expect(current.initialPosition).toMatchObject({ blackStones: ["D4"], captures: { black: 0 } });
+    expect(current.legalMoves).toHaveLength(80);
   });
 });

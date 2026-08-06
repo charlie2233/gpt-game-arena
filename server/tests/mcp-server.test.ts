@@ -11,9 +11,9 @@ import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
 
 describe("MCP game arena server", () => {
-  it("registers six game tools and the widget resource", async () => {
-    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v14/widget.html");
-    expect(LEGACY_WIDGET_RESOURCE_URIS).toEqual(["ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"]);
+  it("registers eight game tools and the widget resource", async () => {
+    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v16/widget.html");
+    expect(LEGACY_WIDGET_RESOURCE_URIS).toEqual(["ui://gpt-game-arena/v15/widget.html", "ui://gpt-game-arena/v14/widget.html", "ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"]);
     expect(WIDGET_DESCRIPTION).toContain("chess");
     expect(WIDGET_DESCRIPTION).toContain("Reversi");
     expect(WIDGET_DESCRIPTION).toContain("Tic-Tac-Toe");
@@ -28,10 +28,12 @@ describe("MCP game arena server", () => {
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
-      "create_game", "end_game", "get_game_state", "play_game_move", "render_game", "reset_game",
+      "confirm_imported_go_position", "create_game", "end_game", "get_game_state", "import_go_position", "play_game_move", "render_game", "reset_game",
     ]);
     const expectedAnnotations = {
       create_game: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
+      import_go_position: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
+      confirm_imported_go_position: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
       get_game_state: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
       play_game_move: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
       end_game: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false },
@@ -51,6 +53,25 @@ describe("MCP game arena server", () => {
       title: "Render game",
       _meta: { ui: { resourceUri: WIDGET_RESOURCE_URI, visibility: ["model"] }, "openai/outputTemplate": WIDGET_RESOURCE_URI },
     });
+    const importedTool = tools.tools.find((tool) => tool.name === "import_go_position");
+    expect(importedTool).toMatchObject({
+      title: "Continue Go from a photo",
+      _meta: { ui: { resourceUri: WIDGET_RESOURCE_URI, visibility: ["model"] }, "openai/outputTemplate": WIDGET_RESOURCE_URI },
+    });
+    expect(importedTool?.description).toContain("attached board image");
+    expect(importedTool?.description).toContain("I am White");
+    expect(importedTool?.description).toContain("you/GPT are White");
+    expect(importedTool?.description).toContain("ask one concise question");
+    expect(importedTool?.description).toContain("IMPORT_CONFIRMED");
+    expect(importedTool?.description).toContain("do not make a game move until");
+    const confirmImportTool = tools.tools.find((tool) => tool.name === "confirm_imported_go_position");
+    expect(confirmImportTool).toMatchObject({
+      title: "Confirm imported Go position",
+      _meta: { ui: { visibility: ["app"] } },
+    });
+    expect(confirmImportTool?.description).toContain("user clicks");
+    expect(confirmImportTool?.description).toContain("IMPORT_REVIEW_CONFIRMED");
+    expect(confirmImportTool?.description).toContain("IMPORT_REVIEW_CONFIRMATION_UNKNOWN");
     expect(tools.tools.find((tool) => tool.name === "create_game")?.title).toBe("Create game");
     expect(tools.tools.find((tool) => tool.name === "get_game_state")?.title).toBe("Get game state");
     expect(tools.tools.find((tool) => tool.name === "play_game_move")?.title).toBe("Play game move");
@@ -91,17 +112,32 @@ describe("MCP game arena server", () => {
     expect(validateCreateInput({ game: "connect-four", playerColor: "black" })).toBe(true);
     expect(validateCreateInput({ game: "reversi", playerColor: "black" })).toBe(true);
     expect(validateCreateInput({ game: "go", playerColor: "black", boardSize: 19, secret: "SECRET" })).toBe(false);
-    expect(tools.tools.filter((tool) => tool.name !== "render_game").every((tool) => {
+    expect(tools.tools.filter((tool) => tool.name !== "render_game" && tool.name !== "import_go_position" && tool.name !== "confirm_imported_go_position").every((tool) => {
       const meta = tool._meta as { ui?: { resourceUri?: string; visibility?: string[] }; "openai/outputTemplate"?: string } | undefined;
       return meta?.ui?.resourceUri === undefined
         && meta?.["openai/outputTemplate"] === undefined
         && JSON.stringify(meta?.ui?.visibility) === JSON.stringify(["model", "app"]);
     })).toBe(true);
+    const validateImportInput = new Ajv({ strict: false }).compile(importedTool?.inputSchema as object);
+    for (const input of [
+      { boardSize: 9, playerColor: "white", turn: "white", blackStones: ["D4"], whiteStones: ["E5"] },
+      { boardSize: 13, playerColor: "black", turn: "white", blackStones: ["N13"], whiteStones: ["J1"], difficulty: "hard" },
+      { boardSize: 19, playerColor: "white", turn: "black", blackStones: ["T19"], whiteStones: ["K10"], captures: { black: 2, white: 3 } },
+    ]) expect(validateImportInput(input), JSON.stringify(validateImportInput.errors)).toBe(true);
+    for (const input of [
+      { boardSize: 9, playerColor: "white", turn: "white", blackStones: ["I4"], whiteStones: [] },
+      { boardSize: 9, playerColor: "white", turn: "white", blackStones: ["A10"], whiteStones: [] },
+      { boardSize: 13, playerColor: "white", turn: "white", blackStones: ["N14"], whiteStones: [] },
+      { boardSize: 19, playerColor: "white", turn: "white", blackStones: ["U1"], whiteStones: [] },
+      { boardSize: 9, playerColor: "white", blackStones: [], whiteStones: [] },
+      { boardSize: 9, playerColor: "white", turn: "white", blackStones: [], whiteStones: [], secret: "SECRET" },
+    ]) expect(validateImportInput(input)).toBe(false);
     expect(JSON.stringify(tools.tools).length).toBeLessThan(15_000);
-    for (const tool of tools.tools) {
+    expect(confirmImportTool?.outputSchema).toBeUndefined();
+    for (const tool of tools.tools.filter((candidate) => candidate.name !== "confirm_imported_go_position")) {
       const outputSchema = tool.outputSchema as { type?: string; properties?: Record<string, unknown>; required?: string[] };
-      expect(outputSchema).toMatchObject({ type: "object", properties: { gameId: expect.any(Object), kind: expect.any(Object), difficulty: expect.any(Object), stateVersion: expect.any(Object), legalMoves: expect.any(Object) } });
-      expect(outputSchema.required).toEqual(expect.arrayContaining(["gameId", "kind", "difficulty", "playerColor", "turn", "status", "stateVersion", "legalMoves", "message"]));
+      expect(outputSchema).toMatchObject({ type: "object", properties: { gameId: expect.any(Object), kind: expect.any(Object), stateVersion: expect.any(Object), importReview: expect.any(Object), legalMoves: expect.any(Object) } });
+      expect(outputSchema.required).toEqual(expect.arrayContaining(["gameId", "kind", "turn", "stateVersion", "legalMoves"]));
       expect(outputSchema.required).not.toContain("resetEpoch");
       expect(outputSchema.properties).not.toHaveProperty("board");
       expect(JSON.stringify(outputSchema)).not.toContain("boardSize");
@@ -109,6 +145,18 @@ describe("MCP game arena server", () => {
     const playTool = tools.tools.find((tool) => tool.name === "play_game_move");
     expect(playTool?.inputSchema).toMatchObject({ properties: { expectedResetEpoch: { type: "integer", minimum: 0 } } });
     expect((playTool?.inputSchema as { required?: string[] }).required).not.toContain("expectedResetEpoch");
+    expect(confirmImportTool?.inputSchema).toMatchObject({
+      properties: {
+        gameId: expect.any(Object),
+        expectedVersion: { type: "integer", minimum: 0 },
+        expectedResetEpoch: { type: "integer", minimum: 0 },
+      },
+      required: expect.arrayContaining(["gameId", "expectedVersion", "expectedResetEpoch"]),
+      additionalProperties: false,
+    });
+    expect(toolInputSchemas.confirm_imported_go_position.safeParse({ gameId: "game", expectedVersion: 0, expectedResetEpoch: 0 }).success).toBe(true);
+    expect(toolInputSchemas.confirm_imported_go_position.safeParse({ gameId: "game", expectedVersion: 0 }).success).toBe(false);
+    expect(toolInputSchemas.confirm_imported_go_position.safeParse({ gameId: "game", expectedVersion: 0, expectedResetEpoch: 0, confirmed: true }).success).toBe(false);
     const endTool = tools.tools.find((tool) => tool.name === "end_game");
     expect(endTool?.inputSchema).toMatchObject({
       properties: {
@@ -142,6 +190,87 @@ describe("MCP game arena server", () => {
     expect(goSnapshot.boardSize).toBe(19);
     expect(goSnapshot.board).toHaveLength(19);
     const goBoard = goSnapshot.board as unknown[][];
+    const imported = await client.callTool({ name: "import_go_position", arguments: {
+      boardSize: 9,
+      playerColor: "white",
+      turn: "white",
+      blackStones: ["D4", "J9"],
+      whiteStones: ["E4", "E5"],
+      difficulty: "hard",
+    } });
+    expect(imported.isError, JSON.stringify(imported)).not.toBe(true);
+    const importedContent = imported.content as Array<{ type: string; text?: string }> | undefined;
+    expect(importedContent?.[0]).toMatchObject({ type: "text", text: expect.stringMatching(/^IMPORT_CONFIRMED /) });
+    expect(imported.structuredContent).toMatchObject({
+      kind: "go",
+      boardSize: 9,
+      playerColor: "white",
+      turn: "white",
+      difficulty: "hard",
+      stateVersion: 0,
+      importReview: "pending",
+      legalMoves: [],
+      moveHistory: [],
+      initialPosition: { source: "imported", blackStones: ["D4", "J9"], whiteStones: ["E4", "E5"] },
+    });
+    expect(gameSnapshotSchema.safeParse(imported.structuredContent).success).toBe(true);
+    expect(gameSnapshotSchema.safeParse({ ...(imported.structuredContent as object), importReview: undefined }).success).toBe(false);
+    expect(gameSnapshotSchema.safeParse({ ...(goSnapshot as object), importReview: "pending" }).success).toBe(false);
+    const importedGameId = (imported.structuredContent as { gameId: string }).gameId;
+    const blockedImportedMove = await client.callTool({ name: "play_game_move", arguments: {
+      gameId: importedGameId, actor: "player", move: "A1", expectedVersion: 0, expectedResetEpoch: 0,
+    } });
+    expect(blockedImportedMove).toMatchObject({
+      isError: true,
+      content: [{ text: expect.stringMatching(/^MOVE_NOT_APPLIED import_review_required:/) }],
+    });
+    const confirmedImport = await client.callTool({ name: "confirm_imported_go_position", arguments: {
+      gameId: importedGameId, expectedVersion: 0, expectedResetEpoch: 0,
+    } });
+    expect(confirmedImport.isError, JSON.stringify(confirmedImport)).not.toBe(true);
+    expect(confirmedImport.structuredContent).toMatchObject({
+      gameId: importedGameId,
+      stateVersion: 1,
+      resetEpoch: 0,
+      importReview: "confirmed",
+    });
+    expect(confirmedImport.content).toEqual([{ type: "text", text: `IMPORT_REVIEW_CONFIRMED ${JSON.stringify({
+      gameId: importedGameId,
+      resetEpoch: 0,
+      previousVersion: 0,
+      stateVersion: 1,
+      importReview: "confirmed",
+    })}` }]);
+    const repeatedImportConfirmation = await client.callTool({ name: "confirm_imported_go_position", arguments: {
+      gameId: importedGameId, expectedVersion: 1, expectedResetEpoch: 0,
+    } });
+    expect(repeatedImportConfirmation).toMatchObject({
+      isError: true,
+      content: [{ text: expect.stringMatching(/^IMPORT_REVIEW_NOT_APPLIED import_review_unavailable:/) }],
+    });
+    const playedImportedMove = await client.callTool({ name: "play_game_move", arguments: {
+      gameId: importedGameId, actor: "player", move: "A1", expectedVersion: 1, expectedResetEpoch: 0,
+    } });
+    expect(playedImportedMove).toMatchObject({
+      structuredContent: { gameId: importedGameId, stateVersion: 2, importReview: "confirmed" },
+      content: [{ text: expect.stringMatching(/^MOVE_CONFIRMED /) }],
+    });
+    const resetImported = await client.callTool({ name: "reset_game", arguments: { gameId: importedGameId } });
+    expect(resetImported.structuredContent).toMatchObject({
+      gameId: importedGameId,
+      stateVersion: 0,
+      resetEpoch: 1,
+      importReview: "pending",
+      legalMoves: [],
+      moveHistory: [],
+    });
+    const staleEpochConfirmation = await client.callTool({ name: "confirm_imported_go_position", arguments: {
+      gameId: importedGameId, expectedVersion: 0, expectedResetEpoch: 0,
+    } });
+    expect(staleEpochConfirmation).toMatchObject({
+      isError: true,
+      content: [{ text: expect.stringMatching(/^IMPORT_REVIEW_NOT_APPLIED stale_version:/) }],
+    });
     const ticTacToeCreated = await client.callTool({ name: "create_game", arguments: { game: "tic-tac-toe", playerColor: "black" } });
     const ticTacToeSnapshot = ticTacToeCreated.structuredContent as Record<string, unknown>;
     expect(ticTacToeSnapshot).toMatchObject({ kind: "tic-tac-toe", difficulty: "medium" });
@@ -166,7 +295,7 @@ describe("MCP game arena server", () => {
     expect(reversiCreated.isError, JSON.stringify(reversiCreated)).not.toBe(true);
     expect(reversiSnapshot).toMatchObject({ kind: "reversi", score: { black: 2, white: 2 }, legalMoves: ["C4", "D3", "E6", "F5"] });
     const ajv = new Ajv({ strict: false });
-    for (const tool of tools.tools) {
+    for (const tool of tools.tools.filter((candidate) => candidate.name !== "confirm_imported_go_position")) {
       const validate = ajv.compile(tool.outputSchema as object);
       expect(validate(snapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate(goSnapshot), JSON.stringify(validate.errors)).toBe(true);
@@ -178,8 +307,8 @@ describe("MCP game arena server", () => {
       expect(validate({ ...ticTacToeSnapshot, legalMoves: ["a1"] }), JSON.stringify(validate.errors)).toBe(true);
       expect(validate({ ...snapshot, kind: "secret" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, internalSecret: "SECRET" }), JSON.stringify(validate.errors)).toBe(true);
-      expect(validate({ ...snapshot, difficulty: undefined }), JSON.stringify(validate.errors)).toBe(false);
-      expect(validate({ ...snapshot, difficulty: "expert" }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...snapshot, difficulty: undefined }), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...snapshot, difficulty: "expert" }), JSON.stringify(validate.errors)).toBe(true);
       expect(validate({ ...snapshot, resetEpoch: -1 }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, resetEpoch: 1.5 }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, stateVersion: -1 }), JSON.stringify(validate.errors)).toBe(false);
@@ -335,6 +464,30 @@ describe("MCP game arena server", () => {
     await Promise.all([client.close(), server.close()]);
   });
 
+  it("marks unexpected imported-position confirmation failures as unknown without leaking details", async () => {
+    const service = new ToolService(new GameStore());
+    const imported = service.importGoPosition({
+      boardSize: 9,
+      playerColor: "black",
+      turn: "black",
+      blackStones: ["D4"],
+      whiteStones: ["E5"],
+      captures: { black: 0, white: 0 },
+    });
+    vi.spyOn(service, "confirmImportedGoPosition").mockImplementation(() => { throw new Error("SECRET_IMPORT_REVIEW_FAILURE"); });
+    const server = createMcpServer(service);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const result = await client.callTool({ name: "confirm_imported_go_position", arguments: {
+      gameId: imported.gameId, expectedVersion: 0, expectedResetEpoch: 0,
+    } });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "IMPORT_REVIEW_CONFIRMATION_UNKNOWN internal_error: Internal server error." }] });
+    expect(JSON.stringify(result)).not.toContain("SECRET_IMPORT_REVIEW_FAILURE");
+    expect(service.getGameState({ gameId: imported.gameId })).toMatchObject({ stateVersion: 0, importReview: "pending" });
+    await Promise.all([client.close(), server.close()]);
+  });
+
   it("marks unexpected end failures as unconfirmed without leaking details", async () => {
     const service = new ToolService(new GameStore());
     const created = service.createGame({ game: "chess", playerColor: "white" });
@@ -367,6 +520,34 @@ describe("MCP game arena server", () => {
     expect(result).toEqual({ isError: true, content: [{ type: "text", text: "MOVE_CONFIRMATION_UNKNOWN internal_error: Internal server error." }] });
     expect(JSON.stringify(result)).not.toContain("SECRET_POST_COMMIT");
     expect(service.getGameState({ gameId: created.gameId })).toMatchObject({ stateVersion: 1, moveHistory: [{ notation: "e2e4" }] });
+    await Promise.all([client.close(), server.close()]);
+  });
+
+  it("uses an unknown marker if output validation fails after import confirmation committed", async () => {
+    const service = new ToolService(new GameStore());
+    const imported = service.importGoPosition({
+      boardSize: 9,
+      playerColor: "black",
+      turn: "black",
+      blackStones: ["D4"],
+      whiteStones: ["E5"],
+      captures: { black: 0, white: 0 },
+    });
+    const confirm = service.confirmImportedGoPosition.bind(service);
+    vi.spyOn(service, "confirmImportedGoPosition").mockImplementation(input => ({
+      ...confirm(input),
+      internalSecret: "SECRET_IMPORT_REVIEW_POST_COMMIT",
+    } as unknown as ReturnType<ToolService["confirmImportedGoPosition"]>));
+    const server = createMcpServer(service);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const result = await client.callTool({ name: "confirm_imported_go_position", arguments: {
+      gameId: imported.gameId, expectedVersion: 0, expectedResetEpoch: 0,
+    } });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "IMPORT_REVIEW_CONFIRMATION_UNKNOWN internal_error: Internal server error." }] });
+    expect(JSON.stringify(result)).not.toContain("SECRET_IMPORT_REVIEW_POST_COMMIT");
+    expect(service.getGameState({ gameId: imported.gameId })).toMatchObject({ stateVersion: 1, importReview: "confirmed" });
     await Promise.all([client.close(), server.close()]);
   });
 

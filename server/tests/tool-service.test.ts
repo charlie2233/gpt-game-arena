@@ -85,6 +85,185 @@ describe("ToolService", () => {
     expect(fullGo).toMatchObject({ kind: "go", boardSize: 19 });
   });
 
+  it("imports a photo-derived Go position, confirms it exactly, and preserves the seed through the first cloned move and reset", () => {
+    const service = new ToolService(new GameStore());
+    const imported = executeTool(service, "import_go_position", {
+      boardSize: 13,
+      playerColor: "white",
+      turn: "white",
+      blackStones: ["D10", "K4"],
+      whiteStones: ["K10", "D4"],
+      difficulty: "hard",
+    });
+
+    expect(imported.content[0].text).toMatch(/^IMPORT_CONFIRMED /);
+    expect(imported.structuredContent).toMatchObject({
+      kind: "go",
+      boardSize: 13,
+      playerColor: "white",
+      turn: "white",
+      difficulty: "hard",
+      stateVersion: 0,
+      resetEpoch: 0,
+      importReview: "pending",
+      legalMoves: [],
+      moveHistory: [],
+      captures: { black: 0, white: 0 },
+      initialPosition: {
+        source: "imported",
+        blackStones: ["D10", "K4"],
+        whiteStones: ["D4", "K10"],
+        turn: "white",
+      },
+    });
+    const receipt = JSON.parse(imported.content[0].text.slice("IMPORT_CONFIRMED ".length));
+    expect(receipt).toMatchObject({
+      gameId: imported.structuredContent.gameId,
+      boardSize: 13,
+      playerColor: "white",
+      gptColor: "black",
+      turn: "white",
+      blackStones: 2,
+      whiteStones: 2,
+      resetEpoch: 0,
+      stateVersion: 0,
+    });
+
+    expectRuleError(() => service.playGameMove({
+      gameId: imported.structuredContent.gameId,
+      actor: "player",
+      move: "E5",
+      expectedVersion: 0,
+      expectedResetEpoch: 0,
+    }), "import_review_required");
+    expect(service.getGameState({ gameId: imported.structuredContent.gameId })).toEqual(imported.structuredContent);
+    expectRuleError(() => service.confirmImportedGoPosition({
+      gameId: imported.structuredContent.gameId,
+      expectedVersion: 1,
+      expectedResetEpoch: 0,
+    }), "stale_version");
+    expectRuleError(() => service.confirmImportedGoPosition({
+      gameId: imported.structuredContent.gameId,
+      expectedVersion: 0,
+      expectedResetEpoch: 1,
+    }), "stale_version");
+
+    const confirmed = executeTool(service, "confirm_imported_go_position", {
+      gameId: imported.structuredContent.gameId,
+      expectedVersion: 0,
+      expectedResetEpoch: 0,
+    });
+    expect(confirmed.structuredContent).toMatchObject({ stateVersion: 1, importReview: "confirmed" });
+    expect(confirmed.content).toEqual([{ type: "text", text: `IMPORT_REVIEW_CONFIRMED ${JSON.stringify({
+      gameId: imported.structuredContent.gameId,
+      resetEpoch: 0,
+      previousVersion: 0,
+      stateVersion: 1,
+      importReview: "confirmed",
+    })}` }]);
+    expectRuleError(() => service.confirmImportedGoPosition({
+      gameId: imported.structuredContent.gameId,
+      expectedVersion: 1,
+      expectedResetEpoch: 0,
+    }), "import_review_unavailable");
+
+    const moved = service.playGameMove({
+      gameId: imported.structuredContent.gameId,
+      actor: "player",
+      move: "E5",
+      expectedVersion: 1,
+      expectedResetEpoch: 0,
+    });
+    if (moved.kind !== "go") throw new Error("Expected a Go snapshot.");
+    expect(moved.board[13 - 5][4]).toBe("white");
+    expect(moved.board[13 - 10][3]).toBe("black");
+    expect(moved).toMatchObject({ stateVersion: 2, importReview: "confirmed" });
+    expect(moved.initialPosition).toEqual(imported.structuredContent.initialPosition);
+
+    const reset = service.resetGame({ gameId: moved.gameId });
+    expect(reset).toMatchObject({
+      gameId: moved.gameId,
+      stateVersion: 0,
+      resetEpoch: 1,
+      importReview: "pending",
+      legalMoves: [],
+      moveHistory: [],
+      initialPosition: imported.structuredContent.initialPosition,
+    });
+    if (reset.kind !== "go") throw new Error("Expected a Go snapshot.");
+    expect(reset.board[13 - 5][4]).toBeNull();
+    expect(reset.board[13 - 10][3]).toBe("black");
+    expect(reset.board[13 - 4][10 - 1]).toBe("black");
+    expectRuleError(() => service.playGameMove({
+      gameId: reset.gameId,
+      actor: "player",
+      move: "E5",
+      expectedVersion: 0,
+      expectedResetEpoch: 1,
+    }), "import_review_required");
+    const reconfirmed = service.confirmImportedGoPosition({
+      gameId: reset.gameId,
+      expectedVersion: 0,
+      expectedResetEpoch: 1,
+    });
+    expect(reconfirmed).toMatchObject({ resetEpoch: 1, stateVersion: 1, importReview: "confirmed" });
+  });
+
+  it("rejects import confirmation for ordinary games and validates the exact confirmation input", () => {
+    expect(toolInputSchemas.confirm_imported_go_position.safeParse({
+      gameId: "game-1", expectedVersion: 0, expectedResetEpoch: 0,
+    }).success).toBe(true);
+    expect(toolInputSchemas.confirm_imported_go_position.safeParse({
+      gameId: "game-1", expectedVersion: 0,
+    }).success).toBe(false);
+    expect(toolInputSchemas.confirm_imported_go_position.safeParse({
+      gameId: "game-1", expectedVersion: 0, expectedResetEpoch: 0, confirmed: true,
+    }).success).toBe(false);
+
+    const service = new ToolService(new GameStore());
+    const ordinary = service.createGame({ game: "go", playerColor: "black" });
+    expectRuleError(() => service.confirmImportedGoPosition({
+      gameId: ordinary.gameId,
+      expectedVersion: 0,
+      expectedResetEpoch: 0,
+    }), "import_review_unavailable");
+    expect(service.getGameState({ gameId: ordinary.gameId })).toEqual(ordinary);
+  });
+
+  it("rejects malformed and unplayable imported positions before storage", () => {
+    expect(toolInputSchemas.import_go_position.safeParse({
+      boardSize: 9,
+      playerColor: "black",
+      turn: "black",
+      blackStones: ["D4", "D4"],
+      whiteStones: [],
+    }).success).toBe(false);
+    expect(toolInputSchemas.import_go_position.safeParse({
+      boardSize: 9,
+      playerColor: "black",
+      turn: "black",
+      blackStones: ["D4"],
+      whiteStones: ["D4"],
+    }).success).toBe(false);
+    expect(toolInputSchemas.import_go_position.safeParse({
+      boardSize: 9,
+      playerColor: "black",
+      turn: "black",
+      blackStones: ["I4"],
+      whiteStones: [],
+    }).success).toBe(false);
+
+    const service = new ToolService(new GameStore());
+    expectRuleError(() => service.importGoPosition({
+      boardSize: 9,
+      playerColor: "black",
+      turn: "black",
+      blackStones: ["A1"],
+      whiteStones: ["A2", "B1"],
+      captures: { black: 0, white: 0 },
+    }), "invalid_position");
+  });
+
   it("returns the authoritative current state and forwards move version checks", () => {
     const service = new ToolService(new GameStore());
     const created = service.createGame({ game: "chess", playerColor: "white" });
@@ -350,6 +529,61 @@ describe("ToolService", () => {
     for (const snapshot of expected) {
       expect(restarted.getGameState({ gameId: snapshot.gameId })).toEqual(snapshot);
     }
+  });
+
+  it("persists pending/confirmed imported review state, later moves, and a reset back to pending", () => {
+    const persistencePath = temporaryStorePath();
+    const service = new ToolService(new GameStore({ persistencePath }));
+    const imported = service.importGoPosition({
+      boardSize: 19,
+      playerColor: "black",
+      turn: "black",
+      blackStones: ["D16", "Q4"],
+      whiteStones: ["Q16", "D4"],
+      captures: { black: 1, white: 2 },
+      difficulty: "medium",
+    });
+    const pendingRestart = new ToolService(new GameStore({ persistencePath }));
+    expect(pendingRestart.getGameState({ gameId: imported.gameId })).toEqual(imported);
+    expectRuleError(() => pendingRestart.playGameMove({
+      gameId: imported.gameId,
+      actor: "player",
+      move: "K10",
+      expectedVersion: 0,
+      expectedResetEpoch: 0,
+    }), "import_review_required");
+
+    const confirmed = pendingRestart.confirmImportedGoPosition({
+      gameId: imported.gameId,
+      expectedVersion: 0,
+      expectedResetEpoch: 0,
+    });
+    expect(confirmed).toMatchObject({ importReview: "confirmed", stateVersion: 1 });
+
+    const confirmedRestart = new ToolService(new GameStore({ persistencePath }));
+    expect(confirmedRestart.getGameState({ gameId: imported.gameId })).toEqual(confirmed);
+    const moved = confirmedRestart.playGameMove({
+      gameId: imported.gameId,
+      actor: "player",
+      move: "K10",
+      expectedVersion: 1,
+      expectedResetEpoch: 0,
+    });
+
+    const restarted = new ToolService(new GameStore({ persistencePath }));
+    expect(restarted.getGameState({ gameId: imported.gameId })).toEqual(moved);
+
+    const reset = restarted.resetGame({ gameId: imported.gameId });
+    expect(reset).toMatchObject({ importReview: "pending", stateVersion: 0, resetEpoch: 1, moveHistory: [] });
+    const resetRestart = new ToolService(new GameStore({ persistencePath }));
+    expect(resetRestart.getGameState({ gameId: imported.gameId })).toEqual(reset);
+    expectRuleError(() => resetRestart.playGameMove({
+      gameId: imported.gameId,
+      actor: "player",
+      move: "K10",
+      expectedVersion: 0,
+      expectedResetEpoch: 1,
+    }), "import_review_required");
   });
 
   it("persists a read-based TTL refresh across a process restart", () => {

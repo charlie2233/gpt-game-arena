@@ -3,6 +3,9 @@ export type GameRuleErrorCode =
   | "stale_version"
   | "wrong_actor"
   | "illegal_move"
+  | "invalid_position"
+  | "import_review_required"
+  | "import_review_unavailable"
   | "game_finished";
 
 export class GameRuleError extends Error {

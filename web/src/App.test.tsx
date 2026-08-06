@@ -13,6 +13,12 @@ function chessAdvance(previous: ChessSnapshot, actor: "player" | "gpt", notation
   return { ...previous, turn, legalMoves, moveHistory: [...previous.moveHistory, move], lastMove: move, stateVersion: previous.stateVersion + 1, message };
 }
 const go = (boardSize: GoBoardSize = 9, difficulty: GameDifficulty = "medium"): GoSnapshot => ({ gameId: `go-${boardSize}`, kind: "go", difficulty, playerColor: "black", turn: "black", status: "active", legalMoves: [`A${boardSize}`, "pass"], moveHistory: [], stateVersion: 0, message: "Black to move.", boardSize, board: Array.from({ length: boardSize }, () => Array<"white" | "black" | null>(boardSize).fill(null)), captures: { black: 0, white: 0 }, consecutivePasses: 0 });
+const importedGo = (playerColor: "white" | "black" = "white", turn: "white" | "black" = "white", resetEpoch = 0, importReview: "pending" | "confirmed" = "pending"): GoSnapshot => {
+  const snapshot = { ...go(9, "hard"), gameId: "imported-go", resetEpoch, playerColor, turn, importReview, legalMoves: importReview === "pending" ? [] : [`A9`, "pass"], message: importReview === "pending" ? "Imported position awaiting confirmation." : `Imported position. ${turn === "white" ? "White" : "Black"} to move.`, initialPosition: { source: "imported" as const, blackStones: ["D4"], whiteStones: ["E4"], turn, captures: { black: 0, white: 0 } } };
+  snapshot.board[5][3] = "black";
+  snapshot.board[5][4] = "white";
+  return snapshot;
+};
 const tic = (): TicTacToeSnapshot => ({ gameId: "tic", kind: "tic-tac-toe", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["A1", "A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: Array.from({ length: 3 }, () => Array<"white" | "black" | null>(3).fill(null)) as Board<3, 3> });
 const four = (): ConnectFourSnapshot => ({ gameId: "four", kind: "connect-four", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["A", "B", "C", "D", "E", "F", "G"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: Array.from({ length: 6 }, () => Array<"white" | "black" | null>(7).fill(null)) as Board<6, 7> });
 const reversi = (): ReversiSnapshot => ({ gameId: "rev", kind: "reversi", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["C4", "D3", "E6", "F5"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: [[null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, "black", "white", null, null, null], [null, null, null, "white", "black", null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null]], score: { black: 2, white: 2 } });
@@ -82,6 +88,91 @@ describe("App", () => {
     expect(fetch).toHaveBeenCalledWith("/api/tools/create_game", expect.objectContaining({ body: '{"game":"go","playerColor":"black","difficulty":"hard","boardSize":13}' }));
   });
   it("maps large Go columns through T while skipping I", () => { const start = { ...go(19), legalMoves: ["J19", "T1", "pass"] }; render(<App initialGame={start}/>); expect(screen.getByRole("button", { name: "Play at J19, empty, legal move" })).toBeEnabled(); expect(screen.getByRole("button", { name: "Play at T1, empty, legal move" })).toBeEnabled(); expect(screen.queryByRole("button", { name: / I19/i })).not.toBeInTheDocument(); });
+  it("shows and gates a photo-import review before the player can continue", async () => {
+    const user = userEvent.setup();
+    const pending = importedGo("white", "white");
+    const confirmed = { ...importedGo("white", "white", 0, "confirmed"), stateVersion: 1 };
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: confirmed }) } as Response);
+    render(<App initialGame={pending}/>);
+
+    const review = screen.getByRole("region", { name: "Imported Go position review" });
+    expect(within(review).getByText("Imported Go position")).toBeVisible();
+    expect(within(review).getByText("9×9 · 1 Black · 1 White")).toBeVisible();
+    expect(within(review).getByText("You: White · Next: White (you)")).toBeVisible();
+    expect(screen.getByRole("button", { name: "black stone at D4" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "white stone at E4" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Empty A9" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /pass/i })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Review the imported stones");
+    expect(JSON.parse(window.render_game_to_text!()).importReview).toEqual({ required: true, pending: true, authoritativeStatus: "pending", source: "imported", blackStones: 1, whiteStones: 1, initialTurn: "white" });
+
+    await user.click(within(review).getByRole("button", { name: "Looks right — continue" }));
+    expect(within(review).getByText("✓ Verified")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Play at A9, empty, legal move" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /pass/i })).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Imported position. White to move.");
+    expect(JSON.parse(window.render_game_to_text!()).importReview).toMatchObject({ required: false, pending: false, authoritativeStatus: "confirmed" });
+    expect(fetch).toHaveBeenCalledWith("/api/tools/confirm_imported_go_position", expect.objectContaining({ body: '{"gameId":"imported-go","expectedVersion":0,"expectedResetEpoch":0}' }));
+  });
+  it("waits for imported-position review before prompting GPT, then prompts exactly once under StrictMode", async () => {
+    const sendFollowUpMessage = vi.fn().mockResolvedValue(undefined);
+    const setWidgetState = vi.fn();
+    Object.defineProperty(window, "openai", { configurable: true, value: { sendFollowUpMessage, setWidgetState } });
+    const target = { postMessage: vi.fn() } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const user = userEvent.setup();
+
+    render(<StrictMode><App bridge={bridge} initialGame={importedGo("white", "black")}/></StrictMode>);
+    expect(screen.getByText("You: White · Next: Black (GPT)")).toBeVisible();
+    expect(sendFollowUpMessage).not.toHaveBeenCalled();
+    await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 1, method: "ui/initialize" }), "*"));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: { hostCapabilities: { serverTools: {}, message: {} } } } }));
+    await user.click(screen.getByRole("button", { name: "Looks right — continue" }));
+
+    await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "confirm_imported_go_position", arguments: { gameId: "imported-go", expectedVersion: 0, expectedResetEpoch: 0 } } }), "*"));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 2, result: { structuredContent: { ...importedGo("white", "black", 0, "confirmed"), stateVersion: 1 } } } }));
+
+    await waitFor(() => expect(sendFollowUpMessage).toHaveBeenCalledTimes(1));
+    expect(sendFollowUpMessage).toHaveBeenCalledWith(expect.objectContaining({ prompt: expect.stringMatching(/FAST_TURN.*"kind":"go".*"turn":"black".*authoritative current position/), scrollToBottom: false }));
+    await waitFor(() => expect(setWidgetState).toHaveBeenCalledWith(expect.objectContaining({ game: expect.objectContaining({ importReview: "confirmed", stateVersion: 1 }) })));
+    expect(setWidgetState).not.toHaveBeenCalledWith(expect.objectContaining({ reviewedImportKey: expect.anything() }));
+    bridge.dispose();
+  });
+  it("does not let Refresh bypass a pending imported-position review", async () => {
+    const pending = importedGo("white", "black");
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: pending }) } as Response);
+    const user = userEvent.setup();
+    render(<App initialGame={pending}/>);
+
+    await user.click(screen.getByRole("button", { name: /refresh/i }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(fetch).toHaveBeenCalledWith("/api/tools/get_game_state", expect.objectContaining({ body: '{"gameId":"imported-go"}' }));
+    expect(screen.getByRole("button", { name: "Looks right — continue" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Empty A9" })).toBeDisabled();
+  });
+  it("hydrates a pending imported board from the actual ChatGPT tool output", () => {
+    Object.defineProperty(window, "openai", { configurable: true, value: { toolOutput: { structuredContent: importedGo("black", "white") } } });
+    render(<App/>);
+
+    expect(screen.getByRole("region", { name: "Imported Go position review" })).toBeVisible();
+    expect(screen.getByText("You: Black · Next: White (GPT)")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Empty A9" })).toBeDisabled();
+  });
+  it("requires a fresh authoritative review after resetting an imported game", async () => {
+    const confirmed = { ...importedGo("white", "white", 0, "confirmed"), stateVersion: 1 };
+    const reset = importedGo("white", "white", 1, "pending");
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reset }) } as Response);
+    const user = userEvent.setup();
+    render(<App initialGame={confirmed}/>);
+    expect(screen.getByRole("button", { name: "Play at A9, empty, legal move" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: /reset/i }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Looks right — continue" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Empty A9" })).toBeDisabled();
+    expect(JSON.parse(window.render_game_to_text!()).importReview).toMatchObject({ pending: true, authoritativeStatus: "pending" });
+  });
   it("shows safe accessible errors", async () => { vi.mocked(fetch).mockResolvedValue({ ok: false, json: async () => ({ error: { message: "Nope" } }) } as Response); render(<App />); expect(await screen.findByRole("alert")).toHaveTextContent("Nope"); });
   it("sends Go Pass with the authoritative version and accepts reset stateVersion zero", async () => {
     const user = userEvent.setup(); const start = { ...go(9, "hard"), stateVersion: 5 }; const afterPass = { ...start, stateVersion: 6, turn: "white", legalMoves: ["B9"] }; const reset = { ...start, stateVersion: 0 };

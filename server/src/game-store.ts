@@ -61,11 +61,24 @@ const persistedSessionBaseSchema = z.object({
   lastAccessedAt: z.number().int().nonnegative(),
 });
 
+const persistedGoPositionSchema = z.object({
+  source: z.literal("imported"),
+  blackStones: z.array(z.string().regex(/^[A-HJ-T](?:[1-9]|1[0-9])$/)).max(361),
+  whiteStones: z.array(z.string().regex(/^[A-HJ-T](?:[1-9]|1[0-9])$/)).max(361),
+  turn: z.enum(["black", "white"]),
+  captures: z.object({
+    black: z.number().int().nonnegative().max(maxPersistedEvents),
+    white: z.number().int().nonnegative().max(maxPersistedEvents),
+  }).strict(),
+}).strict();
+
 const persistedSessionSchema = z.discriminatedUnion("kind", [
   persistedSessionBaseSchema.extend({ kind: z.literal("chess") }).strict(),
   persistedSessionBaseSchema.extend({
     kind: z.literal("go"),
     boardSize: z.union([z.literal(9), z.literal(13), z.literal(19)]),
+    initialPosition: persistedGoPositionSchema.optional(),
+    importReview: z.enum(["pending", "confirmed"]).optional(),
   }).strict(),
   persistedSessionBaseSchema.extend({ kind: z.literal("tic-tac-toe") }).strict(),
   persistedSessionBaseSchema.extend({ kind: z.literal("connect-four") }).strict(),
@@ -103,7 +116,13 @@ function persistedSessionFromStored({ session, lastAccessedAt }: StoredSession):
     case "chess":
       return { ...common, kind: "chess" };
     case "go":
-      return { ...common, kind: "go", boardSize: snapshot.boardSize };
+      return {
+        ...common,
+        kind: "go",
+        boardSize: snapshot.boardSize,
+        ...(snapshot.initialPosition === undefined ? {} : { initialPosition: snapshot.initialPosition }),
+        ...(snapshot.importReview === undefined ? {} : { importReview: snapshot.importReview }),
+      };
     case "tic-tac-toe":
       return { ...common, kind: "tic-tac-toe" };
     case "connect-four":
@@ -237,7 +256,11 @@ export class GameStore {
             playerColor: record.playerColor,
             difficulty: record.difficulty,
             resetEpoch: record.resetEpoch ?? 0,
-            ...(record.kind === "go" ? { boardSize: record.boardSize } : {}),
+            ...(record.kind === "go" ? {
+              boardSize: record.boardSize,
+              ...(record.initialPosition === undefined ? {} : { initialPosition: record.initialPosition }),
+              ...(record.importReview === undefined ? {} : { importReview: record.importReview }),
+            } : {}),
           },
           record.events.map(event => event.type === "move"
             ? { type: "move", actor: event.actor, move: event.move }

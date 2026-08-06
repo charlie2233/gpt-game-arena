@@ -1,5 +1,5 @@
 import { GameRuleError } from "./errors.js";
-import type { GameActor, GameDifficulty, GoBoardSize, GoGameSnapshot, MoveRecord, StoneColor } from "./types.js";
+import type { GameActor, GameDifficulty, GoBoardSize, GoGameSnapshot, GoPositionSetup, MoveRecord, StoneColor } from "./types.js";
 
 const COLUMNS = "ABCDEFGHJKLMNOPQRST";
 const PASS = "pass";
@@ -23,6 +23,8 @@ export class GoGame {
   private consecutivePasses = 0;
   private stateVersion = 0;
   private readonly stonePositionHashes: Set<string>;
+  private readonly initialPosition: GoPositionSetup | undefined;
+  private importReview: "pending" | "confirmed" | undefined;
 
   private constructor(
     private readonly gameId: string,
@@ -30,8 +32,19 @@ export class GoGame {
     private readonly boardSize: GoBoardSize,
     private readonly difficulty: GameDifficulty,
     private readonly resetEpoch: number,
+    initialPosition?: GoPositionSetup,
+    importReview?: "pending" | "confirmed",
   ) {
     this.board = GoGame.emptyBoard(boardSize);
+    if (initialPosition === undefined && importReview !== undefined) {
+      throw new GameRuleError("invalid_position", "Only imported Go positions can have an import review state.");
+    }
+    if (importReview !== undefined && importReview !== "pending" && importReview !== "confirmed") {
+      throw new GameRuleError("invalid_position", "The imported Go review state is not supported.");
+    }
+    this.initialPosition = initialPosition === undefined ? undefined : this.loadInitialPosition(initialPosition);
+    this.importReview = initialPosition === undefined ? undefined : importReview ?? "pending";
+    if (this.importReview === "confirmed") this.stateVersion = 1;
     this.stonePositionHashes = new Set([this.boardHash(this.board)]);
   }
 
@@ -41,11 +54,13 @@ export class GoGame {
     boardSize: GoBoardSize = 9,
     difficulty: GameDifficulty = "medium",
     resetEpoch = 0,
+    initialPosition?: GoPositionSetup,
+    importReview?: "pending" | "confirmed",
   ): GoGame {
     if (boardSize !== 9 && boardSize !== 13 && boardSize !== 19) {
       throw new RangeError("Unsupported Go board size.");
     }
-    return new GoGame(gameId, playerColor, boardSize, difficulty, resetEpoch);
+    return new GoGame(gameId, playerColor, boardSize, difficulty, resetEpoch, initialPosition, importReview);
   }
 
   snapshot(): GoGameSnapshot {
@@ -60,7 +75,7 @@ export class GoGame {
       turn: this.turn,
       status: this.status,
       ...(winner === undefined ? {} : { winner }),
-      legalMoves: this.status === "finished" ? [] : this.legalMoves(),
+      legalMoves: this.status === "finished" || this.importReview === "pending" ? [] : this.legalMoves(),
       moveHistory: this.moveHistory.map((move) => ({ ...move })),
       ...(this.moveHistory.length === 0
         ? {}
@@ -70,6 +85,8 @@ export class GoGame {
       message: this.message(score, winner),
       board: this.board.map((row) => [...row]),
       boardSize: this.boardSize,
+      ...(this.initialPosition === undefined ? {} : { initialPosition: GoGame.cloneInitialPosition(this.initialPosition) }),
+      ...(this.importReview === undefined ? {} : { importReview: this.importReview }),
       captures: { ...this.captures },
       consecutivePasses: this.consecutivePasses,
       ...(score === undefined ? {} : { score }),
@@ -79,6 +96,9 @@ export class GoGame {
   play(actor: GameActor, move: string, expectedVersion: number): GoGameSnapshot {
     if (expectedVersion !== this.stateVersion) {
       throw new GameRuleError("stale_version", "The supplied game version is stale.");
+    }
+    if (this.importReview === "pending") {
+      throw new GameRuleError("import_review_required", "Confirm the imported Go position before playing a move.");
     }
     if (this.status === "finished") {
       throw new GameRuleError("game_finished", "This game has already finished.");
@@ -105,6 +125,21 @@ export class GoGame {
     this.board = simulation.board;
     this.stonePositionHashes.add(this.boardHash(this.board));
     this.commitMove(actor, move, simulation.captured, false);
+    return this.snapshot();
+  }
+
+  confirmImportedPosition(expectedVersion: number): GoGameSnapshot {
+    if (expectedVersion !== this.stateVersion) {
+      throw new GameRuleError("stale_version", "The supplied game version is stale.");
+    }
+    if (this.status === "finished") {
+      throw new GameRuleError("game_finished", "This game has already finished.");
+    }
+    if (this.importReview !== "pending") {
+      throw new GameRuleError("import_review_unavailable", "This game does not have an imported Go position awaiting review.");
+    }
+    this.importReview = "confirmed";
+    this.stateVersion += 1;
     return this.snapshot();
   }
 
@@ -153,6 +188,52 @@ export class GoGame {
       }
     }
     return this.group(candidate, point).liberties.size === 0 ? undefined : { board: candidate, captured };
+  }
+
+  private loadInitialPosition(value: GoPositionSetup): GoPositionSetup {
+    if (value.source !== "imported") {
+      throw new GameRuleError("invalid_position", "The Go position source is not supported.");
+    }
+    if (value.turn !== "black" && value.turn !== "white") {
+      throw new GameRuleError("invalid_position", "The imported Go position must name the next color to move.");
+    }
+    if (!Number.isSafeInteger(value.captures.black) || value.captures.black < 0
+      || !Number.isSafeInteger(value.captures.white) || value.captures.white < 0) {
+      throw new GameRuleError("invalid_position", "Imported capture counts must be nonnegative integers.");
+    }
+
+    const occupied = new Set<string>();
+    for (const [color, stones] of [["black", value.blackStones], ["white", value.whiteStones]] as const) {
+      for (const notation of stones) {
+        const point = this.parsePoint(notation);
+        const key = point === undefined ? undefined : this.pointKey(point);
+        if (point === undefined || key === undefined || occupied.has(key)) {
+          throw new GameRuleError("invalid_position", "Imported Go stones must be unique, in range, and non-overlapping.");
+        }
+        occupied.add(key);
+        this.board[point.row][point.column] = color;
+      }
+    }
+
+    this.rejectCapturedGroupsInSetup();
+    this.turn = value.turn;
+    this.captures.black = value.captures.black;
+    this.captures.white = value.captures.white;
+    return GoGame.cloneInitialPosition(value);
+  }
+
+  private rejectCapturedGroupsInSetup(): void {
+    const inspected = new Set<string>();
+    for (let row = 0; row < this.boardSize; row += 1) {
+      for (let column = 0; column < this.boardSize; column += 1) {
+        if (this.board[row][column] === null || inspected.has(this.pointKey({ row, column }))) continue;
+        const group = this.group(this.board, { row, column });
+        for (const stone of group.stones) inspected.add(this.pointKey(stone));
+        if (group.liberties.size === 0) {
+          throw new GameRuleError("invalid_position", "Imported Go positions cannot contain stones that should already be captured.");
+        }
+      }
+    }
   }
 
   private group(board: Board, start: Point): { stones: Point[]; liberties: Set<string> } {
@@ -254,10 +335,22 @@ export class GoGame {
     if (score !== undefined && winner !== undefined) {
       return `${winner === "black" ? "Black" : "White"} wins ${score.black}-${score.white}.`;
     }
-    return `${this.turn === "black" ? "Black" : "White"} to move.`;
+    if (this.importReview === "pending") return "Imported position awaiting confirmation.";
+    const prefix = this.initialPosition !== undefined && this.moveHistory.length === 0 ? "Imported position confirmed. " : "";
+    return `${prefix}${this.turn === "black" ? "Black" : "White"} to move.`;
   }
 
   private static emptyBoard(boardSize: GoBoardSize): Board {
     return Array.from({ length: boardSize }, () => Array<StoneColor | null>(boardSize).fill(null));
+  }
+
+  private static cloneInitialPosition(value: GoPositionSetup): GoPositionSetup {
+    return {
+      source: "imported",
+      blackStones: [...value.blackStones].sort(),
+      whiteStones: [...value.whiteStones].sort(),
+      turn: value.turn,
+      captures: { ...value.captures },
+    };
   }
 }

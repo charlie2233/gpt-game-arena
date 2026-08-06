@@ -120,6 +120,62 @@ describe("HTTP game arena app", () => {
     expect(create).toHaveBeenCalledTimes(4);
   });
 
+  it("imports a Go position through REST and safely rejects invalid photo transcriptions", async () => {
+    const app = createHttpApp(new ToolService(new GameStore()));
+    const imported = await request(app).post("/api/tools/import_go_position").send({
+      boardSize: 9,
+      playerColor: "white",
+      turn: "white",
+      blackStones: ["D4"],
+      whiteStones: ["E4"],
+    });
+    expect(imported.status).toBe(200);
+    expect(imported.body.content[0].text).toMatch(/^IMPORT_CONFIRMED /);
+    expect(imported.body.structuredContent).toMatchObject({
+      kind: "go",
+      boardSize: 9,
+      playerColor: "white",
+      turn: "white",
+      stateVersion: 0,
+      importReview: "pending",
+      legalMoves: [],
+      captures: { black: 0, white: 0 },
+      initialPosition: { source: "imported", blackStones: ["D4"], whiteStones: ["E4"] },
+    });
+    const gameId = imported.body.structuredContent.gameId as string;
+    const blockedMove = await request(app).post("/api/tools/play_game_move").send({
+      gameId, actor: "player", move: "A1", expectedVersion: 0, expectedResetEpoch: 0,
+    });
+    expect(blockedMove.status).toBe(409);
+    expect(blockedMove.body).toEqual({ error: { code: "import_review_required", message: "The requested game operation could not be completed." } });
+    const confirmed = await request(app).post("/api/tools/confirm_imported_go_position").send({
+      gameId, expectedVersion: 0, expectedResetEpoch: 0,
+    });
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.structuredContent).toMatchObject({ gameId, stateVersion: 1, importReview: "confirmed" });
+    expect(confirmed.body.content[0].text).toMatch(/^IMPORT_REVIEW_CONFIRMED /);
+
+    const malformed = await request(app).post("/api/tools/import_go_position").send({
+      boardSize: 9,
+      playerColor: "white",
+      turn: "white",
+      blackStones: ["D4", "D4"],
+      whiteStones: [],
+    });
+    expect(malformed.status).toBe(400);
+    expect(malformed.body).toEqual({ error: { code: "invalid_input", message: "Invalid tool input." } });
+
+    const unplayable = await request(app).post("/api/tools/import_go_position").send({
+      boardSize: 9,
+      playerColor: "black",
+      turn: "black",
+      blackStones: ["A1"],
+      whiteStones: ["A2", "B1"],
+    });
+    expect(unplayable.status).toBe(409);
+    expect(unplayable.body).toEqual({ error: { code: "invalid_position", message: "The requested game operation could not be completed." } });
+  });
+
   it("defaults difficulty to medium, accepts every level, and safely rejects invalid levels through REST", async () => {
     const service = new ToolService(new GameStore());
     const create = vi.spyOn(service, "createGame");
@@ -177,6 +233,8 @@ describe("HTTP game arena app", () => {
   it("rejects unexpected fields in every tool input without invoking service methods", async () => {
     const validInputs = {
       create_game: { game: "chess", playerColor: "white" },
+      import_go_position: { boardSize: 9, playerColor: "white", turn: "white", blackStones: ["D4"], whiteStones: ["E5"] },
+      confirm_imported_go_position: { gameId: "game", expectedVersion: 0, expectedResetEpoch: 0 },
       get_game_state: { gameId: "game" },
       play_game_move: { gameId: "game", actor: "player", move: "e2e4", expectedVersion: 0 },
       end_game: { gameId: "game", confirmed: true, expectedVersion: 0, expectedResetEpoch: 0 },
@@ -205,7 +263,7 @@ describe("HTTP game arena app", () => {
     expect(initialize.body.result.serverInfo.name).toBe("gpt-game-arena");
     const list = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
     expect(list.status).toBe(200);
-    expect(list.body.result.tools).toHaveLength(6);
+    expect(list.body.result.tools).toHaveLength(8);
     const call = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
       jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "create_game", arguments: { game: "go", playerColor: "black", boardSize: 13, difficulty: "hard" } },
     });

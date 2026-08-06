@@ -464,7 +464,7 @@ export function embeddedMovePrompt(game: GameSnapshot, decision = embeddedMoveDe
   const level = game.difficulty.toUpperCase();
   return [
     `FAST_TURN ${JSON.stringify(decision)}.`,
-    "This compact state comes from the authoritative successful player-move result.",
+    "This compact state comes from the authoritative current position.",
     gameThinkingInstruction(game),
     difficultyInstruction[game.difficulty],
     `For ${level}, think silently and briefly, compare candidateMoves instead of treating their order as a verdict, then make your first visible action exactly one play_game_move call with actor 'gpt', one exact candidate string, and the FAST_TURN gameId, expectedResetEpoch, and expectedVersion.`,

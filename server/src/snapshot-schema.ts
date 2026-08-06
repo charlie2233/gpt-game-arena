@@ -48,14 +48,47 @@ const connectFourMoveRecordSchema = moveRecordSchema.extend({ notation: connectF
 
 function goSnapshotSchema(boardSize: GoBoardSize) {
   const rowSchema = z.array(stoneSchema).length(boardSize);
+  const coordinate = boardSize === 9
+    ? /^[A-HJ][1-9]$/
+    : boardSize === 13
+      ? /^[A-HJ-N](?:[1-9]|1[0-3])$/
+      : /^[A-HJ-T](?:[1-9]|1[0-9])$/;
+  const initialPositionSchema = z.object({
+    source: z.literal("imported"),
+    blackStones: z.array(z.string().regex(coordinate)).max(boardSize * boardSize),
+    whiteStones: z.array(z.string().regex(coordinate)).max(boardSize * boardSize),
+    turn: z.enum(["black", "white"]),
+    captures: z.object({ black: z.number().int().nonnegative(), white: z.number().int().nonnegative() }).strict(),
+  }).strict().superRefine((value, context) => {
+    if (new Set(value.blackStones).size !== value.blackStones.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["blackStones"], message: "Black stones must be unique." });
+    }
+    if (new Set(value.whiteStones).size !== value.whiteStones.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["whiteStones"], message: "White stones must be unique." });
+    }
+    const black = new Set(value.blackStones);
+    if (value.whiteStones.some((stone) => black.has(stone))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["whiteStones"], message: "Stone colors cannot overlap." });
+    }
+  });
   return baseSnapshotSchema.extend({
     kind: z.literal("go"),
     board: z.array(rowSchema).length(boardSize),
     boardSize: z.literal(boardSize),
+    initialPosition: initialPositionSchema.optional(),
+    importReview: z.enum(["pending", "confirmed"]).optional(),
     captures: z.object({ black: z.number().int().nonnegative(), white: z.number().int().nonnegative() }).strict(),
     consecutivePasses: z.number().int().nonnegative(),
     score: z.object({ black: z.number(), white: z.number(), komi: z.literal(6.5) }).strict().optional(),
-  }).strict();
+  }).strict().superRefine((value, context) => {
+    if ((value.initialPosition === undefined) !== (value.importReview === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [value.initialPosition === undefined ? "importReview" : "initialPosition"],
+        message: "Imported Go position and review state must be present together.",
+      });
+    }
+  });
 }
 
 export const gameSnapshotSchema = z.union([

@@ -174,3 +174,30 @@ Original prompt: also implement select difficuktuy
 - [x] Hosted ChatGPT acceptance passed after refreshing the developer connection to the new engine: Black `D16` received the confirmed Hard reply `D4` in the opposite open corner, replacing the stale v12 `D10` behavior; final handoff uses the v14 cache URI.
 - [x] The hosted board was reset after acceptance and left as a fresh empty Hard 19×19 game with the user to move as Black.
 - [ ] Replace the temporary `trycloudflare.com` acceptance tunnel with an approved stable deployment before calling this update permanently hosted.
+
+## Continue Go from a photo
+
+### Original prompt
+
+- make him able to edit the things like go before it was open likme i can tell him to continue from a go match, and gibve him the poicture. and tell him to be wiote
+
+### Implemented
+
+- [x] Added a dedicated `import_go_position` MCP action for photo-derived 9×9, 13×13, and 19×19 Go positions.
+- [x] Made user color, GPT color, next turn, difficulty, stones, and optional capture counts explicit instead of guessing them on the server.
+- [x] Added strict coordinate, duplicate, overlap, capture-count, and zero-liberty-group validation.
+- [x] Preserved the imported root through the first move, cloning, reset, manual end, JSON persistence, and process restart.
+- [x] Added an `IMPORT_CONFIRMED` receipt and direct v16 widget rendering; unknown mutation outcomes are never narrated as success.
+- [x] Added a visible photo-position review card backed by a persisted `pending`/`confirmed` server state. Both sides, Refresh, and direct move calls are blocked before the versioned `IMPORT_REVIEW_CONFIRMED` acceptance.
+- [x] Trigger exactly one GPT turn after authoritative acceptance when GPT moves next; player-turn imports unlock without a GPT prompt.
+- [x] Made pre-play corrections safe: GPT re-imports the complete corrected position rather than recording setup stones as alternating moves.
+- [x] Documented the deliberate import boundary: prior ko history, passes, and unknown captures cannot be reconstructed from one image.
+
+### Verification status
+
+- [x] Complete automated matrix passes: 126 server + 93 web = 219 tests; workspace typecheck, production builds, and `git diff --check` pass.
+- [x] The required 1280x720 browser game client produced a valid deterministic text snapshot, a fully visible board/controls screenshot, and no console-error artifact.
+- [x] The public v16 MCP catalog exposed all eight tools, the v16 widget template, and the app-only import-confirmation action under the documented size budget.
+- [x] Hosted ChatGPT vision transcribed the supplied 19x19 screenshot as Black `D16, P16, D4, Q4, F3` and White `K19, K18, K17, K3, K2`, preserved White to move on Hard, and correctly reported that no move was played.
+- [ ] Finish the hosted widget acceptance against a non-expiring endpoint: the v16 developer app's temporary tunnel expired while loading the review card, so confirmation/unlock remains a deployment-gated check.
+- [ ] Replace the temporary `trycloudflare.com` acceptance tunnel with an approved stable deployment before calling the app permanently hosted.

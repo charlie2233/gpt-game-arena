@@ -28,6 +28,24 @@ describe("authoritative snapshot validation", () => {
     expect(isSnapshot({ ...go(13), board: [Array(12).fill(null), ...go(13).board.slice(1)] })).toBe(false);
     expect(isSnapshot(go(11))).toBe(false);
   });
+  it("accepts only strict board-sized imported Go metadata", () => {
+    const board = Array.from({ length: 9 }, () => Array<"white" | "black" | null>(9).fill(null));
+    board[5][3] = "black";
+    board[5][4] = "white";
+    const imported = { gameId: "photo", kind: "go", difficulty: "hard", playerColor: "white", turn: "white", status: "active", legalMoves: ["A9", "pass"], moveHistory: [], stateVersion: 0, message: "Imported position. White to move.", boardSize: 9, board, captures: { black: 0, white: 0 }, consecutivePasses: 0, importReview: "pending", initialPosition: { source: "imported", blackStones: ["D4"], whiteStones: ["E4"], turn: "white", captures: { black: 0, white: 0 } } };
+    expect(isSnapshot(imported)).toBe(true);
+    expect(isSnapshot({ ...imported, importReview: "confirmed" })).toBe(true);
+    expect(isSnapshot({ ...imported, importReview: undefined })).toBe(false);
+    expect(isSnapshot({ ...imported, importReview: "skipped" })).toBe(false);
+    expect(isSnapshot({ ...imported, initialPosition: { ...imported.initialPosition, blackStones: ["D4", "D4"] } })).toBe(false);
+    expect(isSnapshot({ ...imported, initialPosition: { ...imported.initialPosition, whiteStones: ["D4"] } })).toBe(false);
+    expect(isSnapshot({ ...imported, initialPosition: { ...imported.initialPosition, blackStones: ["I4"] } })).toBe(false);
+    expect(isSnapshot({ ...imported, initialPosition: { ...imported.initialPosition, blackStones: ["A10"] } })).toBe(false);
+    expect(isSnapshot({ ...imported, initialPosition: { ...imported.initialPosition, turn: "secret" } })).toBe(false);
+    expect(isSnapshot({ ...imported, initialPosition: { ...imported.initialPosition, captures: { black: -1, white: 0 } } })).toBe(false);
+    expect(isSnapshot({ ...imported, initialPosition: { ...imported.initialPosition, extra: "SECRET" } })).toBe(false);
+    expect(isSnapshot({ ...chess, initialPosition: imported.initialPosition })).toBe(false);
+  });
   it("accepts server-shaped Tic-Tac-Toe, Connect Four, and Reversi snapshots", () => {
     expect(isSnapshot(tic())).toBe(true);
     expect(isSnapshot({ ...tic(), winningLine: ["A3", "B2", "C1"] })).toBe(true);
@@ -73,6 +91,25 @@ describe("GameClient end_game", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/tools/end_game", expect.objectContaining({
       method: "POST",
       body: '{"gameId":"g","confirmed":true,"expectedVersion":4,"expectedResetEpoch":2}',
+    }));
+  });
+});
+
+describe("GameClient imported-position confirmation", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends the authoritative version and reset epoch exactly once", async () => {
+    const board = Array.from({ length: 9 }, () => Array<"white" | "black" | null>(9).fill(null));
+    const confirmed = { gameId: "photo", kind: "go", difficulty: "hard", playerColor: "white", turn: "white", status: "active", legalMoves: ["A9", "pass"], moveHistory: [], stateVersion: 3, resetEpoch: 4, message: "Imported position. White to move.", boardSize: 9, board, captures: { black: 0, white: 0 }, consecutivePasses: 0, importReview: "confirmed", initialPosition: { source: "imported", blackStones: [], whiteStones: [], turn: "white", captures: { black: 0, white: 0 } } };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ structuredContent: confirmed }) } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GameClient(new GameBridge(window));
+
+    await expect(client.confirmImportedGo("photo", 2, 4)).resolves.toMatchObject({ importReview: "confirmed", stateVersion: 3 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/tools/confirm_imported_go_position", expect.objectContaining({
+      method: "POST",
+      body: '{"gameId":"photo","expectedVersion":2,"expectedResetEpoch":4}',
     }));
   });
 });

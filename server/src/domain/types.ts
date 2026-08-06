@@ -49,9 +49,21 @@ export interface GoGameSnapshot extends BaseGameSnapshot {
   /** Rows descend from boardSize to 1; columns start at A and skip I. */
   board: (StoneColor | null)[][];
   boardSize: GoBoardSize;
+  /** Present when this game started from a user-supplied board position. */
+  initialPosition?: GoPositionSetup;
+  /** Present iff initialPosition is present. Moves are blocked while pending. */
+  importReview?: "pending" | "confirmed";
   captures: { black: number; white: number };
   consecutivePasses: number;
   score?: { black: number; white: number; komi: 6.5 };
+}
+
+export interface GoPositionSetup {
+  source: "imported";
+  blackStones: string[];
+  whiteStones: string[];
+  turn: StoneColor;
+  captures: { black: number; white: number };
 }
 
 export type TicTacToeCoordinate = "A1" | "A2" | "A3" | "B1" | "B2" | "B3" | "C1" | "C2" | "C3";

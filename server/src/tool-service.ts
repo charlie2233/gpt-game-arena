@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 
-import type { GameActor, GameDifficulty, GameKind, GameSnapshot, GoBoardSize, StoneColor } from "./domain/types.js";
+import type { GameActor, GameDifficulty, GameKind, GameSnapshot, GoBoardSize, GoPositionSetup, StoneColor } from "./domain/types.js";
 import { GameRuleError } from "./domain/errors.js";
-import { cloneGameSession, createGameSession, endGameSession } from "./game-session.js";
+import { cloneGameSession, confirmImportedGoPosition, createGameSession, endGameSession } from "./game-session.js";
 import { GameStore } from "./game-store.js";
 import { parseGameSnapshot } from "./snapshot-schema.js";
 
@@ -20,6 +20,36 @@ export class ToolService {
     });
     this.store.put(session);
     return session.snapshot();
+  }
+
+  importGoPosition(input: {
+    boardSize: GoBoardSize;
+    playerColor: StoneColor;
+    turn: StoneColor;
+    blackStones: string[];
+    whiteStones: string[];
+    captures: { black: number; white: number };
+    difficulty?: GameDifficulty;
+  }): GameSnapshot {
+    const initialPosition: GoPositionSetup = {
+      source: "imported",
+      blackStones: [...input.blackStones],
+      whiteStones: [...input.whiteStones],
+      turn: input.turn,
+      captures: { ...input.captures },
+    };
+    const session = createGameSession({
+      gameId: randomUUID(),
+      kind: "go",
+      playerColor: input.playerColor,
+      difficulty: input.difficulty ?? "medium",
+      resetEpoch: 0,
+      boardSize: input.boardSize,
+      initialPosition,
+    });
+    const snapshot = parseGameSnapshot(session.snapshot());
+    this.store.put(session);
+    return snapshot;
   }
 
   getGameState(input: { gameId: string }): GameSnapshot {
@@ -40,6 +70,21 @@ export class ToolService {
     }
     const replacement = cloneGameSession(current);
     const snapshot = parseGameSnapshot(replacement.play(input.actor, input.move, input.expectedVersion));
+    this.store.replace(replacement);
+    return snapshot;
+  }
+
+  confirmImportedGoPosition(input: {
+    gameId: string;
+    expectedVersion: number;
+    expectedResetEpoch: number;
+  }): GameSnapshot {
+    const current = this.store.get(input.gameId);
+    if ((current.snapshot().resetEpoch ?? 0) !== input.expectedResetEpoch) {
+      throw new GameRuleError("stale_version", "The game reset epoch has changed.");
+    }
+    const replacement = cloneGameSession(current);
+    const snapshot = parseGameSnapshot(confirmImportedGoPosition(replacement, input.expectedVersion));
     this.store.replace(replacement);
     return snapshot;
   }
@@ -68,7 +113,10 @@ export class ToolService {
       playerColor: current.playerColor,
       difficulty: current.difficulty,
       resetEpoch: (current.resetEpoch ?? 0) + 1,
-      ...(current.kind === "go" ? { boardSize: current.boardSize } : {}),
+      ...(current.kind === "go" ? {
+        boardSize: current.boardSize,
+        ...(current.initialPosition === undefined ? {} : { initialPosition: current.initialPosition }),
+      } : {}),
     });
     this.store.replace(replacement);
     return replacement.snapshot();

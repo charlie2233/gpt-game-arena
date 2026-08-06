@@ -10,12 +10,14 @@ import type {
   GameKind,
   GameSnapshot,
   GoBoardSize,
+  GoPositionSetup,
   StoneColor,
 } from "./domain/types.js";
 
 export interface GameSession {
   snapshot(): GameSnapshot;
   play(actor: GameActor, move: string, expectedVersion: number): GameSnapshot;
+  confirmImportedPosition?(expectedVersion: number): GameSnapshot;
 }
 
 export interface GameSessionDescriptor {
@@ -25,6 +27,8 @@ export interface GameSessionDescriptor {
   difficulty: GameDifficulty;
   resetEpoch?: number;
   boardSize?: GoBoardSize;
+  initialPosition?: GoPositionSetup;
+  importReview?: "pending" | "confirmed";
 }
 
 export interface GameSessionMove {
@@ -47,13 +51,15 @@ export function createGameSession(descriptor: GameSessionDescriptor): GameSessio
     difficulty,
     resetEpoch = 0,
     boardSize = 9,
+    initialPosition,
+    importReview,
   } = descriptor;
 
   switch (kind) {
     case "chess":
       return ChessGame.create(gameId, playerColor, difficulty, resetEpoch);
     case "go":
-      return GoGame.create(gameId, playerColor, boardSize, difficulty, resetEpoch);
+      return GoGame.create(gameId, playerColor, boardSize, difficulty, resetEpoch, initialPosition, importReview);
     case "tic-tac-toe":
       return TicTacToeGame.create(gameId, playerColor, difficulty, resetEpoch);
     case "connect-four":
@@ -72,7 +78,21 @@ export function descriptorFromSnapshot(snapshot: GameSnapshot): GameSessionDescr
     playerColor: snapshot.playerColor,
     difficulty: snapshot.difficulty,
     resetEpoch: snapshot.resetEpoch ?? 0,
-    ...(snapshot.kind === "go" ? { boardSize: snapshot.boardSize } : {}),
+    ...(snapshot.kind === "go" ? {
+      boardSize: snapshot.boardSize,
+      ...(snapshot.initialPosition === undefined ? {} : { initialPosition: cloneGoPosition(snapshot.initialPosition) }),
+      ...(snapshot.importReview === undefined ? {} : { importReview: snapshot.importReview }),
+    } : {}),
+  };
+}
+
+function cloneGoPosition(value: GoPositionSetup): GoPositionSetup {
+  return {
+    source: "imported",
+    blackStones: [...value.blackStones],
+    whiteStones: [...value.whiteStones],
+    turn: value.turn,
+    captures: { ...value.captures },
   };
 }
 
@@ -110,6 +130,23 @@ export function endGameSession(
     throw new GameRuleError("stale_version", "The supplied game version is stale.");
   }
   return new EndedGameSession(endedSnapshot(snapshot));
+}
+
+export function confirmImportedGoPosition(
+  session: GameSession,
+  expectedVersion: number,
+): GameSnapshot {
+  const snapshot = session.snapshot();
+  if (expectedVersion !== snapshot.stateVersion) {
+    throw new GameRuleError("stale_version", "The supplied game version is stale.");
+  }
+  if (snapshot.status === "finished") {
+    throw new GameRuleError("game_finished", "This game has already finished.");
+  }
+  if (snapshot.kind !== "go" || snapshot.importReview !== "pending" || session.confirmImportedPosition === undefined) {
+    throw new GameRuleError("import_review_unavailable", "This game does not have an imported Go position awaiting review.");
+  }
+  return session.confirmImportedPosition(expectedVersion);
 }
 
 function eventsFromSnapshot(snapshot: GameSnapshot): GameSessionEvent[] {
