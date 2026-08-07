@@ -1,5 +1,6 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -75,7 +76,25 @@ const persistedGoPositionSchema = z.object({
   }).strict(),
 }).strict();
 
-const persistedSessionSchema = z.discriminatedUnion("kind", [
+const persistedSessionV1Schema = z.discriminatedUnion("kind", [
+  persistedSessionBaseSchema.extend({ kind: z.literal("chess") }).strict(),
+  persistedSessionBaseSchema.extend({
+    kind: z.literal("go"),
+    boardSize: z.union([z.literal(9), z.literal(13), z.literal(19)]),
+    initialPosition: persistedGoPositionSchema.optional(),
+    importReview: z.enum(["pending", "confirmed"]).optional(),
+  }).strict(),
+  persistedSessionBaseSchema.extend({ kind: z.literal("tic-tac-toe") }).strict(),
+  persistedSessionBaseSchema.extend({ kind: z.literal("connect-four") }).strict(),
+  persistedSessionBaseSchema.extend({ kind: z.literal("reversi") }).strict(),
+  persistedSessionBaseSchema.extend({ kind: z.literal("pool") }).strict(),
+  persistedSessionBaseSchema.extend({
+    kind: z.literal("basketball"),
+    basketballOutcomeSeed: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  }).strict(),
+]);
+
+const persistedReadySessionV2Schema = z.discriminatedUnion("kind", [
   persistedSessionBaseSchema.extend({ kind: z.literal("chess") }).strict(),
   persistedSessionBaseSchema.extend({
     kind: z.literal("go"),
@@ -93,13 +112,32 @@ const persistedSessionSchema = z.discriminatedUnion("kind", [
   }).strict(),
 ]);
 
-const persistedStoreSchema = z.object({
-  formatVersion: z.literal(1),
-  sessions: z.array(persistedSessionSchema).max(MAX_GAME_STORE_SESSIONS),
+const persistedUnavailableSessionV2Schema = persistedSessionBaseSchema.extend({
+  kind: z.literal("basketball"),
+  unavailableReason: z.literal("missing-basketball-outcome-seed"),
+  events: persistedEventsSchema.refine(events => events.some(event => event.type === "move"), "An unavailable legacy save must retain at least one move."),
 }).strict();
 
-type PersistedStore = z.infer<typeof persistedStoreSchema>;
-type PersistedSession = z.infer<typeof persistedSessionSchema>;
+const persistedSessionV2Schema = z.union([
+  persistedReadySessionV2Schema,
+  persistedUnavailableSessionV2Schema,
+]);
+
+const persistedStoreV1Schema = z.object({
+  formatVersion: z.literal(1),
+  sessions: z.array(persistedSessionV1Schema).max(MAX_GAME_STORE_SESSIONS),
+}).strict();
+
+const persistedStoreV2Schema = z.object({
+  formatVersion: z.literal(2),
+  sessions: z.array(persistedSessionV2Schema).max(MAX_GAME_STORE_SESSIONS),
+}).strict();
+
+const persistedStoreSchema = z.discriminatedUnion("formatVersion", [persistedStoreV1Schema, persistedStoreV2Schema]);
+
+type PersistedStore = z.infer<typeof persistedStoreV2Schema>;
+type PersistedSession = z.infer<typeof persistedReadySessionV2Schema>;
+type PersistedUnavailableSession = z.infer<typeof persistedUnavailableSessionV2Schema>;
 
 function persistedSessionFromStored({ session, lastAccessedAt }: StoredSession): PersistedSession {
   const snapshot = session.snapshot();
@@ -160,6 +198,7 @@ function unhandledPersistedKind(value: never): never {
 
 export class GameStore {
   private readonly sessions = new Map<string, StoredSession>();
+  private readonly unavailableSessions = new Map<string, PersistedUnavailableSession>();
   private readonly maxSessions: number;
   private readonly ttlMs: number;
   private readonly now: () => number;
@@ -179,7 +218,10 @@ export class GameStore {
     this.mutateAndPersist(() => {
       this.pruneExpired();
       const gameId = session.snapshot().gameId;
-      if (!this.sessions.has(gameId) && this.sessions.size >= this.maxSessions) {
+      if (this.unavailableSessions.has(gameId)) {
+        throw new GameRuleError("save_incompatible", "A preserved incompatible save already uses this game ID.");
+      }
+      if (!this.sessions.has(gameId) && this.storedSessionCount() >= this.maxSessions) {
         throw new GameRuleError("store_full", "The game save limit has been reached.");
       }
       this.store(gameId, session);
@@ -190,6 +232,11 @@ export class GameStore {
     this.pruneExpired();
     const stored = this.sessions.get(gameId);
     if (!stored) {
+      const unavailable = this.unavailableSessions.get(gameId);
+      if (unavailable) {
+        this.mutateAndPersist(() => this.storeUnavailable({ ...unavailable, lastAccessedAt: this.now() }));
+        throw new GameRuleError("save_incompatible", "This legacy Court Duel save is missing its private outcome seed.");
+      }
       throw new GameRuleError("not_found", `Game ${gameId} was not found.`);
     }
     this.mutateAndPersist(() => this.store(gameId, stored.session));
@@ -200,6 +247,9 @@ export class GameStore {
     const gameId = session.snapshot().gameId;
     this.mutateAndPersist(() => {
       this.pruneExpired();
+      if (this.unavailableSessions.has(gameId)) {
+        throw new GameRuleError("save_incompatible", "This legacy Court Duel save is missing its private outcome seed.");
+      }
       if (!this.sessions.has(gameId)) {
         throw new GameRuleError("not_found", `Game ${gameId} was not found.`);
       }
@@ -212,11 +262,25 @@ export class GameStore {
     this.sessions.set(gameId, { session, lastAccessedAt: this.now() });
   }
 
+  private storeUnavailable(record: PersistedUnavailableSession): void {
+    this.unavailableSessions.delete(record.gameId);
+    this.unavailableSessions.set(record.gameId, record);
+  }
+
+  private storedSessionCount(): number {
+    return this.sessions.size + this.unavailableSessions.size;
+  }
+
   private pruneExpired(): void {
     const now = this.now();
     for (const [gameId, stored] of this.sessions) {
       if (now - stored.lastAccessedAt >= this.ttlMs) {
         this.sessions.delete(gameId);
+      }
+    }
+    for (const [gameId, stored] of this.unavailableSessions) {
+      if (now - stored.lastAccessedAt >= this.ttlMs) {
+        this.unavailableSessions.delete(gameId);
       }
     }
   }
@@ -235,12 +299,15 @@ export class GameStore {
 
   private mutateAndPersist(mutation: () => void): void {
     const previous = new Map(this.sessions);
+    const previousUnavailable = new Map(this.unavailableSessions);
     try {
       mutation();
       this.persist();
     } catch (error) {
       this.sessions.clear();
       for (const [gameId, stored] of previous) this.sessions.set(gameId, stored);
+      this.unavailableSessions.clear();
+      for (const [gameId, stored] of previousUnavailable) this.unavailableSessions.set(gameId, stored);
       throw error;
     }
   }
@@ -249,7 +316,8 @@ export class GameStore {
     if (this.persistencePath === undefined || !existsSync(this.persistencePath)) return;
 
     try {
-      const document = persistedStoreSchema.parse(JSON.parse(readFileSync(this.persistencePath, "utf8")));
+      const persistedSource = readFileSync(this.persistencePath, "utf8");
+      const document = persistedStoreSchema.parse(JSON.parse(persistedSource));
       const gameIds = new Set<string>();
       const now = this.now();
       for (const record of document.sessions) {
@@ -263,6 +331,24 @@ export class GameStore {
       }
 
       for (const record of activeRecords) {
+        if (document.formatVersion === 1
+          && record.kind === "basketball"
+          && (!("basketballOutcomeSeed" in record) || record.basketballOutcomeSeed === undefined)
+          && record.events.some(event => event.type === "move")) {
+          this.storeUnavailable({
+            ...record,
+            resetEpoch: record.resetEpoch ?? 0,
+            unavailableReason: "missing-basketball-outcome-seed",
+          });
+          continue;
+        }
+        if (document.formatVersion === 2 && "unavailableReason" in record) {
+          this.storeUnavailable(record);
+          continue;
+        }
+        const basketballOutcomeSeed = record.kind === "basketball" && "basketballOutcomeSeed" in record
+          ? record.basketballOutcomeSeed
+          : undefined;
         const session = replayGameSession(
           {
             gameId: record.gameId,
@@ -276,7 +362,7 @@ export class GameStore {
               ...(record.importReview === undefined ? {} : { importReview: record.importReview }),
             } : {}),
             ...(record.kind === "basketball" ? {
-              basketballOutcomeSeed: record.basketballOutcomeSeed,
+              basketballOutcomeSeed,
             } : {}),
           },
           record.events.map(event => event.type === "move"
@@ -285,8 +371,13 @@ export class GameStore {
         );
         this.sessions.set(record.gameId, { session, lastAccessedAt: record.lastAccessedAt });
       }
+      if (document.formatVersion === 1) {
+        this.backupLegacyStore(persistedSource);
+        this.persist();
+      }
     } catch (error) {
       this.sessions.clear();
+      this.unavailableSessions.clear();
       throw new Error(`Persisted game store could not be validated: ${this.persistencePath}`, { cause: error });
     }
   }
@@ -294,9 +385,12 @@ export class GameStore {
   private persist(): void {
     if (this.persistencePath === undefined) return;
 
-    const document = persistedStoreSchema.parse({
-      formatVersion: 1,
-      sessions: [...this.sessions.values()].map(persistedSessionFromStored),
+    const document = persistedStoreV2Schema.parse({
+      formatVersion: 2,
+      sessions: [
+        ...[...this.sessions.values()].map(persistedSessionFromStored),
+        ...this.unavailableSessions.values(),
+      ],
     }) satisfies PersistedStore;
 
     const directory = dirname(this.persistencePath);
@@ -320,6 +414,23 @@ export class GameStore {
         // The temporary file may not have been created or may already have been renamed.
       }
       throw new Error(`Persisted game store could not be written: ${this.persistencePath}`, { cause: error });
+    }
+  }
+
+  private backupLegacyStore(persistedSource: string): void {
+    if (this.persistencePath === undefined) return;
+    if (readFileSync(this.persistencePath, "utf8") !== persistedSource) {
+      throw new Error("The legacy game store changed during migration.");
+    }
+    const backupPath = `${this.persistencePath}.v1.bak`;
+    if (!existsSync(backupPath)) {
+      writeFileSync(backupPath, persistedSource, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    }
+    const backupStats = lstatSync(backupPath);
+    if (!backupStats.isFile()
+      || readFileSync(backupPath, "utf8") !== persistedSource
+      || (backupStats.mode & 0o777) !== 0o600) {
+      throw new Error("The legacy game store backup could not be verified.");
     }
   }
 }

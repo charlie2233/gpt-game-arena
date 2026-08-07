@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -57,6 +57,18 @@ describe("ToolService", () => {
       }],
     });
     expect(JSON.stringify(failure)).not.toContain("SECRET_STORE_DETAIL");
+  });
+
+  it("reports an incompatible legacy save without leaking its internal record", () => {
+    const failure = toToolFailure(new GameRuleError("save_incompatible", "SECRET_LEGACY_RECORD"));
+    expect(failure).toEqual({
+      isError: true,
+      content: [{
+        type: "text",
+        text: "save_incompatible: This legacy Court Duel save is preserved but cannot be resumed because its private shot-outcome data is missing.",
+      }],
+    });
+    expect(JSON.stringify(failure)).not.toContain("SECRET_LEGACY_RECORD");
   });
 
   it("preserves whitespace-padded moves for domain rejection instead of normalizing them", () => {
@@ -840,7 +852,7 @@ describe("ToolService", () => {
       formatVersion: number;
       sessions: Array<{ events: unknown[] }>;
     };
-    expect(document.formatVersion).toBe(1);
+    expect(document.formatVersion).toBe(2);
     expect(document.sessions[0].events).toEqual([
       { type: "move", actor: "player", move: "D" },
       { type: "end" },
@@ -881,9 +893,126 @@ describe("ToolService", () => {
     expect(service.resetGame({ gameId: "legacy-game" }).resetEpoch).toBe(1);
   });
 
+  it("migrates empty legacy Court Duel saves and preserves played seedless saves as explicitly unavailable", () => {
+    const persistencePath = temporaryStorePath();
+    const legacyContent = JSON.stringify({
+      formatVersion: 1,
+      sessions: [
+        {
+          gameId: "legacy-empty-court-duel",
+          kind: "basketball",
+          playerColor: "black",
+          difficulty: "hard",
+          resetEpoch: 0,
+          events: [],
+          lastAccessedAt: 100,
+        },
+        {
+          gameId: "legacy-played-court-duel",
+          kind: "basketball",
+          playerColor: "black",
+          difficulty: "medium",
+          resetEpoch: 0,
+          events: [
+            { type: "move", actor: "player", move: "drive" },
+            { type: "move", actor: "gpt", move: "three" },
+            { type: "end" },
+          ],
+          lastAccessedAt: 100,
+        },
+        {
+          gameId: "legacy-ended-empty-court-duel",
+          kind: "basketball",
+          playerColor: "black",
+          difficulty: "medium",
+          resetEpoch: 0,
+          events: [{ type: "end" }],
+          lastAccessedAt: 100,
+        },
+        {
+          gameId: "legacy-seeded-court-duel",
+          kind: "basketball",
+          playerColor: "black",
+          difficulty: "easy",
+          resetEpoch: 0,
+          basketballOutcomeSeed: "0".repeat(64),
+          events: [
+            { type: "move", actor: "player", move: "three" },
+            { type: "move", actor: "gpt", move: "three" },
+          ],
+          lastAccessedAt: 100,
+        },
+      ],
+    });
+    writeFileSync(persistencePath, legacyContent, "utf8");
+
+    const migratedService = new ToolService(new GameStore({ persistencePath, now: () => 100 }));
+    const persisted = JSON.parse(readFileSync(persistencePath, "utf8")) as {
+      formatVersion: number;
+      sessions: Array<{ gameId: string; events: unknown[]; unavailableReason?: string; basketballOutcomeSeed?: string }>;
+    };
+    expect(persisted.formatVersion).toBe(2);
+    expect(readFileSync(`${persistencePath}.v1.bak`, "utf8")).toBe(legacyContent);
+    expect(statSync(`${persistencePath}.v1.bak`).mode & 0o777).toBe(0o600);
+
+    const migrated = migratedService.getGameState({ gameId: "legacy-empty-court-duel" });
+    const endedEmpty = migratedService.getGameState({ gameId: "legacy-ended-empty-court-duel" });
+    const seeded = migratedService.getGameState({ gameId: "legacy-seeded-court-duel" });
+    const seed = persistedBasketballSeed(persistencePath, migrated.gameId);
+    expectRuleError(() => migratedService.getGameState({ gameId: "legacy-played-court-duel" }), "save_incompatible");
+    const preserved = persisted.sessions.find(session => session.gameId === "legacy-played-court-duel");
+
+    expect(preserved).toMatchObject({
+      gameId: "legacy-played-court-duel",
+      unavailableReason: "missing-basketball-outcome-seed",
+    });
+    expect(preserved?.events).toEqual([
+      { type: "move", actor: "player", move: "drive" },
+      { type: "move", actor: "gpt", move: "three" },
+      { type: "end" },
+    ]);
+    expect(preserved?.basketballOutcomeSeed).toBeUndefined();
+    expect(seed).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(migrated)).not.toContain(seed);
+    expect(endedEmpty).toMatchObject({ status: "finished", finishReason: "ended", stateVersion: 1, moveHistory: [] });
+    expect(persistedBasketballSeed(persistencePath, seeded.gameId)).toBe("0".repeat(64));
+
+    const restarted = new ToolService(new GameStore({ persistencePath, now: () => 100 }));
+    expect(restarted.getGameState({ gameId: migrated.gameId })).toEqual(migrated);
+    expect(restarted.getGameState({ gameId: endedEmpty.gameId })).toEqual(endedEmpty);
+    expect(restarted.getGameState({ gameId: seeded.gameId })).toEqual(seeded);
+    expectRuleError(() => restarted.getGameState({ gameId: "legacy-played-court-duel" }), "save_incompatible");
+    expect(persistedBasketballSeed(persistencePath, migrated.gameId)).toBe(seed);
+  });
+
+  it.each([
+    ["stale contents", "stale-backup", 0o600],
+    ["permissive mode", undefined, 0o644],
+  ])("fails closed when the v1 migration backup has %s", (_label, backupOverride, backupMode) => {
+    const persistencePath = temporaryStorePath();
+    const legacyContent = JSON.stringify({
+      formatVersion: 1,
+      sessions: [{
+        gameId: "legacy-backup-check",
+        kind: "chess",
+        playerColor: "white",
+        difficulty: "medium",
+        events: [],
+        lastAccessedAt: 100,
+      }],
+    });
+    writeFileSync(persistencePath, legacyContent, "utf8");
+    const backupContent = backupOverride ?? legacyContent;
+    writeFileSync(`${persistencePath}.v1.bak`, backupContent, { encoding: "utf8", mode: backupMode });
+
+    expect(() => new GameStore({ persistencePath, now: () => 100 })).toThrow(/could not be validated/);
+    expect(readFileSync(persistencePath, "utf8")).toBe(legacyContent);
+    expect(readFileSync(`${persistencePath}.v1.bak`, "utf8")).toBe(backupContent);
+  });
+
   it.each([
     ["invalid JSON", "{not-json"],
-    ["unknown version", JSON.stringify({ formatVersion: 2, sessions: [] })],
+    ["unknown version", JSON.stringify({ formatVersion: 3, sessions: [] })],
     ["an impossible move log", JSON.stringify({
       formatVersion: 1,
       sessions: [{
@@ -917,8 +1046,8 @@ describe("ToolService", () => {
         lastAccessedAt: Date.now(),
       }],
     })],
-    ["a Court Duel session without its private seed", JSON.stringify({
-      formatVersion: 1,
+    ["a version 2 Court Duel session without its private seed", JSON.stringify({
+      formatVersion: 2,
       sessions: [{
         gameId: "seedless-court-duel",
         kind: "basketball",
@@ -930,7 +1059,7 @@ describe("ToolService", () => {
       }],
     })],
     ["a malformed Court Duel private seed", JSON.stringify({
-      formatVersion: 1,
+      formatVersion: 2,
       sessions: [{
         gameId: "malformed-seed-court-duel",
         kind: "basketball",

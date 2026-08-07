@@ -196,6 +196,7 @@ export function executeTool(service: ToolService, name: ToolName, input: unknown
 export function toToolFailure(error: GameRuleError, attempt?: "move" | "end" | "import" | "import-review"): ToolFailure {
   const messages: Record<GameRuleError["code"], string> = {
     not_found: "The game was not found.",
+    save_incompatible: "This legacy Court Duel save is preserved but cannot be resumed because its private shot-outcome data is missing.",
     store_full: "The game save limit has been reached. Existing saved games were preserved.",
     stale_version: "The game has changed; refresh its state before trying again.",
     wrong_actor: "That actor cannot make the next move.",
