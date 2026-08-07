@@ -26,4 +26,8 @@ describe("responsive new-game picker", () => {
     expect(styles).toContain("> .end-confirmation { grid-column: 2; grid-row: 1; margin-top: 0;");
     expect(styles).toContain("> .game-status { grid-column: 2; grid-row: 2;");
   });
+
+  it("caps portrait-mobile Chess so the board, controls, and status fit together", () => {
+    expect(styles).toContain(".board-column.board-chess { width: min(100%, 22rem, max(16rem, calc(var(--host-max-height, 100svh) - 21rem))); }");
+  });
 });

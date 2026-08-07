@@ -9,10 +9,17 @@
     "server",
     "web"
   ],
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  },
   "scripts": {
     "build": "npm run build --workspace web && npm run build --workspace server",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && npm run typecheck:browser",
+    "typecheck:browser": "tsc -p tsconfig.browser.json",
     "test": "npm run test --workspaces --if-present && npm run test:site",
+    "test:ci": "npm run test --workspace server -- --maxWorkers=1 --no-file-parallelism && npm run test --workspace web -- --maxWorkers=1 --no-file-parallelism && npm run test:site",
+    "test:browser": "playwright test",
+    "test:browser:built": "playwright test",
     "test:site": "node scripts/validate-static-site.mjs",
     "start": "npm run start --workspace server",
     "dev": "npm run dev --workspace server",

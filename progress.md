@@ -373,7 +373,7 @@ Original prompt: also implement select difficuktuy
 - [ ] Owner chooses a source-code license or intentionally keeps the public repository unlicensed.
 - [ ] Owner approves a paid persistent host; deploy one replica, set its exact public origin, and prove create/move/redeploy/resume over HTTPS.
 - [ ] Record the short demo against the final stable production endpoint and confirm the prepared listing assets/screenshots in Apps Management.
-- [ ] Verify the domain, pass the tool scan and reviewer cases, select availability, submit through Apps Management, and complete a fresh hosted ChatGPT turn against the stable v20 endpoint.
+- [ ] Verify the domain, pass the tool scan and reviewer cases, select availability, submit through Apps Management, and complete a fresh hosted ChatGPT turn against the stable v21 endpoint.
 
 ## Direct authoritative embedded GPT turns
 
@@ -438,5 +438,8 @@ Original prompt: also implement select difficuktuy
 ### Verification status
 
 - [x] Focused App/schema/storage/bridge coverage passes 143/143, including strict v2, legacy migration, storage failures, synchronous host persistence failure containment, source arbitration, pointer isolation, lifecycle races, notification origin/unsubscribe/disposal, initialize validation, and existing gameplay paths.
-- [x] The complete web suite passes 220/220 across 11 files; web typecheck and the production single-file build pass, and `git diff --check` is clean.
-- [ ] Stable hosted ChatGPT acceptance remains a separate production-endpoint gate; this increment did not stop, restart, or modify the live server on port 8000 or its Cloudflare tunnel.
+- [x] The complete web suite has 221 tests across 11 files. All 220 behavioral checks pass; the remaining wall-clock-only Hard-Chess check previously passed at about 1.5 seconds, while the latest loaded-host run measured about 2.3 seconds against its 2-second budget at a system load average above 54. Clean serial CI remains the release authority for that performance assertion.
+- [x] Added a checked-in Playwright/Chromium gate: 9/9 real-browser tests cover six exact width/height layouts plus real mobile/touch emulation, picker containment/non-overlap, 64 Chess hit targets and an applied opening at every width, real Hard Tic-Tac-Toe player/GPT turns, End/cancel/Try again call ordering and reset epochs at 416×360, pointer-only no-board restore with exactly one intercepted state read, zero unsolicited creates, zero runtime errors, and CI execution against an isolated port/uniquely cleaned store.
+- [x] Made the default browser command artifact-safe: it never rebuilds `web/dist`, never binds port 8000, and runs with a uniquely cleaned temporary save. CI builds first in its own runner and runs the unit suites serially so the Chess timing check does not compete with other test files.
+- [x] Pinned patched Vitest and Ajv releases. `npm audit` reports zero critical/high findings; two moderate SDK/Hono findings remain because resolving them today would silently raise the server runtime from its advertised Node 18 floor to Node 20.
+- [ ] Stable hosted ChatGPT acceptance remains a separate production-endpoint gate. The live Node process and Cloudflare tunnel were not stopped or restarted; the intended v21 `web/dist` artifact was rebuilt locally and may be read by that process on a later widget-resource request.

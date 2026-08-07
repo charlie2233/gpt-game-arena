@@ -31,10 +31,14 @@ npm install       # or npm ci (Node >=20.19 for this workspace build)
 npm test
 npm run typecheck
 npm run build
+npx playwright install chromium # one-time local browser install
+npm run test:browser # 9 real-browser checks of the existing build on isolated port 18181
 npm run dev       # Node server, then visit /preview
 npm run dev:web   # Vite widget development; run npm run dev:server alongside it
 npm run preview   # Vite built-widget preview; run npm run dev:server alongside it
 ```
+
+`npm run test:browser` does not rebuild `web/dist`: it starts the already-built server on isolated port 18181 with a temporary game store and runs Chromium serially across the responsive/gameplay/restore matrix. This keeps the command from changing the widget artifact read by any server already running on port 8000. Run `npm run build` first only when replacing that artifact is intentional; CI builds in its own runner before the browser checks. `npm run test:browser:built` remains as a compatibility alias. Set `PLAYWRIGHT_PORT` to another non-8000 port if 18181 is occupied.
 
 For MCP Inspector, build first, start `npm run dev`, and connect the inspector to `http://localhost:8000/mcp` using Streamable HTTP.
 
