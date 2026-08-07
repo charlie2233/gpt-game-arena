@@ -433,6 +433,7 @@ Original prompt: also implement select difficuktuy
 - [x] Restore renders no cached board and performs exactly one authoritative `get_game_state` read, including under React StrictMode; failed or expired pointers clear to an accessible New Game recovery state.
 - [x] Added parent-only tool-input and tool-cancelled bridge notifications with unsubscribe/disposal cleanup, and require a valid negotiated MCP Apps `2026-01-26` initialize result before announcing initialized.
 - [x] Added neutral embedded waiting, cancellation/error recovery, strict `toolOutput`-before-`initialState` arbitration, late-result recovery, and synchronous pointer-only widget persistence through the host's void-only setter contract; synchronous persistence failures stay contained and never block gameplay. Lifecycle tool-result notifications validate and apply state only and never initiate mutation tools; pointer reads remain isolated until their direct response, and explicit Start permanently closes older bootstrap-result acceptance.
+- [x] Published the cache-busting widget contract as resource v21 while retaining v20 through v11 for historical ChatGPT cards.
 
 ### Verification status
 
