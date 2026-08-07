@@ -320,3 +320,39 @@ Original prompt: also implement select difficuktuy
 - [x] Built-server production smoke passed fail-closed configuration, save-mount preflight, `/health`, `/ready`, exact domain challenge, graceful shutdown, eight-tool MCP discovery, v19 widget metadata, and persistence across restart. Docker is unavailable locally, so the new CI owns the executable image-build smoke.
 - [x] The required browser-game client opened the v19 Chess reset confirmation at 1280×720, produced matching authoritative `state-0.json` plus `shot-0.png`, kept the complete board and both confirmation actions visible, and emitted no `errors-*.json` artifact.
 - [ ] Deploy to a stable public HTTPS host with durable single-replica storage, verify the domain, run the live tool scan and reviewer cases, add publisher-matched website/support/privacy/terms/logo assets, and complete hosted ChatGPT acceptance before submission.
+
+## Public-beta production and submission hardening
+
+### Objective
+
+- Turn the working v19 developer build into an honest, inspectable public-beta candidate without claiming that a temporary tunnel or ephemeral container is production hosting.
+
+### Implemented
+
+- [x] Rebranded public-facing product surfaces to **Turnplay Arena** so the app name does not use the GPT brand; retained internal package/resource identifiers for compatibility and bumped the current widget resource to v20 with v19 through v11 readable.
+- [x] Added explicit CIDR or fixed-hop proxy trust, spoof-resistant HMAC rate-limit keys, bounded rate-limit response headers, and tests that forwarded addresses are ignored unless the proxy topology is configured.
+- [x] Added allowlisted JSON-line request/tool/lifecycle telemetry that never records request bodies, moves, game IDs, tokens, raw network addresses, or internal error details.
+- [x] Made production persistence sync the temporary file, atomic rename, and parent directory before success; `/ready` now checks storage as well as the widget.
+- [x] Added a 15-minute physical expiry sweep, startup pruning, and a configurable seven-day default retention for one-time v1 migration backups.
+- [x] Extended CI to stop and recreate the production container against the same persistent Docker volume, then verify the exact game ID, version, move, and history after restart.
+- [x] Added a polished static website with privacy, terms, secret-safe Formspree support, original vector branding, sitemap, strict CSP, and automated local-link/policy/brand validation.
+- [x] Added a pinned-action GitHub Pages workflow, reviewer-ready listing/demo sources, exactly five self-contained positive cases and three negative cases, and direct-dependency notices.
+- [x] Added a Render Blueprint for a paid one-instance service with a 1 GB persistent disk and CI-gated deploys; proxy trust remains unset until the hosted forwarding chain is measured and spoof-tested.
+- [x] Created original 512×512 listing/composer assets and three real 706-pixel-wide product screenshots for Chess and Go.
+
+### Verification status
+
+- [x] Complete automated matrix passes: 229 server + 119 web = 348 tests, both workspace typechecks, both production builds, static-site validation, and `git diff --check`.
+- [x] The manifest passes the live official OpenAI submission schema with eight tools, exactly five positive cases, and exactly three negative cases; all nine derived positive-case tool invocations pass their exported input schemas and expected receipts locally.
+- [x] Render's current Blueprint schema accepts the one-instance persistent-disk configuration with `autoDeployTrigger: checksPass`; proxy trust is intentionally absent until measured on the real host.
+- [x] A fresh built-server black-box smoke created Hard Chess, recorded `e2e4`, terminated cleanly, restarted on the same save path, and restored the exact game ID at version 1 with one matching move.
+- [x] The public temporary tunnel completed an MCP initialize/list/create/move flow and returned a matching authoritative move receipt. This is developer-live proof only, not stable-host acceptance.
+- [x] The v20 browser client and the static website passed desktop/mobile viewport, text-state, visual, and console-error checks; the complete game board stays visible and does not force the ChatGPT conversation to the bottom.
+
+### Remaining external gates
+
+- [ ] Publish and verify the GitHub Pages site, then fill the verified publisher/legal identity and final host/log/support retention details.
+- [ ] Owner chooses a source-code license or intentionally keeps the public repository unlicensed.
+- [ ] Owner approves a paid persistent host; deploy one replica, set its exact public origin, and prove create/move/redeploy/resume over HTTPS.
+- [ ] Record the short demo against the final stable production endpoint and confirm the prepared listing assets/screenshots in Apps Management.
+- [ ] Verify the domain, pass the tool scan and reviewer cases, select availability, submit through Apps Management, and complete a fresh hosted ChatGPT turn against the stable v20 endpoint.

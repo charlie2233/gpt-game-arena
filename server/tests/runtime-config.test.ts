@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_GAME_STORE_MAX_SESSIONS,
   DEFAULT_GAME_STORE_TTL_MS,
+  DEFAULT_LEGACY_BACKUP_TTL_MS,
   MAX_GAME_STORE_SESSIONS,
 } from "../src/game-store.js";
 import {
@@ -15,6 +16,7 @@ describe("game store runtime configuration", () => {
     expect(gameStoreRuntimeOptionsFromEnvironment({})).toEqual({
       ttlMs: DEFAULT_GAME_STORE_TTL_MS,
       maxSessions: DEFAULT_GAME_STORE_MAX_SESSIONS,
+      legacyBackupTtlMs: DEFAULT_LEGACY_BACKUP_TTL_MS,
     });
   });
 
@@ -22,7 +24,8 @@ describe("game store runtime configuration", () => {
     expect(gameStoreRuntimeOptionsFromEnvironment({
       GAME_STORE_TTL_MS: "604800000",
       GAME_STORE_MAX_SESSIONS: "2500",
-    })).toEqual({ ttlMs: 604_800_000, maxSessions: 2_500 });
+      GAME_STORE_LEGACY_BACKUP_TTL_MS: "86400000",
+    })).toEqual({ ttlMs: 604_800_000, maxSessions: 2_500, legacyBackupTtlMs: 86_400_000 });
   });
 
   it.each(["", "0", "-1", "1.5", " 1000", "1000 ", "1e3", "9007199254740992"])(
@@ -40,6 +43,14 @@ describe("game store runtime configuration", () => {
         .toThrow(/GAME_STORE_MAX_SESSIONS/);
     },
   );
+
+  it.each(["", "0", "-1", "1.5", " 1000", "1000 ", "1e3", "9007199254740992"])(
+    "rejects invalid GAME_STORE_LEGACY_BACKUP_TTL_MS value %j",
+    (value) => {
+      expect(() => gameStoreRuntimeOptionsFromEnvironment({ GAME_STORE_LEGACY_BACKUP_TTL_MS: value }))
+        .toThrow(/GAME_STORE_LEGACY_BACKUP_TTL_MS/);
+    },
+  );
 });
 
 describe("public app runtime configuration", () => {
@@ -47,6 +58,8 @@ describe("public app runtime configuration", () => {
     expect(publicAppRuntimeOptionsFromEnvironment({})).toEqual({
       widgetDomain: undefined,
       openAiAppsChallengeToken: undefined,
+      trustedProxyCidrs: [],
+      trustedProxyHops: undefined,
     });
   });
 
@@ -54,9 +67,12 @@ describe("public app runtime configuration", () => {
     expect(publicAppRuntimeOptionsFromEnvironment({
       PUBLIC_BASE_URL: "https://games.example.com/",
       OPENAI_APPS_CHALLENGE_TOKEN: "challenge_token-123",
+      TRUSTED_PROXY_CIDRS: "10.0.0.0/8, 2001:db8::/48,10.0.0.0/8",
     })).toEqual({
       widgetDomain: "https://games.example.com",
       openAiAppsChallengeToken: "challenge_token-123",
+      trustedProxyCidrs: ["10.0.0.0/8", "2001:db8::/48"],
+      trustedProxyHops: undefined,
     });
   });
 
@@ -92,6 +108,8 @@ describe("public app runtime configuration", () => {
     })).toEqual({
       widgetDomain: "https://games.example.com",
       openAiAppsChallengeToken: undefined,
+      trustedProxyCidrs: [],
+      trustedProxyHops: undefined,
     });
   });
 
@@ -102,4 +120,37 @@ describe("public app runtime configuration", () => {
         .toThrow(/OPENAI_APPS_CHALLENGE_TOKEN/);
     },
   );
+
+  it.each([
+    "",
+    ",",
+    "not-an-ip",
+    "10.0.0.1/33",
+    "2001:db8::/129",
+    "10.0.0.1/24/1",
+    "0.0.0.0/0",
+    "::/0",
+  ])("rejects unsafe TRUSTED_PROXY_CIDRS value %j", (value) => {
+    expect(() => publicAppRuntimeOptionsFromEnvironment({ TRUSTED_PROXY_CIDRS: value }))
+      .toThrow(/TRUSTED_PROXY_CIDRS/);
+  });
+
+  it("accepts a bounded trusted proxy hop count as an alternative to CIDRs", () => {
+    expect(publicAppRuntimeOptionsFromEnvironment({ TRUST_PROXY_HOPS: "1" })).toMatchObject({
+      trustedProxyCidrs: [],
+      trustedProxyHops: 1,
+    });
+  });
+
+  it.each(["", "0", "5", "01", "1.5", "all"])("rejects unsafe TRUST_PROXY_HOPS value %j", (value) => {
+    expect(() => publicAppRuntimeOptionsFromEnvironment({ TRUST_PROXY_HOPS: value }))
+      .toThrow(/TRUST_PROXY_HOPS/);
+  });
+
+  it("rejects ambiguous proxy trust configuration", () => {
+    expect(() => publicAppRuntimeOptionsFromEnvironment({
+      TRUSTED_PROXY_CIDRS: "10.0.0.0/8",
+      TRUST_PROXY_HOPS: "1",
+    })).toThrow(/must not both/);
+  });
 });

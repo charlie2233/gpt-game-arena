@@ -1,3 +1,5 @@
+import { createHmac, randomBytes } from "node:crypto";
+
 import express, { type NextFunction, type Request, type Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ZodError } from "zod";
@@ -5,6 +7,15 @@ import { ZodError } from "zod";
 import { createMcpServer, defaultWidgetLoader, type WidgetLoader } from "./mcp-server.js";
 import { executeTool, isGameRuleError, isToolOutputError, toolInputSchemas, type ToolName } from "./tool-contracts.js";
 import { ToolService } from "./tool-service.js";
+import {
+  elapsedMilliseconds,
+  normalizeHttpMethod,
+  recordOperationalEvent,
+  type HttpSurface,
+  type McpOperation,
+  type OperationalTelemetry,
+  type ToolCallOutcome,
+} from "./telemetry.js";
 
 interface RateLimitOptions {
   limit?: number;
@@ -16,12 +27,21 @@ export interface HttpAppOptions {
   loadWidgetHtml?: WidgetLoader;
   widgetDomain?: string;
   openAiAppsChallengeToken?: string;
+  trustedProxyCidrs?: readonly string[];
+  trustedProxyHops?: number;
+  telemetry?: OperationalTelemetry;
   now?: () => number;
   apiToolsRateLimit?: RateLimitOptions;
   mcpRateLimit?: RateLimitOptions;
 }
 
 interface RateBucket { windowStart: number; count: number }
+interface RateLimitDecision {
+  allowed: boolean;
+  limit: number;
+  remaining: number;
+  retryAfterSeconds: number;
+}
 
 const UNSUPPORTED_MEDIA_ERROR_CODE = -32015;
 
@@ -39,21 +59,21 @@ export class FixedWindowLimiter {
     this.now = now;
   }
 
-  consume(ip: string): { allowed: boolean; retryAfterSeconds: number } {
+  consume(clientKey: string): RateLimitDecision {
     const now = nonnegativeSafeInteger(this.now(), "clock");
     this.prune(now);
     const windowStart = Math.floor(now / this.windowMs) * this.windowMs;
-    const current = this.buckets.get(ip);
+    const current = this.buckets.get(clientKey);
     if (current && current.windowStart === windowStart) {
-      if (current.count >= this.limit) return { allowed: false, retryAfterSeconds: retryAfter(windowStart, this.windowMs, now) };
+      if (current.count >= this.limit) return this.decision(false, 0, windowStart, now);
       current.count += 1;
-      return { allowed: true, retryAfterSeconds: 0 };
+      return this.decision(true, this.limit - current.count, windowStart, now);
     }
     if (!current && this.buckets.size >= this.maxBuckets) {
-      return { allowed: false, retryAfterSeconds: retryAfter(windowStart, this.windowMs, now) };
+      return this.decision(false, 0, windowStart, now);
     }
-    this.buckets.set(ip, { windowStart, count: 1 });
-    return { allowed: true, retryAfterSeconds: 0 };
+    this.buckets.set(clientKey, { windowStart, count: 1 });
+    return this.decision(true, this.limit - 1, windowStart, now);
   }
 
   bucketCount(): number {
@@ -61,9 +81,18 @@ export class FixedWindowLimiter {
   }
 
   private prune(now: number): void {
-    for (const [ip, bucket] of this.buckets) {
-      if (now >= bucket.windowStart + this.windowMs) this.buckets.delete(ip);
+    for (const [clientKey, bucket] of this.buckets) {
+      if (now >= bucket.windowStart + this.windowMs) this.buckets.delete(clientKey);
     }
+  }
+
+  private decision(allowed: boolean, remaining: number, windowStart: number, now: number): RateLimitDecision {
+    return {
+      allowed,
+      limit: this.limit,
+      remaining,
+      retryAfterSeconds: retryAfter(windowStart, this.windowMs, now),
+    };
   }
 }
 
@@ -73,8 +102,14 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
   const loadWidgetHtml = options.loadWidgetHtml ?? defaultWidgetLoader;
   const apiLimiter = new FixedWindowLimiter(options.apiToolsRateLimit ?? {}, now);
   const mcpLimiter = new FixedWindowLimiter({ limit: 120, ...options.mcpRateLimit }, now);
+  const rateLimitKeySecret = randomBytes(32).toString("hex");
 
   app.disable("x-powered-by");
+  if (options.trustedProxyHops !== undefined) {
+    app.set("trust proxy", options.trustedProxyHops);
+  } else if (options.trustedProxyCidrs && options.trustedProxyCidrs.length > 0) {
+    app.set("trust proxy", [...options.trustedProxyCidrs]);
+  }
   app.use((_, response, next) => {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
@@ -84,13 +119,31 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
     );
     next();
   });
-  app.use("/api/tools", rateLimitMiddleware(apiLimiter, "rest"));
-  app.use("/mcp", rateLimitMiddleware(mcpLimiter, "mcp"));
+  if (options.telemetry !== undefined) {
+    app.use((request, response, next) => {
+      const startedAt = now();
+      const surface = httpSurface(request.path);
+      response.once("finish", () => {
+        recordOperationalEvent(options.telemetry, {
+          event: "http_request",
+          surface,
+          method: normalizeHttpMethod(request.method),
+          status: response.statusCode,
+          durationMs: elapsedMilliseconds(startedAt, now()),
+          ...(surface === "mcp" ? { mcpOperation: mcpOperation(request.body) } : {}),
+        });
+      });
+      next();
+    });
+  }
+  app.use("/api/tools", rateLimitMiddleware(apiLimiter, "rest", rateLimitKeySecret));
+  app.use("/mcp", rateLimitMiddleware(mcpLimiter, "mcp", rateLimitKeySecret));
   app.use(express.json({ limit: "32kb" }));
 
   app.get("/health", (_, response) => response.status(200).json({ ok: true }));
   app.get("/ready", async (_, response) => {
     try {
+      if (!(await service.checkReadiness())) throw new Error("Game storage unavailable.");
       const html = await loadWidgetHtml();
       if (html === undefined) throw new Error("Widget build unavailable.");
       response.status(200).json({ ready: true });
@@ -126,8 +179,11 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
       response.status(404).json({ error: { code: "not_found", message: "Tool was not found." } });
       return;
     }
+    const startedAt = now();
+    let outcome: ToolCallOutcome = "error";
     try {
       const result = executeTool(service, name, request.body);
+      outcome = "success";
       response.status(200).json(result);
     } catch (error) {
       if (isToolOutputError(error)) {
@@ -135,19 +191,34 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
         return;
       }
       if (error instanceof ZodError) {
+        outcome = "rejected";
         response.status(400).json({ error: { code: "invalid_input", message: "Invalid tool input." } });
         return;
       }
       if (isGameRuleError(error)) {
+        outcome = "rejected";
         response.status(409).json({ error: { code: error.code, message: "The requested game operation could not be completed." } });
         return;
       }
       response.status(500).json({ error: { code: "internal_error", message: "Internal server error." } });
+    } finally {
+      recordOperationalEvent(options.telemetry, {
+        event: "tool_call",
+        transport: "rest",
+        tool: name,
+        outcome,
+        durationMs: elapsedMilliseconds(startedAt, now()),
+      });
     }
   });
 
   app.all("/mcp", async (request, response) => {
-    const server = createMcpServer(service, { loadWidgetHtml, widgetDomain: options.widgetDomain });
+    const server = createMcpServer(service, {
+      loadWidgetHtml,
+      widgetDomain: options.widgetDomain,
+      telemetry: options.telemetry,
+      now,
+    });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     let cleanupPromise: Promise<void> | undefined;
     const close = (): Promise<void> => cleanupPromise ??= Promise.allSettled([transport.close(), server.close()]).then(() => undefined);
@@ -207,14 +278,38 @@ function isToolName(name: string): name is ToolName {
   return Object.prototype.hasOwnProperty.call(toolInputSchemas, name);
 }
 
+function httpSurface(path: string): HttpSurface {
+  if (path === "/health") return "health";
+  if (path === "/ready") return "ready";
+  if (path === "/.well-known/openai-apps-challenge") return "challenge";
+  if (path === "/preview") return "preview";
+  if (path === "/mcp") return "mcp";
+  if (path === "/api/tools" || path.startsWith("/api/tools/")) return "rest-tools";
+  return "other";
+}
+
+function mcpOperation(body: unknown): McpOperation {
+  if (typeof body !== "object" || body === null || !("method" in body)) return "other";
+  const method = body.method;
+  return method === "initialize"
+    || method === "tools/list"
+    || method === "tools/call"
+    || method === "resources/read"
+    ? method
+    : "other";
+}
+
 function retryAfter(windowStart: number, windowMs: number, now: number): number {
   return Math.max(1, Math.ceil((windowStart + windowMs - now) / 1_000));
 }
 
-function rateLimitMiddleware(limiter: FixedWindowLimiter, kind: "rest" | "mcp") {
+function rateLimitMiddleware(limiter: FixedWindowLimiter, kind: "rest" | "mcp", keySecret: string) {
   return (request: Request, response: Response, next: NextFunction): void => {
-    // Use the direct peer IP. Deployments behind proxies must configure an explicit trusted-proxy policy.
-    const limit = limiter.consume(request.ip ?? "unknown");
+    const clientKey = createHmac("sha256", keySecret).update(request.ip ?? "unknown").digest("base64url");
+    const limit = limiter.consume(clientKey);
+    response.setHeader("X-RateLimit-Limit", String(limit.limit));
+    response.setHeader("X-RateLimit-Remaining", String(limit.remaining));
+    response.setHeader("X-RateLimit-Reset", String(limit.retryAfterSeconds));
     if (limit.allowed) return next();
     response.setHeader("Retry-After", String(limit.retryAfterSeconds));
     if (kind === "mcp") {

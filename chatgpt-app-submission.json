@@ -1,10 +1,10 @@
 {
-  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "$schema": "https://developers.openai.com/plugins/schemas/chatgpt-app-submission.v1.json",
   "schema_version": 1,
   "app_info": {
-    "display_name": "GPT Game Arena",
-    "subtitle": "Play games against GPT",
-    "description": "GPT Game Arena lets users play Chess, Go, Tic-Tac-Toe, Connect Four, Reversi, Mini 8-Ball, and Court Duel against GPT at Easy, Medium, or Hard difficulty, continue Go positions from board images or stone lists, and continue, reset, or end game sessions on an interactive board.",
+    "display_name": "Turnplay Arena",
+    "subtitle": "Play turn-based games",
+    "description": "Turnplay Arena lets users play Chess, Go, Tic-Tac-Toe, Connect Four, Reversi, Mini 8-Ball, and Court Duel at Easy, Medium, or Hard difficulty, continue Go positions from board images or stone lists, and resume, reset, or end game sessions on an interactive board.",
     "category": "ENTERTAINMENT"
   },
   "tools": {
@@ -123,26 +123,26 @@
       "expected_output_url": null
     },
     {
-      "description": "Apply one exact GPT move to an active Tic-Tac-Toe fixture where the player is White, GPT is Black, and the current version pair is resetEpoch 0 and stateVersion 0.",
-      "user_prompt": "In this active Tic-Tac-Toe game, play B2.",
+      "description": "Create Hard Tic-Tac-Toe with the player as White, then apply the assistant's exact B2 move using the returned identifiers.",
+      "user_prompt": "Start Hard Tic-Tac-Toe with me as White. When it is your turn, play B2 using the game ID, reset epoch, and version returned by the new game.",
       "file_attachment_urls": null,
-      "tools_triggered": "play_game_move",
-      "expected_output": "Appends B2 exactly once as a GPT move, returns stateVersion 1 with the updated board, and includes a matching MOVE_CONFIRMED receipt.",
+      "tools_triggered": "create_game, play_game_move",
+      "expected_output": "Creates the requested fixture, then appends B2 exactly once as the assistant move, returns stateVersion 1 with the updated board, and includes a matching MOVE_CONFIRMED receipt.",
       "expected_output_url": null
     },
     {
-      "description": "Reset an active Chess fixture that already contains at least one move while preserving its game settings.",
-      "user_prompt": "Yes, reset this Chess game now and keep the same color and difficulty.",
+      "description": "Create Medium Chess as White, apply e2e4, then reset it with explicit confirmation and the returned identifiers.",
+      "user_prompt": "Start Medium Chess with me as White, play my e2e4 move, then reset that game now while keeping the same color and difficulty.",
       "file_attachment_urls": null,
-      "tools_triggered": "reset_game",
+      "tools_triggered": "create_game, play_game_move, reset_game",
       "expected_output": "Returns the same game ID, kind, player color, and difficulty with an empty move history, stateVersion 0, resetEpoch incremented by one, and a matching RESET_CONFIRMED receipt.",
       "expected_output_url": null
     },
     {
-      "description": "End an active game after the user explicitly confirms the destructive action.",
-      "user_prompt": "Yes, end this active game now.",
+      "description": "Create Connect Four, then end that same active game after explicit confirmation using its returned identifiers.",
+      "user_prompt": "Start a Medium Connect Four game with me as Black, then yes, end that newly created game now.",
       "file_attachment_urls": null,
-      "tools_triggered": "end_game",
+      "tools_triggered": "create_game, end_game",
       "expected_output": "Preserves the board and move history, changes status to finished with finishReason ended, advances the state version once, and includes a matching END_CONFIRMED receipt.",
       "expected_output_url": null
     }

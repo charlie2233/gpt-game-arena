@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://charlie2233.github.io/turnplay-arena/sitemap.xml

@@ -1,4 +1,4 @@
-# GPT Game Arena Implementation Plan
+# Turnplay Arena Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -497,7 +497,7 @@ Expected: component and bridge tests pass, TypeScript exits zero, and `web/dist/
 
 Document:
 
-- what GPT Game Arena does and why no `OPENAI_API_KEY` is required;
+- what Turnplay Arena does and why no `OPENAI_API_KEY` is required;
 - the five tool contracts and the GPT-turn sequence;
 - `npm install`, `npm test`, `npm run build`, `npm run dev`, and `/preview`;
 - MCP Inspector against `http://localhost:8000/mcp`;

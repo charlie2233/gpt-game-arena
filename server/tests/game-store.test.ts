@@ -1,12 +1,18 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ChessGame } from "../src/domain/chess-game.js";
 import { GameRuleError } from "../src/domain/errors.js";
-import { DEFAULT_GAME_STORE_TTL_MS, GameStore } from "../src/game-store.js";
+import {
+  DEFAULT_GAME_STORE_TTL_MS,
+  DEFAULT_READINESS_CACHE_MS,
+  MAX_STALE_TEMP_FILES_TO_CLEAN,
+  STALE_TEMP_FILE_TTL_MS,
+  GameStore,
+} from "../src/game-store.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -57,6 +63,152 @@ describe("GameStore", () => {
     time = 500;
     expect(store.get("read-only")).toBe(session);
     expect(readFileSync(persistencePath, "utf8")).toBe(before);
+  });
+
+  it("caches readiness for 15 seconds and coalesces an expired probe", async () => {
+    let time = 0;
+    const root = mkdtempSync(join(tmpdir(), "gpt-game-arena-readiness-"));
+    temporaryDirectories.push(root);
+    const storageDirectory = join(root, "storage");
+    const persistencePath = join(storageDirectory, "game-sessions.json");
+    const store = new GameStore({ persistencePath, now: () => time });
+
+    rmSync(storageDirectory, { recursive: true, force: true });
+    writeFileSync(storageDirectory, "blocks directory creation");
+    time = DEFAULT_READINESS_CACHE_MS - 1;
+    expect(await store.checkReadiness()).toBe(true);
+
+    time = DEFAULT_READINESS_CACHE_MS;
+    const firstProbe = store.checkReadiness();
+    const concurrentProbe = store.checkReadiness();
+    expect(concurrentProbe).toBe(firstProbe);
+    expect(await firstProbe).toBe(false);
+
+    rmSync(storageDirectory, { force: true });
+    time += 1;
+    expect(await store.checkReadiness()).toBe(false);
+    time += DEFAULT_READINESS_CACHE_MS;
+    expect(await store.checkReadiness()).toBe(true);
+  });
+
+  it("does not collide with a leftover legacy primary temporary filename", () => {
+    const persistencePath = temporaryStorePath();
+    const legacyTemporaryPath = join(
+      dirname(persistencePath),
+      `.${basename(persistencePath)}.${process.pid}.1.tmp`,
+    );
+    writeFileSync(legacyTemporaryPath, "left over from an interrupted write");
+
+    const store = new GameStore({ persistencePath });
+    store.put(ChessGame.create("collision-resistant", "white"));
+
+    expect(existsSync(legacyTemporaryPath)).toBe(true);
+    expect(JSON.parse(readFileSync(persistencePath, "utf8")).sessions).toHaveLength(1);
+  });
+
+  it("removes only a bounded number of recognized stale temporary files per pass", () => {
+    const persistencePath = temporaryStorePath();
+    const directory = dirname(persistencePath);
+    const fileName = basename(persistencePath);
+    const staleMtime = new Date(Date.now() - STALE_TEMP_FILE_TTL_MS - 1_000);
+    const recognizedNames = Array.from(
+      { length: MAX_STALE_TEMP_FILES_TO_CLEAN + 8 },
+      (_, index) => `.${fileName}.4242.${index + 1}.tmp`,
+    );
+    for (const name of recognizedNames) {
+      const path = join(directory, name);
+      writeFileSync(path, "stale");
+      utimesSync(path, staleMtime, staleMtime);
+    }
+    const unrelatedPath = join(directory, `.${fileName}.not-owned.tmp`);
+    writeFileSync(unrelatedPath, "do not remove");
+    utimesSync(unrelatedPath, staleMtime, staleMtime);
+
+    const store = new GameStore({ persistencePath });
+    const afterStartup = readdirSync(directory).filter(name => recognizedNames.includes(name));
+    expect(afterStartup).toHaveLength(8);
+    expect(existsSync(unrelatedPath)).toBe(true);
+
+    expect(store.sweepExpired()).toBe(0);
+    const afterMaintenance = readdirSync(directory).filter(name => recognizedNames.includes(name));
+    expect(afterMaintenance).toHaveLength(0);
+    expect(existsSync(unrelatedPath)).toBe(true);
+  });
+
+  it("cleans stale UUID-named primary, backup, and probe files without broad matching", () => {
+    const persistencePath = temporaryStorePath();
+    const directory = dirname(persistencePath);
+    const fileName = basename(persistencePath);
+    const uuid = "00000000-0000-4000-8000-000000000000";
+    const recognizedNames = [
+      `.${fileName}.4242.${uuid}.store.tmp`,
+      `.${fileName}.v1.bak.4242.${uuid}.backup.tmp`,
+      `.${fileName}.4242.${uuid}.probe`,
+    ];
+    const staleMtime = new Date(Date.now() - STALE_TEMP_FILE_TTL_MS - 1_000);
+    for (const name of recognizedNames) {
+      const path = join(directory, name);
+      writeFileSync(path, "stale");
+      utimesSync(path, staleMtime, staleMtime);
+    }
+    const lookalikePath = join(directory, `.${fileName}.4242.${uuid}.unknown.tmp`);
+    writeFileSync(lookalikePath, "do not remove");
+    utimesSync(lookalikePath, staleMtime, staleMtime);
+
+    new GameStore({ persistencePath });
+
+    for (const name of recognizedNames) expect(existsSync(join(directory, name))).toBe(false);
+    expect(existsSync(lookalikePath)).toBe(true);
+  });
+
+  it("physically removes expired sessions during a bounded maintenance sweep", () => {
+    let time = 0;
+    const persistencePath = temporaryStorePath();
+    const store = new GameStore({ persistencePath, ttlMs: 1_000, now: () => time });
+    store.put(ChessGame.create("expired-on-sweep", "white"));
+
+    time = 1_000;
+    expect(store.sweepExpired()).toBe(1);
+    expect(JSON.parse(readFileSync(persistencePath, "utf8"))).toEqual({ formatVersion: 2, sessions: [] });
+    expectRuleError(() => store.get("expired-on-sweep"), "not_found");
+  });
+
+  it("rewrites a persisted store without expired records during startup", () => {
+    let time = 0;
+    const persistencePath = temporaryStorePath();
+    const store = new GameStore({ persistencePath, ttlMs: 1_000, now: () => time });
+    store.put(ChessGame.create("expired-on-startup", "white"));
+
+    time = 1_000;
+    const restarted = new GameStore({ persistencePath, ttlMs: 1_000, now: () => time });
+    expectRuleError(() => restarted.get("expired-on-startup"), "not_found");
+    expect(JSON.parse(readFileSync(persistencePath, "utf8"))).toEqual({ formatVersion: 2, sessions: [] });
+  });
+
+  it("removes a legacy migration backup after its bounded retention window", () => {
+    const persistencePath = temporaryStorePath();
+    const legacySource = JSON.stringify({
+      formatVersion: 1,
+      sessions: [{
+        gameId: "legacy-backup",
+        kind: "chess",
+        playerColor: "white",
+        difficulty: "medium",
+        events: [],
+        lastAccessedAt: Date.now(),
+      }],
+    });
+    writeFileSync(persistencePath, legacySource);
+    new GameStore({ persistencePath, legacyBackupTtlMs: 1_000 });
+    const backupPath = `${persistencePath}.v1.bak`;
+    expect(existsSync(backupPath)).toBe(true);
+    expect(readFileSync(backupPath, "utf8")).toBe(legacySource);
+    expect(readdirSync(dirname(persistencePath)).some(name => name.endsWith(".backup.tmp"))).toBe(false);
+    const expiredMtime = new Date(Date.now() - 2_000);
+    utimesSync(backupPath, expiredMtime, expiredMtime);
+
+    new GameStore({ persistencePath, legacyBackupTtlMs: 1_000 });
+    expect(existsSync(backupPath)).toBe(false);
   });
 
   it("fails startup when the configured persistence directory is not writable", () => {

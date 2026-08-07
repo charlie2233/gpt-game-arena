@@ -10,12 +10,13 @@ import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { createMcpServer, LEGACY_WIDGET_RESOURCE_URIS, WIDGET_DESCRIPTION, WIDGET_RESOURCE_URI } from "../src/mcp-server.js";
 import { gameSnapshotSchema, toolInputSchemas } from "../src/tool-contracts.js";
 import { GameStore } from "../src/game-store.js";
+import type { OperationalEvent } from "../src/telemetry.js";
 import { ToolService } from "../src/tool-service.js";
 
 describe("MCP game arena server", () => {
   it("keeps the reviewer submission manifest complete and bounded", async () => {
     const manifest = JSON.parse(await readFile(new URL("../../chatgpt-app-submission.json", import.meta.url), "utf8")) as {
-      app_info?: { subtitle?: string };
+      app_info?: { display_name?: string; subtitle?: string };
       tools?: Record<string, { annotations?: Record<string, boolean> }>;
       test_cases?: unknown[];
       negative_test_cases?: unknown[];
@@ -24,6 +25,7 @@ describe("MCP game arena server", () => {
       "confirm_imported_go_position", "create_game", "end_game", "get_game_state", "import_go_position", "play_game_move", "render_game", "reset_game",
     ]);
     expect(manifest.app_info?.subtitle?.length).toBeLessThanOrEqual(30);
+    expect(manifest.app_info?.display_name).toBe("Turnplay Arena");
     expect(manifest.test_cases).toHaveLength(5);
     expect(manifest.negative_test_cases).toHaveLength(3);
     for (const tool of Object.values(manifest.tools ?? {})) {
@@ -32,8 +34,8 @@ describe("MCP game arena server", () => {
   });
 
   it("registers eight game tools and the widget resource", async () => {
-    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v19/widget.html");
-    expect(LEGACY_WIDGET_RESOURCE_URIS).toEqual(["ui://gpt-game-arena/v18/widget.html", "ui://gpt-game-arena/v17/widget.html", "ui://gpt-game-arena/v16/widget.html", "ui://gpt-game-arena/v15/widget.html", "ui://gpt-game-arena/v14/widget.html", "ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"]);
+    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v20/widget.html");
+    expect(LEGACY_WIDGET_RESOURCE_URIS).toEqual(["ui://gpt-game-arena/v19/widget.html", "ui://gpt-game-arena/v18/widget.html", "ui://gpt-game-arena/v17/widget.html", "ui://gpt-game-arena/v16/widget.html", "ui://gpt-game-arena/v15/widget.html", "ui://gpt-game-arena/v14/widget.html", "ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"]);
     expect(WIDGET_DESCRIPTION).toContain("Mini 8-Ball");
     expect(WIDGET_DESCRIPTION).toContain("Court Duel");
     expect(WIDGET_DESCRIPTION).toContain("chess");
@@ -672,6 +674,49 @@ describe("MCP game arena server", () => {
     const valid = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
     expect(valid.isError).not.toBe(true);
     expect(JSON.stringify(valid)).not.toContain("unexpected");
+    await Promise.all([client.close(), server.close()]);
+  });
+
+  it("records safe MCP tool outcomes without request data or error details", async () => {
+    const events: OperationalEvent[] = [];
+    const timestamps = [0, 7, 10, 15, 20, 29];
+    const service = new ToolService(new GameStore());
+    const server = createMcpServer(service, {
+      telemetry: { record: event => events.push(event) },
+      now: () => timestamps.shift() ?? 29,
+    });
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    const success = await client.callTool({
+      name: "create_game",
+      arguments: { game: "chess", playerColor: "white" },
+    });
+    expect(success.isError).not.toBe(true);
+
+    const rejected = await client.callTool({
+      name: "get_game_state",
+      arguments: { gameId: "SECRET_GAME_ID" },
+    });
+    expect(rejected.isError).toBe(true);
+
+    vi.spyOn(service, "getGameState").mockImplementation(() => {
+      throw new Error("SECRET_SERVICE_FAILURE");
+    });
+    const failed = await client.callTool({
+      name: "get_game_state",
+      arguments: { gameId: "SECRET_SECOND_GAME_ID" },
+    });
+    expect(failed.isError).toBe(true);
+
+    expect(events).toEqual([
+      { event: "tool_call", transport: "mcp", tool: "create_game", outcome: "success", durationMs: 7 },
+      { event: "tool_call", transport: "mcp", tool: "get_game_state", outcome: "rejected", durationMs: 5 },
+      { event: "tool_call", transport: "mcp", tool: "get_game_state", outcome: "error", durationMs: 9 },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("SECRET");
+    expect(JSON.stringify(events)).not.toContain("gameId");
     await Promise.all([client.close(), server.close()]);
   });
 });

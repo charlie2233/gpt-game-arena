@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -24,6 +28,8 @@ export type { GameSession } from "./game-session.js";
 export interface GameStoreOptions {
   maxSessions?: number;
   ttlMs?: number;
+  legacyBackupTtlMs?: number;
+  readinessCacheMs?: number;
   now?: () => number;
   /** Enables single-process JSON persistence when set. */
   persistencePath?: string;
@@ -37,7 +43,13 @@ interface StoredSession {
 export const DEFAULT_GAME_STORE_MAX_SESSIONS = 1_000;
 export const MAX_GAME_STORE_SESSIONS = 10_000;
 export const DEFAULT_GAME_STORE_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+export const DEFAULT_LEGACY_BACKUP_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
+export const DEFAULT_READINESS_CACHE_MS = 15_000;
+export const STALE_TEMP_FILE_TTL_MS = 24 * 60 * 60 * 1_000;
+export const MAX_STALE_TEMP_FILES_TO_CLEAN = 32;
 const maxPersistedEvents = 10_000;
+
+class PersistenceCommitUnknownError extends Error {}
 
 const persistedMoveSchema = z.object({
   type: z.literal("move"),
@@ -202,18 +214,26 @@ export class GameStore {
   private readonly unavailableSessions = new Map<string, PersistedUnavailableSession>();
   private readonly maxSessions: number;
   private readonly ttlMs: number;
+  private readonly legacyBackupTtlMs: number;
+  private readonly readinessCacheMs: number;
   private readonly now: () => number;
   private readonly persistencePath: string | undefined;
-  private writeSequence = 0;
+  private readinessCache: { checkedAt: number; ready: boolean } | undefined;
+  private readinessProbe: Promise<boolean> | undefined;
 
   constructor(options: GameStoreOptions = {}) {
     this.maxSessions = options.maxSessions ?? DEFAULT_GAME_STORE_MAX_SESSIONS;
     this.ttlMs = options.ttlMs ?? DEFAULT_GAME_STORE_TTL_MS;
+    this.legacyBackupTtlMs = options.legacyBackupTtlMs ?? DEFAULT_LEGACY_BACKUP_TTL_MS;
+    this.readinessCacheMs = options.readinessCacheMs ?? DEFAULT_READINESS_CACHE_MS;
     this.now = options.now ?? Date.now;
     this.persistencePath = options.persistencePath;
     this.validateOptions();
     this.loadPersistedSessions();
     this.assertPersistenceWritable();
+    this.rememberReadiness(true);
+    this.cleanupStaleTemporaryFiles();
+    this.pruneExpiredLegacyBackup();
   }
 
   put(session: GameSession): void {
@@ -257,6 +277,55 @@ export class GameStore {
     });
   }
 
+  checkReadiness(): Promise<boolean> {
+    const now = this.now();
+    const cached = this.readinessCache;
+    if (cached !== undefined) {
+      const elapsed = now - cached.checkedAt;
+      if (elapsed >= 0 && elapsed < this.readinessCacheMs) return Promise.resolve(cached.ready);
+    }
+    if (this.readinessProbe !== undefined) return this.readinessProbe;
+
+    const probe = Promise.resolve().then(() => {
+      try {
+        this.assertPersistenceWritable();
+        this.rememberReadiness(true);
+        return true;
+      } catch {
+        this.rememberReadiness(false);
+        return false;
+      }
+    });
+    this.readinessProbe = probe;
+    void probe.then(() => {
+      if (this.readinessProbe === probe) this.readinessProbe = undefined;
+    });
+    return probe;
+  }
+
+  sweepExpired(): number {
+    const previous = new Map(this.sessions);
+    const previousUnavailable = new Map(this.unavailableSessions);
+    const previousCount = this.storedSessionCount();
+    const removed = this.pruneExpired();
+    if (removed > 0) {
+      try {
+        this.persist();
+      } catch (error) {
+        if (!(error instanceof PersistenceCommitUnknownError)) {
+          this.sessions.clear();
+          for (const [gameId, stored] of previous) this.sessions.set(gameId, stored);
+          this.unavailableSessions.clear();
+          for (const [gameId, stored] of previousUnavailable) this.unavailableSessions.set(gameId, stored);
+        }
+        throw error;
+      }
+    }
+    this.pruneExpiredLegacyBackup();
+    this.cleanupStaleTemporaryFiles();
+    return previousCount - this.storedSessionCount();
+  }
+
   private store(gameId: string, session: GameSession): void {
     this.sessions.delete(gameId);
     this.sessions.set(gameId, { session, lastAccessedAt: this.now() });
@@ -271,18 +340,22 @@ export class GameStore {
     return this.sessions.size + this.unavailableSessions.size;
   }
 
-  private pruneExpired(): void {
+  private pruneExpired(): number {
+    let removed = 0;
     const now = this.now();
     for (const [gameId, stored] of this.sessions) {
       if (now - stored.lastAccessedAt >= this.ttlMs) {
         this.sessions.delete(gameId);
+        removed += 1;
       }
     }
     for (const [gameId, stored] of this.unavailableSessions) {
       if (now - stored.lastAccessedAt >= this.ttlMs) {
         this.unavailableSessions.delete(gameId);
+        removed += 1;
       }
     }
+    return removed;
   }
 
   private validateOptions(): void {
@@ -291,6 +364,12 @@ export class GameStore {
     }
     if (!Number.isFinite(this.ttlMs) || this.ttlMs <= 0) {
       throw new RangeError("ttlMs must be a positive finite number.");
+    }
+    if (!Number.isFinite(this.legacyBackupTtlMs) || this.legacyBackupTtlMs <= 0) {
+      throw new RangeError("legacyBackupTtlMs must be a positive finite number.");
+    }
+    if (!Number.isFinite(this.readinessCacheMs) || this.readinessCacheMs <= 0) {
+      throw new RangeError("readinessCacheMs must be a positive finite number.");
     }
     if (this.persistencePath !== undefined && this.persistencePath.length === 0) {
       throw new RangeError("persistencePath must not be empty.");
@@ -304,10 +383,12 @@ export class GameStore {
       mutation();
       this.persist();
     } catch (error) {
-      this.sessions.clear();
-      for (const [gameId, stored] of previous) this.sessions.set(gameId, stored);
-      this.unavailableSessions.clear();
-      for (const [gameId, stored] of previousUnavailable) this.unavailableSessions.set(gameId, stored);
+      if (!(error instanceof PersistenceCommitUnknownError)) {
+        this.sessions.clear();
+        for (const [gameId, stored] of previous) this.sessions.set(gameId, stored);
+        this.unavailableSessions.clear();
+        for (const [gameId, stored] of previousUnavailable) this.unavailableSessions.set(gameId, stored);
+      }
       throw error;
     }
   }
@@ -371,8 +452,11 @@ export class GameStore {
         );
         this.sessions.set(record.gameId, { session, lastAccessedAt: record.lastAccessedAt });
       }
+      const removedExpiredRecords = activeRecords.length !== document.sessions.length;
       if (document.formatVersion === 1) {
         this.backupLegacyStore(persistedSource);
+      }
+      if (document.formatVersion === 1 || removedExpiredRecords) {
         this.persist();
       }
     } catch (error) {
@@ -390,6 +474,7 @@ export class GameStore {
     try {
       writeFileSync(probePath, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
       unlinkSync(probePath);
+      syncDirectory(directory);
     } catch (error) {
       try {
         unlinkSync(probePath);
@@ -413,25 +498,25 @@ export class GameStore {
 
     const directory = dirname(this.persistencePath);
     mkdirSync(directory, { recursive: true });
-    const temporaryPath = join(
-      directory,
-      `.${basename(this.persistencePath)}.${process.pid}.${this.writeSequence += 1}.tmp`,
-    );
+    const temporaryPath = temporaryPathFor(this.persistencePath, "store");
 
+    let renamed = false;
     try {
-      writeFileSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`, {
-        encoding: "utf8",
-        flag: "wx",
-        mode: 0o600,
-      });
+      writeFileAndSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`);
       renameSync(temporaryPath, this.persistencePath);
+      renamed = true;
+      syncDirectory(directory);
+      this.rememberReadiness(true);
     } catch (error) {
+      this.rememberReadiness(false);
       try {
         unlinkSync(temporaryPath);
       } catch {
         // The temporary file may not have been created or may already have been renamed.
       }
-      throw new Error(`Persisted game store could not be written: ${this.persistencePath}`, { cause: error });
+      const message = `Persisted game store could not be written: ${this.persistencePath}`;
+      if (renamed) throw new PersistenceCommitUnknownError(message, { cause: error });
+      throw new Error(message, { cause: error });
     }
   }
 
@@ -442,7 +527,23 @@ export class GameStore {
     }
     const backupPath = `${this.persistencePath}.v1.bak`;
     if (!existsSync(backupPath)) {
-      writeFileSync(backupPath, persistedSource, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      const directory = dirname(backupPath);
+      const temporaryPath = temporaryPathFor(backupPath, "backup");
+      let renamed = false;
+      try {
+        writeFileAndSync(temporaryPath, persistedSource);
+        renameSync(temporaryPath, backupPath);
+        renamed = true;
+        syncDirectory(directory);
+      } catch (error) {
+        try {
+          unlinkSync(temporaryPath);
+        } catch {
+          // The temporary file may not have been created or may already have been renamed.
+        }
+        const durability = renamed ? " durably" : "";
+        throw new Error(`The legacy game store backup could not be written${durability}.`, { cause: error });
+      }
     }
     const backupStats = lstatSync(backupPath);
     if (!backupStats.isFile()
@@ -450,5 +551,97 @@ export class GameStore {
       || (backupStats.mode & 0o777) !== 0o600) {
       throw new Error("The legacy game store backup could not be verified.");
     }
+  }
+
+  private pruneExpiredLegacyBackup(): void {
+    if (this.persistencePath === undefined) return;
+    const backupPath = `${this.persistencePath}.v1.bak`;
+    if (!existsSync(backupPath)) return;
+    const stats = lstatSync(backupPath);
+    if (!stats.isFile()) throw new Error("The legacy game store backup is not a regular file.");
+    if (this.now() - stats.mtimeMs < this.legacyBackupTtlMs) return;
+    unlinkSync(backupPath);
+    syncDirectory(dirname(backupPath));
+  }
+
+  private rememberReadiness(ready: boolean): void {
+    this.readinessCache = { checkedAt: this.now(), ready };
+  }
+
+  private cleanupStaleTemporaryFiles(): void {
+    if (this.persistencePath === undefined) return;
+    const directory = dirname(this.persistencePath);
+    const patterns = temporaryFilePatterns(this.persistencePath);
+    const staleBefore = this.now() - STALE_TEMP_FILE_TTL_MS;
+    const candidates = readdirSync(directory)
+      .filter(name => patterns.some(pattern => pattern.test(name)))
+      .sort();
+    let removed = 0;
+    for (const name of candidates) {
+      if (removed >= MAX_STALE_TEMP_FILES_TO_CLEAN) break;
+      const path = join(directory, name);
+      let stats;
+      try {
+        stats = lstatSync(path);
+      } catch (error) {
+        if (isMissingFileError(error)) continue;
+        throw error;
+      }
+      if (!stats.isFile() || stats.mtimeMs > staleBefore) continue;
+      try {
+        unlinkSync(path);
+        removed += 1;
+      } catch (error) {
+        if (!isMissingFileError(error)) throw error;
+      }
+    }
+    if (removed > 0) syncDirectory(directory);
+  }
+}
+
+function temporaryPathFor(targetPath: string, purpose: "store" | "backup"): string {
+  return join(
+    dirname(targetPath),
+    `.${basename(targetPath)}.${process.pid}.${randomUUID()}.${purpose}.tmp`,
+  );
+}
+
+function temporaryFilePatterns(persistencePath: string): RegExp[] {
+  const storeName = escapeRegExp(basename(persistencePath));
+  const backupName = escapeRegExp(`${basename(persistencePath)}.v1.bak`);
+  const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+  return [
+    new RegExp(`^\\.${storeName}\\.\\d+\\.${uuid}\\.store\\.tmp$`),
+    new RegExp(`^\\.${backupName}\\.\\d+\\.${uuid}\\.backup\\.tmp$`),
+    new RegExp(`^\\.${storeName}\\.\\d+\\.${uuid}\\.probe$`),
+    new RegExp(`^\\.${storeName}\\.\\d+\\.\\d+\\.tmp$`),
+  ];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function writeFileAndSync(path: string, contents: string): void {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, "wx", 0o600);
+    writeFileSync(descriptor, contents, { encoding: "utf8" });
+    fsyncSync(descriptor);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function syncDirectory(directory: string): void {
+  const descriptor = openSync(directory, "r");
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
   }
 }

@@ -35,6 +35,11 @@ function reversiFixturePlay(game: ReversiSnapshot, move: ReversiCoordinate): Rev
   return { ...game, board, turn: nextTurn, legalMoves, moveHistory: [...game.moveHistory, record], lastMove: record, stateVersion: game.stateVersion + 1, message: opponentMoves.length ? `${nextTurn === "black" ? "Black" : "White"} to move.` : `${opponent === "black" ? "Black" : "White"} has no legal move; ${game.turn === "black" ? "Black" : "White"} moves again.`, score: { black, white } };
 }
 describe("App", () => {
+  it("uses the submission-safe public product name", () => {
+    render(<App initialGame={chess()}/>);
+    expect(screen.getByRole("heading", { name: "Turnplay Arena" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: /GPT Game Arena/i })).not.toBeInTheDocument();
+  });
   afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); window.localStorage.clear(); Reflect.deleteProperty(window, "openai"); });
   beforeEach(() => { window.localStorage.clear(); vi.stubGlobal("fetch", vi.fn()); });
   it("selects a legal chess destination then plays a deterministic standalone GPT reply", async () => {

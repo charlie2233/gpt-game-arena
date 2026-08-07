@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Turnplay Arena is an interactive collection of turn-based games for ChatGPT, with saved sessions and three difficulty levels.">
+  <meta name="theme-color" content="#092b35">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Turnplay Arena — Play turn-based games in ChatGPT</title>
+  <link rel="icon" href="assets/turnplay-mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="shell nav" aria-label="Primary navigation">
+      <a class="brand" href="index.html"><img src="assets/turnplay-mark.svg" alt=""><span>Turnplay Arena</span></a>
+      <div class="nav-links"><a href="#games">Games</a><a href="#how">How it works</a><a href="support.html">Support</a><a class="primary-link" href="https://github.com/charlie2233/turnplay-arena">Source ↗</a></div>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="shell hero-grid">
+        <div>
+          <p class="eyebrow">Seven games · three levels</p>
+          <h1>Your next move, right inside ChatGPT.</h1>
+          <p class="lead">Play Chess, Go, Tic-Tac-Toe, Connect Four, Reversi, Mini 8-Ball, and Court Duel on an interactive board. Pick Easy, Medium, or Hard and keep the same saved match going.</p>
+          <div class="actions"><a class="button" href="#games">Explore the games</a><a class="button secondary" href="https://github.com/charlie2233/turnplay-arena">View public source</a></div>
+          <p class="note">Public ChatGPT availability is in release preparation. No sign-in, payment, gambling, prizes, or calibrated Elo rating.</p>
+        </div>
+        <div class="board-art" aria-label="Stylized game board illustration">
+          <div class="board-card"></div><span class="piece dark p1"></span><span class="piece light p2"></span><span class="piece dark p3"></span><span class="piece light p4"></span>
+          <span class="difficulty-chip">Hard mode</span><div class="receipt"><span>Move confirmed</span>D4 landed on the saved board.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section tint" id="games">
+      <div class="shell">
+        <div class="section-heading"><h2>One arena.<br>Plenty to master.</h2><p>Every board uses an authoritative rules engine. Legal moves, turns, captures, scores, resets, and endings are checked by the server before the interface says they happened.</p></div>
+        <div class="game-grid">
+          <article class="game-card"><span class="game-icon">♟</span><h3>Chess</h3><p>Full legal move validation with bounded tactical search at higher levels.</p></article>
+          <article class="game-card"><span class="game-icon">●</span><h3>Go</h3><p>Quick 9×9, 13×13, or full 19×19 boards with captures and positional superko.</p></article>
+          <article class="game-card"><span class="game-icon">×○</span><h3>Tic-Tac-Toe</h3><p>A quick classic with complete minimax play on Hard.</p></article>
+          <article class="game-card"><span class="game-icon">4</span><h3>Connect Four</h3><p>Gravity, tactical threats, and a compact board built for chat-sized screens.</p></article>
+          <article class="game-card"><span class="game-icon">↻</span><h3>Reversi</h3><p>Flip bracketed discs, navigate forced passes, and win the mobility battle.</p></article>
+          <article class="game-card"><span class="game-icon">+2</span><h3>Mini 8-Ball &amp; Court Duel</h3><p>Two original turn-based sports games with finite, transparent choices.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="how">
+      <div class="shell">
+        <div class="section-heading"><h2>Fast to play.<br>Careful with state.</h2><p>The board stays compact while ChatGPT thinks. A move is announced only after the server returns a matching receipt, so narration and board state stay together.</p></div>
+        <div class="feature-grid">
+          <article class="feature-card"><span class="feature-number">01 · CHOOSE</span><h3>Set the match</h3><p>Choose the game, color, board size where relevant, and Easy, Medium, or Hard before starting.</p></article>
+          <article class="feature-card"><span class="feature-number">02 · PLAY</span><h3>Tap exact moves</h3><p>Available intersections, squares, columns, shots, and safeties come from the current authoritative snapshot.</p></article>
+          <article class="feature-card"><span class="feature-number">03 · CONTINUE</span><h3>Resume safely</h3><p>Versioned saved sessions reconcile after reloads. Reset and End Game require a clear confirmation.</p></article>
+          <article class="feature-card"><span class="feature-number">04 · IMPORT</span><h3>Continue a Go board</h3><p>Attach a Go-board image in ChatGPT, inspect the transcription, then approve the position before either side moves.</p></article>
+          <article class="feature-card"><span class="feature-number">05 · FIT</span><h3>Made for the pane</h3><p>Chess and smaller boards use a landscape-aware layout, while 19×19 Go remains fully visible without forced scrolling.</p></article>
+          <article class="feature-card"><span class="feature-number">06 · VERIFY</span><h3>Receipts, not guesses</h3><p>Version and reset-epoch checks reject stale actions; ambiguous mutations are never blindly repeated.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="shell callout"><div><h2>Built in public.</h2><p>Inspect the source, game rules, tests, MCP contracts, and release status on GitHub. The production endpoint and ChatGPT listing will be linked here after stable hosting and review are complete.</p></div><a class="button" href="https://github.com/charlie2233/turnplay-arena">Open repository ↗</a></div>
+    </section>
+  </main>
+
+  <footer class="site-footer"><div class="shell footer-grid"><div><a class="brand" href="index.html"><img src="assets/turnplay-mark.svg" alt=""><span>Turnplay Arena</span></a><p>An independent turn-based game app. Not created, sponsored, certified, or endorsed by OpenAI or any game, league, or platform brand.</p></div><div class="footer-links"><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a><a href="support.html">Support</a><a href="https://github.com/charlie2233/turnplay-arena">GitHub</a></div></div></footer>
+</body>
+</html>

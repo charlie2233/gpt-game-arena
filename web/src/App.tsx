@@ -480,7 +480,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const arenaStyle = hostMaxHeight ? { "--host-max-height": `${hostMaxHeight}px` } as CSSProperties : undefined;
   return <main className={confirmationOpen ? "arena action-confirming" : "arena"} style={arenaStyle}>
     <header>
-      <h1><span>GPT</span> GAME <em>ARENA</em></h1>
+      <h1 aria-label="Turnplay Arena"><span>TURN</span>PLAY <em>ARENA</em></h1>
       {!hostHydrating && <form className="new-game-picker" aria-busy={starting} onSubmit={event => { event.preventDefault(); void startGame(); }}>
         <label className="picker-field" htmlFor="game-preset"><span>NEW GAME</span><select id="game-preset" value={gamePreset} disabled={starting || confirmationOpen} onChange={event => setGamePreset(event.target.value as GamePreset)}>{gamePresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label>
         <label className="picker-field" htmlFor="difficulty-preset"><span>DIFFICULTY</span><select id="difficulty-preset" value={difficultyPreset} disabled={starting || confirmationOpen} onChange={event => setDifficultyPreset(event.target.value as GameDifficulty)}>{difficultyPresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label>

@@ -9,6 +9,14 @@ import { parseGameSnapshot } from "./snapshot-schema.js";
 export class ToolService {
   constructor(private readonly store = new GameStore()) {}
 
+  checkReadiness(): Promise<boolean> {
+    return this.store.checkReadiness();
+  }
+
+  sweepExpired(): number {
+    return this.store.sweepExpired();
+  }
+
   createGame(input: { game: GameKind; playerColor: StoneColor; boardSize?: GoBoardSize; difficulty?: GameDifficulty }): GameSnapshot {
     const session = createGameSession({
       gameId: randomUUID(),

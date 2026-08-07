@@ -5,6 +5,7 @@ import { createHttpApp, FixedWindowLimiter } from "../src/http-app.js";
 import { LEGACY_WIDGET_RESOURCE_URIS, WIDGET_RESOURCE_URI } from "../src/mcp-server.js";
 import { toolInputSchemas } from "../src/tool-contracts.js";
 import { GameStore } from "../src/game-store.js";
+import type { OperationalEvent } from "../src/telemetry.js";
 import { ToolService } from "../src/tool-service.js";
 
 class ExplodingToolService extends ToolService {
@@ -39,6 +40,15 @@ describe("HTTP game arena app", () => {
     const preview = await request(app).get("/preview");
     expect(preview.status).toBe(200);
     expect(preview.text).toContain("fixture");
+  });
+
+  it("reports unready when authoritative storage loses readiness", async () => {
+    const service = new ToolService(new GameStore());
+    vi.spyOn(service, "checkReadiness").mockResolvedValue(false);
+    const app = createHttpApp(service, { loadWidgetHtml: () => "<!doctype html>" });
+    const response = await request(app).get("/ready");
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ ready: false });
   });
 
   it("serves the exact OpenAI app domain challenge only when configured", async () => {
@@ -326,6 +336,36 @@ describe("HTTP game arena app", () => {
     expect(limited.body).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32029, message: "Too many requests." } });
   });
 
+  it("honors forwarded client IPs only from explicitly trusted proxy ranges", async () => {
+    const untrusted = createHttpApp(new ToolService(new GameStore()), {
+      apiToolsRateLimit: { limit: 1, windowMs: 60_000 },
+    });
+    const direct = await request(untrusted).post("/api/tools/nope").set("X-Forwarded-For", "203.0.113.10").send({});
+    expect(direct.status).toBe(404);
+    expect(direct.headers["x-ratelimit-limit"]).toBe("1");
+    expect(direct.headers["x-ratelimit-remaining"]).toBe("0");
+    const spoofed = await request(untrusted).post("/api/tools/nope").set("X-Forwarded-For", "203.0.113.11").send({});
+    expect(spoofed.status).toBe(429);
+
+    const trusted = createHttpApp(new ToolService(new GameStore()), {
+      trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
+      apiToolsRateLimit: { limit: 1, windowMs: 60_000 },
+    });
+    expect((await request(trusted).post("/api/tools/nope").set("X-Forwarded-For", "203.0.113.10").send({})).status).toBe(404);
+    expect((await request(trusted).post("/api/tools/nope").set("X-Forwarded-For", "203.0.113.11").send({})).status).toBe(404);
+    const repeated = await request(trusted).post("/api/tools/nope").set("X-Forwarded-For", "203.0.113.10").send({});
+    expect(repeated.status).toBe(429);
+    expect(repeated.headers["x-ratelimit-reset"]).toBeDefined();
+
+    const singleHop = createHttpApp(new ToolService(new GameStore()), {
+      trustedProxyHops: 1,
+      apiToolsRateLimit: { limit: 1, windowMs: 60_000 },
+    });
+    expect((await request(singleHop).post("/api/tools/nope").set("X-Forwarded-For", "203.0.113.20").send({})).status).toBe(404);
+    expect((await request(singleHop).post("/api/tools/nope").set("X-Forwarded-For", "203.0.113.21").send({})).status).toBe(404);
+    expect((await request(singleHop).post("/api/tools/nope").set("X-Forwarded-For", "203.0.113.20").send({})).status).toBe(429);
+  });
+
   it("uses protocol-specific safe parse and size error envelopes", async () => {
     const app = createHttpApp(new ToolService(new GameStore()));
     const restMalformed = await request(app).post("/api/tools/get_game_state").set("Content-Type", "application/json").send("{");
@@ -410,6 +450,58 @@ describe("HTTP game arena app", () => {
     expect(mcpTool.status).toBe(200);
     expect(mcpTool.body.result).toEqual({ isError: true, content: [{ type: "text", text: "internal_error: Internal server error." }] });
     expect(mcpTool.text).not.toContain("SECRET_SERVICE_VALUE");
+  });
+
+  it("records allowlisted HTTP surfaces, MCP operations, and REST tool outcomes only", async () => {
+    const events: OperationalEvent[] = [];
+    let now = 0;
+    const service = new ToolService(new GameStore());
+    const app = createHttpApp(service, {
+      loadWidgetHtml: () => "<!doctype html>",
+      telemetry: { record: event => events.push(event) },
+      now: () => now++,
+    });
+
+    expect((await request(app).get("/health?token=SECRET_QUERY")).status).toBe(200);
+    expect((await request(app).post("/api/tools/create_game").send({
+      game: "chess", playerColor: "white",
+    })).status).toBe(200);
+    expect((await request(app).post("/api/tools/get_game_state").send({
+      gameId: "SECRET_GAME_ID",
+    })).status).toBe(409);
+    vi.spyOn(service, "getGameState").mockImplementation(() => {
+      throw new Error("SECRET_SERVICE_FAILURE");
+    });
+    expect((await request(app).post("/api/tools/get_game_state").send({
+      gameId: "SECRET_SECOND_GAME_ID",
+    })).status).toBe(500);
+    expect((await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-11-25",
+        capabilities: {},
+        clientInfo: { name: "SECRET_CLIENT_NAME", version: "1" },
+      },
+    })).status).toBe(200);
+
+    expect(events.filter(event => event.event === "tool_call")).toEqual([
+      expect.objectContaining({ event: "tool_call", transport: "rest", tool: "create_game", outcome: "success" }),
+      expect.objectContaining({ event: "tool_call", transport: "rest", tool: "get_game_state", outcome: "rejected" }),
+      expect.objectContaining({ event: "tool_call", transport: "rest", tool: "get_game_state", outcome: "error" }),
+    ]);
+    expect(events.filter(event => event.event === "http_request")).toEqual([
+      expect.objectContaining({ event: "http_request", surface: "health", method: "GET", status: 200 }),
+      expect.objectContaining({ event: "http_request", surface: "rest-tools", method: "POST", status: 200 }),
+      expect.objectContaining({ event: "http_request", surface: "rest-tools", method: "POST", status: 409 }),
+      expect.objectContaining({ event: "http_request", surface: "rest-tools", method: "POST", status: 500 }),
+      expect.objectContaining({ event: "http_request", surface: "mcp", method: "POST", status: 200, mcpOperation: "initialize" }),
+    ]);
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain("SECRET");
+    expect(serialized).not.toContain("gameId");
+    expect(serialized).not.toContain("token");
   });
 
   it("bounds limiter buckets and releases expired capacity", () => {

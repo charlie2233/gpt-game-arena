@@ -18,10 +18,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.22.0
           cache: npm
@@ -43,21 +43,51 @@ jobs:
 
       - name: Smoke production container
         run: |
+          docker volume create gpt-game-arena-ci-data
           docker run --detach --name gpt-game-arena-ci \
             --publish 18080:8000 \
-            --tmpfs /data:rw,mode=0700,uid=1000,gid=1000 \
+            --volume gpt-game-arena-ci-data:/data \
             --env PUBLIC_BASE_URL=https://games.example.com \
             --env GAME_STORE_PATH=/data/game-sessions.json \
             gpt-game-arena:ci
           for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:18080/ready >/dev/null; then
-              exit 0
+              break
             fi
             sleep 1
           done
-          docker logs gpt-game-arena-ci
-          exit 1
+          curl --fail --silent --show-error \
+            --header 'Content-Type: application/json' \
+            --data '{"game":"chess","playerColor":"white","difficulty":"medium"}' \
+            http://127.0.0.1:18080/api/tools/create_game > "$RUNNER_TEMP/created-game.json"
+          game_id=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).structuredContent.gameId" "$RUNNER_TEMP/created-game.json")
+          curl --fail --silent --show-error \
+            --header 'Content-Type: application/json' \
+            --data "{\"gameId\":\"$game_id\",\"actor\":\"player\",\"move\":\"e2e4\",\"expectedVersion\":0,\"expectedResetEpoch\":0}" \
+            http://127.0.0.1:18080/api/tools/play_game_move > "$RUNNER_TEMP/played-game.json"
+          node -e "const value=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).structuredContent; if(value.stateVersion!==1 || value.moveHistory?.[0]?.notation!=='e2e4') process.exit(1)" "$RUNNER_TEMP/played-game.json"
+
+          docker rm --force gpt-game-arena-ci
+          docker run --detach --name gpt-game-arena-ci \
+            --publish 18080:8000 \
+            --volume gpt-game-arena-ci-data:/data \
+            --env PUBLIC_BASE_URL=https://games.example.com \
+            --env GAME_STORE_PATH=/data/game-sessions.json \
+            gpt-game-arena:ci
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18080/ready >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent --show-error \
+            --header 'Content-Type: application/json' \
+            --data "{\"gameId\":\"$game_id\"}" \
+            http://127.0.0.1:18080/api/tools/get_game_state > "$RUNNER_TEMP/restarted-game.json"
+          node -e "const value=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).structuredContent; if(value.gameId!==process.argv[2] || value.stateVersion!==1 || value.moveHistory?.[0]?.notation!=='e2e4') process.exit(1)" "$RUNNER_TEMP/restarted-game.json" "$game_id"
 
       - name: Stop production container
         if: always()
-        run: docker rm --force gpt-game-arena-ci || true
+        run: |
+          docker rm --force gpt-game-arena-ci || true
+          docker volume rm gpt-game-arena-ci-data || true

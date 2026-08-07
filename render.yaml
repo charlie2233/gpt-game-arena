@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: turnplay-arena
+    runtime: docker
+    plan: starter
+    numInstances: 1
+    autoDeployTrigger: checksPass
+    healthCheckPath: /ready
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GAME_STORE_PATH
+        value: /data/game-sessions.json
+      - key: GAME_STORE_TTL_MS
+        value: "2592000000"
+      - key: GAME_STORE_MAX_SESSIONS
+        value: "1000"
+      - key: GAME_STORE_LEGACY_BACKUP_TTL_MS
+        value: "604800000"
+      - key: PUBLIC_BASE_URL
+        sync: false
+    disk:
+      name: turnplay-game-data
+      mountPath: /data
+      sizeGB: 1
