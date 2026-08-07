@@ -11,8 +11,8 @@ Original prompt: also implement select difficuktuy
 
 ### Exact validation
 
-- [x] Focused `server/tests/mcp-server.test.ts`: 12/12 tests pass.
-- [x] Full server suite: 13/13 files and 229/229 tests pass.
+- [x] Focused `server/tests/mcp-server.test.ts`: 20/20 tests pass, including strict malformed-workflow fixtures.
+- [x] Full server suite: 13/13 files and 237/237 tests pass.
 - [x] Server typecheck (`tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json`) passes.
 - [x] Root static-site validator (`npm run test:site`) passes.
 

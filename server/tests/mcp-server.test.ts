@@ -13,8 +13,68 @@ import { GameStore } from "../src/game-store.js";
 import type { OperationalEvent } from "../src/telemetry.js";
 import { ToolService } from "../src/tool-service.js";
 
-function parseToolWorkflow(toolsTriggered: string | null | undefined): string[] {
-  return toolsTriggered?.split(",").map(tool => tool.trim()).filter(Boolean) ?? [];
+type SubmissionCase = { tools_triggered?: unknown; expected_output?: unknown };
+
+function validatePositiveWorkflows(testCases: SubmissionCase[], knownTools: Set<string>): string[] {
+  const errors: string[] = [];
+  let createWorkflowCount = 0;
+  let importWorkflowCount = 0;
+
+  if (testCases.length !== 5) errors.push("submission must contain exactly five positive cases");
+
+  for (const [index, testCase] of testCases.entries()) {
+    const label = `positive case ${index + 1}`;
+    if (typeof testCase.tools_triggered !== "string" || testCase.tools_triggered.trim().length === 0) {
+      errors.push(`${label}: tools_triggered must be a nonempty string`);
+      continue;
+    }
+
+    const rawSegments = testCase.tools_triggered.split(",");
+    if (rawSegments.some(segment => segment.trim().length === 0)) {
+      errors.push(`${label}: tools_triggered contains a blank tool segment`);
+      continue;
+    }
+    const workflow = rawSegments.map(segment => segment.trim());
+
+    for (const tool of workflow) {
+      if (!knownTools.has(tool)) errors.push(`${label}: unknown tool token ${tool}`);
+    }
+    const seen = new Set<string>();
+    for (const tool of workflow) {
+      if (seen.has(tool)) errors.push(`${label}: duplicate tool token ${tool}`);
+      seen.add(tool);
+    }
+
+    const createCount = workflow.filter(tool => tool === "create_game").length;
+    const renderCount = workflow.filter(tool => tool === "render_game").length;
+    const hasCreate = createCount > 0;
+    const hasImport = workflow.includes("import_go_position");
+    if (!hasCreate && !hasImport) errors.push(`${label}: workflow must start from create_game or import_go_position`);
+
+    if (hasCreate) {
+      createWorkflowCount += 1;
+      if (createCount !== 1) errors.push(`${label}: create_game must appear exactly once`);
+      if (renderCount !== 1) errors.push(`${label}: render_game must appear exactly once`);
+      if (workflow.indexOf("render_game") !== workflow.indexOf("create_game") + 1) {
+        errors.push(`${label}: render_game must appear immediately after create_game`);
+      }
+      if (typeof testCase.expected_output !== "string" || !testCase.expected_output.includes("interactive board renders from the same gameId")) {
+        errors.push(`${label}: expected output must confirm the interactive board uses the same gameId`);
+      }
+    }
+
+    if (hasImport) {
+      importWorkflowCount += 1;
+      if (renderCount !== 0) errors.push(`${label}: import_go_position must not include render_game`);
+      if (workflow.length !== 1 || workflow[0] !== "import_go_position") {
+        errors.push(`${label}: import workflow must contain only import_go_position`);
+      }
+    }
+  }
+
+  if (createWorkflowCount !== 4) errors.push("submission must contain exactly four create_game workflows");
+  if (importWorkflowCount !== 1) errors.push("submission must contain exactly one import_go_position workflow");
+  return errors;
 }
 
 describe("MCP game arena server", () => {
@@ -22,8 +82,8 @@ describe("MCP game arena server", () => {
     const manifest = JSON.parse(await readFile(new URL("../../chatgpt-app-submission.json", import.meta.url), "utf8")) as {
       app_info?: { display_name?: string; subtitle?: string };
       tools?: Record<string, { annotations?: Record<string, boolean> }>;
-      test_cases?: Array<{ tools_triggered?: string | null; expected_output?: string }>;
-      negative_test_cases?: unknown[];
+      test_cases?: SubmissionCase[];
+      negative_test_cases?: Array<{ tools_triggered?: unknown }>;
     };
     expect(Object.keys(manifest.tools ?? {}).sort()).toEqual([
       "confirm_imported_go_position", "create_game", "end_game", "get_game_state", "import_go_position", "play_game_move", "render_game", "reset_game",
@@ -33,21 +93,30 @@ describe("MCP game arena server", () => {
     expect(manifest.test_cases).toHaveLength(5);
     expect(manifest.negative_test_cases).toHaveLength(3);
     const positiveCases = manifest.test_cases ?? [];
-    for (const testCase of positiveCases) {
-      const workflow = parseToolWorkflow(testCase.tools_triggered);
-      if (!workflow.includes("create_game")) continue;
-      const renderCount = workflow.filter(tool => tool === "render_game").length;
-      expect(renderCount).toBe(1);
-      expect(workflow.indexOf("create_game")).toBeLessThan(workflow.indexOf("render_game"));
-      expect(testCase.expected_output).toContain("interactive board renders from the same gameId");
-    }
-    const importCase = positiveCases.find(({ tools_triggered }) => parseToolWorkflow(tools_triggered).includes("import_go_position"));
-    const importWorkflow = parseToolWorkflow(importCase?.tools_triggered);
-    expect(importWorkflow).toEqual(["import_go_position"]);
-    expect(importWorkflow.filter(tool => tool === "render_game")).toHaveLength(0);
+    expect(validatePositiveWorkflows(positiveCases, new Set(Object.keys(manifest.tools ?? {})))).toEqual([]);
+    for (const negativeCase of manifest.negative_test_cases ?? []) expect(negativeCase.tools_triggered).toBeNull();
     for (const tool of Object.values(manifest.tools ?? {})) {
       expect(Object.keys(tool.annotations ?? {}).sort()).toEqual(["destructiveHint", "openWorldHint", "readOnlyHint"]);
     }
+  });
+
+  it.each([
+    ["blank segment", 0, "create_game, , render_game", "contains a blank tool segment"],
+    ["unknown tool", 0, "create_game, render_game, unknown_tool", "unknown tool token unknown_tool"],
+    ["duplicate create", 0, "create_game, create_game, render_game", "duplicate tool token create_game"],
+    ["duplicate render", 0, "create_game, render_game, render_game", "duplicate tool token render_game"],
+    ["intervening tool", 0, "create_game, get_game_state, render_game", "render_game must appear immediately after create_game"],
+    ["render-only positive", 0, "render_game", "workflow must start from create_game or import_go_position"],
+    ["null positive", 0, null, "tools_triggered must be a nonempty string"],
+    ["mixed import/create/render", 1, "import_go_position, create_game, render_game", "import workflow must contain only import_go_position"],
+  ] as const)("rejects a %s reviewer workflow", async (_label, caseIndex, toolsTriggered, expectedError) => {
+    const manifest = JSON.parse(await readFile(new URL("../../chatgpt-app-submission.json", import.meta.url), "utf8")) as {
+      tools?: Record<string, unknown>;
+      test_cases?: SubmissionCase[];
+    };
+    const fixture = (manifest.test_cases ?? []).map(testCase => ({ ...testCase }));
+    fixture[caseIndex] = { ...fixture[caseIndex], tools_triggered: toolsTriggered };
+    expect(validatePositiveWorkflows(fixture, new Set(Object.keys(manifest.tools ?? {}))).join("\n")).toContain(expectedError);
   });
 
   it("registers eight game tools and the widget resource", async () => {

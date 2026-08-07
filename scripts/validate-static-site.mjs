@@ -10,8 +10,59 @@ function fail(message) {
   failures.push(message);
 }
 
-function parseToolWorkflow(toolsTriggered) {
-  return typeof toolsTriggered === "string" ? toolsTriggered.split(",").map(tool => tool.trim()).filter(Boolean) : [];
+function validatePositiveWorkflows(testCases, knownTools) {
+  let createWorkflowCount = 0;
+  let importWorkflowCount = 0;
+
+  for (const [index, testCase] of testCases.entries()) {
+    const label = `submission positive case ${index + 1}`;
+    const toolsTriggered = testCase?.tools_triggered;
+    if (typeof toolsTriggered !== "string" || toolsTriggered.trim().length === 0) {
+      fail(`${label}: tools_triggered must be a nonempty string`);
+      continue;
+    }
+
+    const rawSegments = toolsTriggered.split(",");
+    if (rawSegments.some(segment => segment.trim().length === 0)) {
+      fail(`${label}: tools_triggered contains a blank tool segment`);
+      continue;
+    }
+    const workflow = rawSegments.map(segment => segment.trim());
+
+    for (const tool of workflow) {
+      if (!knownTools.has(tool)) fail(`${label}: unknown tool token ${tool}`);
+    }
+    const seen = new Set();
+    for (const tool of workflow) {
+      if (seen.has(tool)) fail(`${label}: duplicate tool token ${tool}`);
+      seen.add(tool);
+    }
+
+    const createCount = workflow.filter(tool => tool === "create_game").length;
+    const renderCount = workflow.filter(tool => tool === "render_game").length;
+    const hasCreate = createCount > 0;
+    const hasImport = workflow.includes("import_go_position");
+    if (!hasCreate && !hasImport) fail(`${label}: workflow must start from create_game or import_go_position`);
+
+    if (hasCreate) {
+      createWorkflowCount += 1;
+      if (createCount !== 1) fail(`${label}: create_game must appear exactly once`);
+      if (renderCount !== 1) fail(`${label}: render_game must appear exactly once`);
+      if (workflow.indexOf("render_game") !== workflow.indexOf("create_game") + 1) fail(`${label}: render_game must appear immediately after create_game`);
+      if (typeof testCase?.expected_output !== "string" || !testCase.expected_output.includes("interactive board renders from the same gameId")) {
+        fail(`${label}: expected output must confirm the interactive board uses the same gameId`);
+      }
+    }
+
+    if (hasImport) {
+      importWorkflowCount += 1;
+      if (renderCount !== 0) fail(`${label}: import_go_position must not include render_game`);
+      if (workflow.length !== 1 || workflow[0] !== "import_go_position") fail(`${label}: import workflow must contain only import_go_position`);
+    }
+  }
+
+  if (createWorkflowCount !== 4) fail("submission must contain exactly four create_game workflows");
+  if (importWorkflowCount !== 1) fail("submission must contain exactly one import_go_position workflow");
 }
 
 function localTargetExists(sourceFile, target) {
@@ -69,17 +120,13 @@ for (const relativePath of [
 const submission = JSON.parse(readFileSync(join(root, "chatgpt-app-submission.json"), "utf8"));
 if (submission.$schema !== "https://developers.openai.com/plugins/schemas/chatgpt-app-submission.v1.json") fail("submission schema URL is not canonical");
 if (submission.app_info?.display_name !== "Turnplay Arena") fail("submission display name is not Turnplay Arena");
-if (submission.test_cases?.length !== 5) fail("submission must contain exactly five positive cases");
-if (submission.negative_test_cases?.length !== 3) fail("submission must contain exactly three negative cases");
-for (const [index, testCase] of (submission.test_cases ?? []).entries()) {
-  const workflow = parseToolWorkflow(testCase.tools_triggered);
-  const renderCount = workflow.filter(tool => tool === "render_game").length;
-  if (workflow.includes("create_game")) {
-    if (renderCount !== 1) fail(`submission positive case ${index + 1}: create_game must trigger render_game exactly once`);
-    if (workflow.indexOf("create_game") > workflow.indexOf("render_game")) fail(`submission positive case ${index + 1}: render_game must follow create_game`);
-    if (!testCase.expected_output?.includes("interactive board renders from the same gameId")) fail(`submission positive case ${index + 1}: expected output must confirm the interactive board uses the same gameId`);
-  }
-  if (workflow.includes("import_go_position") && !workflow.includes("create_game") && renderCount !== 0) fail(`submission positive case ${index + 1}: import_go_position renders directly and must not trigger render_game`);
+const positiveCases = Array.isArray(submission.test_cases) ? submission.test_cases : [];
+const negativeCases = Array.isArray(submission.negative_test_cases) ? submission.negative_test_cases : [];
+if (positiveCases.length !== 5) fail("submission must contain exactly five positive cases");
+if (negativeCases.length !== 3) fail("submission must contain exactly three negative cases");
+validatePositiveWorkflows(positiveCases, new Set(Object.keys(submission.tools ?? {})));
+for (const [index, testCase] of negativeCases.entries()) {
+  if (testCase?.tools_triggered !== null) fail(`submission negative case ${index + 1}: tools_triggered must remain null`);
 }
 
 if (failures.length > 0) {
