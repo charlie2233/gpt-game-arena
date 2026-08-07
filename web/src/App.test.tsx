@@ -875,6 +875,7 @@ describe("App", () => {
     const gptMove = chooseStandaloneMove(after)!;
     const lateGpt = chessAdvance(after, "gpt", gptMove, "white", ["e2e4"], "Late GPT receipt.");
     const ended: ChessSnapshot = { ...after, status: "finished", finishReason: "ended", legalMoves: [], stateVersion: 2, message: "Game ended." };
+    const alteredEnded: ChessSnapshot = { ...ended, moveHistory: [{ ...after.moveHistory[0]!, color: "black" }], lastMove: { ...after.lastMove!, color: "black" }, board: ended.board.map(cell => cell.square === "a8" ? { ...cell, color: "black", piece: "q" } : cell) };
     const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
 
     render(<App bridge={bridge} initialGame={start}/>);
@@ -884,6 +885,12 @@ describe("App", () => {
     await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "player" }) } }), "*"));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 3, method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "gpt" }) } }), "*"));
+
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: alteredEnded } } }));
+    await Promise.resolve();
+    expect(screen.getByText("Black to move.")).toBeVisible();
+    expect(screen.queryByText("Game ended.")).not.toBeInTheDocument();
+    expect(screen.getByText("GPT thinking…")).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "End game" }));
     const dialog = screen.getByRole("alertdialog", { name: "End this game?" });

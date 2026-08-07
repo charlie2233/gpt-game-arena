@@ -134,11 +134,19 @@ function isConfirmedManualEnd(snapshot: GameSnapshot): boolean {
   return snapshot.status === "finished" && snapshot.finishReason === "ended";
 }
 
+function nonLifecycleGameJson(snapshot: GameSnapshot): string {
+  const { status: _status, winner: _winner, finishReason: _finishReason, legalMoves: _legalMoves, stateVersion: _stateVersion, message: _message, ...game } = snapshot;
+  return JSON.stringify(game);
+}
+
 function isConfirmedManualEndAdvance(previous: GameSnapshot, next: GameSnapshot): boolean {
   return next.gameId === previous.gameId
     && resetEpochOf(next) === resetEpochOf(previous)
     && next.stateVersion === previous.stateVersion + 1
-    && isConfirmedManualEnd(next);
+    && isConfirmedManualEnd(next)
+    && next.legalMoves.length === 0
+    && next.winner === previous.winner
+    && nonLifecycleGameJson(next) === nonLifecycleGameJson(previous);
 }
 
 function sameStringList(left: readonly string[], right: readonly string[]): boolean {
