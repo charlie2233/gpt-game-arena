@@ -201,3 +201,31 @@ Original prompt: also implement select difficuktuy
 - [x] Hosted ChatGPT vision transcribed the supplied 19x19 screenshot as Black `D16, P16, D4, Q4, F3` and White `K19, K18, K17, K3, K2`, preserved White to move on Hard, and correctly reported that no move was played.
 - [ ] Finish the hosted widget acceptance against a non-expiring endpoint: the v16 developer app's temporary tunnel expired while loading the review card, so confirmation/unlock remains a deployment-gated check.
 - [ ] Replace the temporary `trycloudflare.com` acceptance tunnel with an approved stable deployment before calling the app permanently hosted.
+
+## Chess and Tic-Tac-Toe screen fit
+
+### Original prompts
+
+- chess and tiktactoe capabiluty is bad
+- i mean screen capblitiy
+
+### Reproduced
+
+- [x] At an 800×520 short ChatGPT-style pane, the shared stacked layout shrinks Chess to 180×180 while the three game controls collapse into multiple rows below the viewport.
+- [x] At 800×600, both games still push Reset/Refresh and the status below the viewport because the 1150px breakpoint stacks the role rail above the board despite enough horizontal room.
+
+### TODO
+
+- [x] Use a compact three-column landscape layout in medium-width panes so roles and history stop consuming vertical board space. The rule is scoped to Chess and Tic-Tac-Toe; an 800×600 Reversi check retained the prior single-column layout.
+- [x] Size Chess and Tic-Tac-Toe independently, keeping Tic-Tac-Toe larger because it has no coordinate rails.
+- [x] Keep all three active-game controls in one responsive row and use two equal columns after a game finishes.
+- [x] Give Chess eight explicit equal rows and Tic-Tac-Toe three explicit equal rows so piece content cannot stretch the grid or move the tap target to a different coordinate.
+- [x] Verify responsive screenshots, text state, tap targets, and console output:
+  - 800×520 Chess: 320×320 board, eight equal 39px ranks, all `a8` through `a1` center hit-tests correct, controls bottom 471, status bottom 487, and no page overflow beyond the 520px viewport.
+  - 800×520 played Tic-Tac-Toe: 304×304 board, nine equal 98×98 cells, `B2` produced the authoritative player move plus GPT `A3`, all cell center hit-tests correct, and controls/status remain above 454px.
+  - 416×360 played Tic-Tac-Toe: compact side-by-side roles and 192×192 board, controls bottom 320 and last-move status bottom 336; move history continues below without pushing the board away.
+  - 320×568 Chess: 224×224 board, eight equal 27px ranks, all center hit-tests correct, controls/status bottom 482, and document size exactly 320×568.
+  - 390×844 Chess: 334×334 board, eight equal 41px ranks, all center hit-tests correct, and controls/status remain within the viewport at 822px.
+  - 1280×720 Chess: 384×384 board, eight equal 47px ranks, all center hit-tests correct, and the complete table ends at 705px.
+  - Finished Tic-Tac-Toe: exactly two 148px Reset/Refresh tracks; the End Game confirmation keeps both action buttons visible in the short pane.
+  - In-app browser diagnostics returned no console errors. The bundled web-game Playwright client produced `shot-0.png` plus authoritative `state-0.json` with no `errors-*.json` artifact.

@@ -563,6 +563,8 @@ describe("App", () => {
   it("opens and cancels the inline end-game confirmation without calling the service", async () => {
     const user = userEvent.setup();
     render(<App initialGame={{ ...chess(4), resetEpoch: 2 }}/>);
+    expect(screen.getByRole("group", { name: "Chess board" }).closest(".table")).toHaveClass("table-chess");
+    expect(screen.getByRole("button", { name: "End game" }).closest(".controls")).toHaveClass("controls-chess", "controls-active");
 
     await user.click(screen.getByRole("button", { name: "End game" }));
 
@@ -608,6 +610,7 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "End game" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reset/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /refresh/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /reset/i }).closest(".controls")).toHaveClass("controls-chess", "controls-finished");
     expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ mode: "finished", endGame: { available: false, confirmation: null }, game: { finishReason: "ended", message: "Game ended.", stateVersion: 5 } });
   });
   it("keeps the active board when a stale end request is rejected", async () => {
