@@ -40,8 +40,27 @@ if (!support.includes('action="https://formspree.io/f/mbdzrwbo"')) fail("support
 if (!support.includes("Never send:")) fail("support page is missing secret-safe guidance");
 
 const privacy = readFileSync(join(site, "privacy.html"), "utf8");
-for (const required of ["30 days", "Formspree", "local storage", ".v1.bak", "raw address"]) {
+for (const required of [
+  "30 days",
+  "Formspree",
+  "local storage",
+  ".v1.bak",
+  "raw address",
+  "Current v2 writes persist only the active game ID and draft game, difficulty, and side selectors",
+  "Current v2 writes never persist the board, legal moves, move history, message, reset epoch, or state version.",
+  "The authoritative game state remains on the Turnplay Arena server.",
+  "Earlier v1 builds could persist a full validated game snapshot",
+  "A legacy v1 snapshot may remain until a compatible card opens and successfully replaces it with v2 state, or the user clears it",
+  "An older v1 save may still contain a full snapshot until a compatible preview opens and successfully migrates it.",
+  "A failed or blocked local storage overwrite can leave the legacy standalone copy in place until the user clears site data.",
+]) {
   if (!privacy.includes(required)) fail(`privacy page is missing ${required}`);
+}
+for (const staleDisclosure of [
+  "the current validated game snapshot, including its game ID and board/history, is written",
+  "the browser stores the latest validated game snapshot in local storage until",
+]) {
+  if (privacy.includes(staleDisclosure)) fail(`privacy page contains stale snapshot disclosure: ${staleDisclosure}`);
 }
 
 const logo = readFileSync(join(site, "assets", "turnplay-mark.svg"), "utf8");
