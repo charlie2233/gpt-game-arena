@@ -12,8 +12,10 @@ import { ToolService } from "../src/tool-service.js";
 
 describe("MCP game arena server", () => {
   it("registers eight game tools and the widget resource", async () => {
-    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v16/widget.html");
-    expect(LEGACY_WIDGET_RESOURCE_URIS).toEqual(["ui://gpt-game-arena/v15/widget.html", "ui://gpt-game-arena/v14/widget.html", "ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"]);
+    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v17/widget.html");
+    expect(LEGACY_WIDGET_RESOURCE_URIS).toEqual(["ui://gpt-game-arena/v16/widget.html", "ui://gpt-game-arena/v15/widget.html", "ui://gpt-game-arena/v14/widget.html", "ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"]);
+    expect(WIDGET_DESCRIPTION).toContain("Mini 8-Ball");
+    expect(WIDGET_DESCRIPTION).toContain("Court Duel");
     expect(WIDGET_DESCRIPTION).toContain("chess");
     expect(WIDGET_DESCRIPTION).toContain("Reversi");
     expect(WIDGET_DESCRIPTION).toContain("Tic-Tac-Toe");
@@ -81,20 +83,20 @@ describe("MCP game arena server", () => {
     expect(tools.tools.find((tool) => tool.name === "end_game")?.description).toContain("END_CONFIRMED");
     expect(tools.tools.find((tool) => tool.name === "reset_game")?.title).toBe("Reset game");
     const createTool = tools.tools.find((tool) => tool.name === "create_game");
-    for (const game of ["chess", "Reversi", "Tic-Tac-Toe", "Connect Four", "Go"]) {
+    for (const game of ["Mini 8-Ball", "Court Duel", "chess", "Reversi", "Tic-Tac-Toe", "Connect Four", "Go"]) {
       expect(createTool?.description).toContain(game);
     }
     expect(createTool?.description).toContain("omitted difficulty defaults to medium");
     expect(createTool?.inputSchema).toMatchObject({
       properties: {
-        game: { enum: ["chess", "go", "tic-tac-toe", "connect-four", "reversi"] },
+        game: { enum: ["chess", "go", "tic-tac-toe", "connect-four", "reversi", "pool", "basketball"] },
         boardSize: { enum: [9, 13, 19] },
         difficulty: { enum: ["easy", "medium", "hard"], default: "medium" },
       },
     });
     expect((createTool?.inputSchema as { required?: string[] }).required).not.toContain("difficulty");
     const validateCreateInput = new Ajv({ strict: false }).compile(createTool?.inputSchema as object);
-    expect(toolInputSchemas.create_game.shape.game.options).toEqual(["chess", "go", "tic-tac-toe", "connect-four", "reversi"]);
+    expect(toolInputSchemas.create_game.shape.game.options).toEqual(["chess", "go", "tic-tac-toe", "connect-four", "reversi", "pool", "basketball"]);
     expect(toolInputSchemas.create_game.safeParse({ game: "tic-tac-toe", playerColor: "black" }).success).toBe(true);
     expect(toolInputSchemas.create_game.safeParse({ game: "connect-four", playerColor: "black" }).success).toBe(true);
     expect(validateCreateInput({ game: "go", playerColor: "black" })).toBe(true);
@@ -111,6 +113,8 @@ describe("MCP game arena server", () => {
     expect(validateCreateInput({ game: "go", playerColor: "black", boardSize: 10 })).toBe(false);
     expect(validateCreateInput({ game: "connect-four", playerColor: "black" })).toBe(true);
     expect(validateCreateInput({ game: "reversi", playerColor: "black" })).toBe(true);
+    expect(validateCreateInput({ game: "pool", playerColor: "black" })).toBe(true);
+    expect(validateCreateInput({ game: "basketball", playerColor: "black" })).toBe(true);
     expect(validateCreateInput({ game: "go", playerColor: "black", boardSize: 19, secret: "SECRET" })).toBe(false);
     expect(tools.tools.filter((tool) => tool.name !== "render_game" && tool.name !== "import_go_position" && tool.name !== "confirm_imported_go_position").every((tool) => {
       const meta = tool._meta as { ui?: { resourceUri?: string; visibility?: string[] }; "openai/outputTemplate"?: string } | undefined;
@@ -294,6 +298,19 @@ describe("MCP game arena server", () => {
     const reversiSnapshot = reversiCreated.structuredContent as Record<string, unknown>;
     expect(reversiCreated.isError, JSON.stringify(reversiCreated)).not.toBe(true);
     expect(reversiSnapshot).toMatchObject({ kind: "reversi", score: { black: 2, white: 2 }, legalMoves: ["C4", "D3", "E6", "F5"] });
+    const poolCreated = await client.callTool({ name: "create_game", arguments: { game: "pool", playerColor: "black", difficulty: "hard" } });
+    const poolSnapshot = poolCreated.structuredContent as Record<string, unknown>;
+    expect(poolCreated.isError, JSON.stringify(poolCreated)).not.toBe(true);
+    expect(poolSnapshot).toMatchObject({ kind: "pool", difficulty: "hard", cueBall: { x: 12, y: 25 } });
+    expect(gameSnapshotSchema.safeParse({ ...poolSnapshot, legalMoves: ["pot:1:TM"] }).success).toBe(false);
+    expect(gameSnapshotSchema.safeParse({ ...poolSnapshot, balls: [{ id: 1, group: "stripes", x: 32, y: 9 }] }).success).toBe(false);
+    expect(gameSnapshotSchema.safeParse({ ...poolSnapshot, balls: [{ id: 8, group: "eight", x: 76, y: 35 }, { id: 8, group: "eight", x: 10, y: 10 }] }).success).toBe(false);
+    const basketballCreated = await client.callTool({ name: "create_game", arguments: { game: "basketball", playerColor: "black", difficulty: "medium" } });
+    const basketballSnapshot = basketballCreated.structuredContent as Record<string, unknown>;
+    expect(basketballCreated.isError, JSON.stringify(basketballCreated)).not.toBe(true);
+    expect(basketballSnapshot).toMatchObject({ kind: "basketball", score: { black: 0, white: 0 }, energy: { black: 4, white: 4 }, legalMoves: ["drive", "pull-up", "three"] });
+    expect(gameSnapshotSchema.safeParse({ ...basketballSnapshot, legalMoves: ["dunk"] }).success).toBe(false);
+    expect(gameSnapshotSchema.safeParse({ ...basketballSnapshot, shotOptions: [{ move: "drive", points: 2, energyCost: 2, accuracy: 101 }] }).success).toBe(false);
     const ajv = new Ajv({ strict: false });
     for (const tool of tools.tools.filter((candidate) => candidate.name !== "confirm_imported_go_position")) {
       const validate = ajv.compile(tool.outputSchema as object);
@@ -302,6 +319,8 @@ describe("MCP game arena server", () => {
       expect(validate(ticTacToeSnapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate(connectFourSnapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate(reversiSnapshot), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate(poolSnapshot), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate(basketballSnapshot), JSON.stringify(validate.errors)).toBe(true);
       // The published schema is intentionally only the compact common contract;
       // success() below still enforces the complete strict game union.
       expect(validate({ ...ticTacToeSnapshot, legalMoves: ["a1"] }), JSON.stringify(validate.errors)).toBe(true);

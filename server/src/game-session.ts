@@ -1,8 +1,10 @@
 import { ChessGame } from "./domain/chess-game.js";
+import { BasketballGame } from "./domain/basketball-game.js";
 import { GameRuleError } from "./domain/errors.js";
 import { ConnectFourGame } from "./domain/connect-four-game.js";
 import { GoGame } from "./domain/go-game.js";
 import { ReversiGame } from "./domain/reversi-game.js";
+import { PoolGame } from "./domain/pool-game.js";
 import { TicTacToeGame } from "./domain/tic-tac-toe-game.js";
 import type {
   GameActor,
@@ -18,6 +20,12 @@ export interface GameSession {
   snapshot(): GameSnapshot;
   play(actor: GameActor, move: string, expectedVersion: number): GameSnapshot;
   confirmImportedPosition?(expectedVersion: number): GameSnapshot;
+  /** Server-only state that must never be copied into a public snapshot. */
+  serverPrivateState?(): GameSessionPrivateState;
+}
+
+export interface GameSessionPrivateState {
+  basketballOutcomeSeed?: string;
 }
 
 export interface GameSessionDescriptor {
@@ -29,6 +37,7 @@ export interface GameSessionDescriptor {
   boardSize?: GoBoardSize;
   initialPosition?: GoPositionSetup;
   importReview?: "pending" | "confirmed";
+  basketballOutcomeSeed?: string;
 }
 
 export interface GameSessionMove {
@@ -53,6 +62,7 @@ export function createGameSession(descriptor: GameSessionDescriptor): GameSessio
     boardSize = 9,
     initialPosition,
     importReview,
+    basketballOutcomeSeed,
   } = descriptor;
 
   switch (kind) {
@@ -66,6 +76,10 @@ export function createGameSession(descriptor: GameSessionDescriptor): GameSessio
       return ConnectFourGame.create(gameId, playerColor, difficulty, resetEpoch);
     case "reversi":
       return ReversiGame.create(gameId, playerColor, difficulty, resetEpoch);
+    case "pool":
+      return PoolGame.create(gameId, playerColor, difficulty, resetEpoch);
+    case "basketball":
+      return BasketballGame.create(gameId, playerColor, difficulty, resetEpoch, basketballOutcomeSeed);
     default:
       return unhandledGameKind(kind);
   }
@@ -84,6 +98,18 @@ export function descriptorFromSnapshot(snapshot: GameSnapshot): GameSessionDescr
       ...(snapshot.importReview === undefined ? {} : { importReview: snapshot.importReview }),
     } : {}),
   };
+}
+
+export function descriptorFromSession(session: GameSession): GameSessionDescriptor {
+  const snapshot = session.snapshot();
+  const descriptor = descriptorFromSnapshot(snapshot);
+  if (snapshot.kind !== "basketball") return descriptor;
+
+  const basketballOutcomeSeed = session.serverPrivateState?.().basketballOutcomeSeed;
+  if (basketballOutcomeSeed === undefined) {
+    throw new Error("Court Duel session is missing its server-private outcome seed.");
+  }
+  return { ...descriptor, basketballOutcomeSeed };
 }
 
 function cloneGoPosition(value: GoPositionSetup): GoPositionSetup {
@@ -113,7 +139,7 @@ export function replayGameSession(
 export function cloneGameSession(session: GameSession): GameSession {
   const snapshot = session.snapshot();
   return replayGameSession(
-    descriptorFromSnapshot(snapshot),
+    descriptorFromSession(session),
     eventsFromSnapshot(snapshot),
   );
 }
@@ -129,7 +155,7 @@ export function endGameSession(
   if (expectedVersion !== snapshot.stateVersion) {
     throw new GameRuleError("stale_version", "The supplied game version is stale.");
   }
-  return new EndedGameSession(endedSnapshot(snapshot));
+  return new EndedGameSession(endedSnapshot(snapshot), cloneServerPrivateState(session));
 }
 
 export function confirmImportedGoPosition(
@@ -167,7 +193,10 @@ function playEvent(session: GameSession, event: GameSessionMove, expectedVersion
 }
 
 class EndedGameSession implements GameSession {
-  constructor(private readonly value: GameSnapshot) {}
+  constructor(
+    private readonly value: GameSnapshot,
+    private readonly privateState: GameSessionPrivateState,
+  ) {}
 
   snapshot(): GameSnapshot {
     return structuredClone(this.value);
@@ -176,6 +205,14 @@ class EndedGameSession implements GameSession {
   play(): never {
     throw new GameRuleError("game_finished", "This game has already finished.");
   }
+
+  serverPrivateState(): GameSessionPrivateState {
+    return { ...this.privateState };
+  }
+}
+
+function cloneServerPrivateState(session: GameSession): GameSessionPrivateState {
+  return { ...(session.serverPrivateState?.() ?? {}) };
 }
 
 function endedSnapshot(snapshot: GameSnapshot): GameSnapshot {

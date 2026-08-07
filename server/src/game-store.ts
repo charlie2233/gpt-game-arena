@@ -12,6 +12,7 @@ import { z } from "zod";
 
 import { GameRuleError } from "./domain/errors.js";
 import {
+  descriptorFromSession,
   replayGameSession,
   type GameSession,
 } from "./game-session.js";
@@ -83,6 +84,11 @@ const persistedSessionSchema = z.discriminatedUnion("kind", [
   persistedSessionBaseSchema.extend({ kind: z.literal("tic-tac-toe") }).strict(),
   persistedSessionBaseSchema.extend({ kind: z.literal("connect-four") }).strict(),
   persistedSessionBaseSchema.extend({ kind: z.literal("reversi") }).strict(),
+  persistedSessionBaseSchema.extend({ kind: z.literal("pool") }).strict(),
+  persistedSessionBaseSchema.extend({
+    kind: z.literal("basketball"),
+    basketballOutcomeSeed: z.string().regex(/^[0-9a-f]{64}$/),
+  }).strict(),
 ]);
 
 const persistedStoreSchema = z.object({
@@ -95,6 +101,7 @@ type PersistedSession = z.infer<typeof persistedSessionSchema>;
 
 function persistedSessionFromStored({ session, lastAccessedAt }: StoredSession): PersistedSession {
   const snapshot = session.snapshot();
+  const descriptor = descriptorFromSession(session);
   const events: z.infer<typeof persistedEventSchema>[] = snapshot.moveHistory.map(({ actor, notation }) => ({
     type: "move",
     actor,
@@ -129,6 +136,17 @@ function persistedSessionFromStored({ session, lastAccessedAt }: StoredSession):
       return { ...common, kind: "connect-four" };
     case "reversi":
       return { ...common, kind: "reversi" };
+    case "pool":
+      return { ...common, kind: "pool" };
+    case "basketball":
+      if (descriptor.basketballOutcomeSeed === undefined) {
+        throw new Error("Court Duel session is missing its server-private outcome seed.");
+      }
+      return {
+        ...common,
+        kind: "basketball",
+        basketballOutcomeSeed: descriptor.basketballOutcomeSeed,
+      };
     default:
       return unhandledPersistedKind(snapshot);
   }
@@ -260,6 +278,9 @@ export class GameStore {
               boardSize: record.boardSize,
               ...(record.initialPosition === undefined ? {} : { initialPosition: record.initialPosition }),
               ...(record.importReview === undefined ? {} : { importReview: record.importReview }),
+            } : {}),
+            ...(record.kind === "basketball" ? {
+              basketballOutcomeSeed: record.basketballOutcomeSeed,
             } : {}),
           },
           record.events.map(event => event.type === "move"

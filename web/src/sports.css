@@ -1,0 +1,94 @@
+.board-column.board-pool,
+.board-column.board-basketball { width: min(100%, 40rem, max(18rem, calc(var(--host-max-height, 100svh) - 17rem))); }
+
+.pool-game,
+.basketball-game { width: 100%; display: grid; gap: 8px; }
+
+.pool-score,
+.court-score,
+.court-meta { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; text-align: center; font-size: .8rem; font-weight: 800; }
+.pool-score span:first-child,
+.court-score span:first-child,
+.court-meta span:first-child { text-align: left; }
+.pool-score span:last-child,
+.court-score span:last-child,
+.court-meta span:last-child { text-align: right; }
+.pool-score b,
+.court-score b,
+.court-meta b { color: #08734d; font-size: 1.05rem; }
+
+.pool-table { position: relative; width: 100%; aspect-ratio: 2 / 1; overflow: hidden; border: 12px solid #4d2d19; border-radius: 18px; background: radial-gradient(circle at 40% 40%, #208d70, #0b664e 72%); box-shadow: inset 0 0 0 3px #d8b06a, 0 4px 0 #2e1b10; }
+.pool-rail-line { position: absolute; inset: 5%; border: 1px solid #ffffff24; border-radius: 10px; }
+.pool-pocket { position: absolute; z-index: 3; width: 9%; min-height: 0; aspect-ratio: 1; padding: 0; border: 3px solid #151515; border-radius: 50%; background: #050505; transform: translate(-50%, -50%); opacity: 1 !important; }
+.pool-pocket.available { border-color: #ffe08a; box-shadow: 0 0 0 4px #ffe08a66, 0 0 14px #ffe08a; }
+.pool-pocket.available:hover { scale: 1.12; }
+.pool-ball { position: absolute; z-index: 2; width: 8%; min-height: 0; aspect-ratio: 1; padding: 0; transform: translate(-50%, -50%); border: 2px solid #111; border-radius: 50%; display: grid; place-items: center; box-shadow: inset -2px -2px 4px #0006, 2px 2px 4px #0007; opacity: 1 !important; }
+.pool-ball span { display: grid; place-items: center; width: 52%; aspect-ratio: 1; border-radius: 50%; background: #fff; color: #111; font-size: clamp(.52rem, 1.6vw, .78rem); font-weight: 900; }
+.pool-ball.cue { background: #f8f1df; }
+.pool-ball.solids { background: #e8b33c; }
+.pool-ball.stripes { background: linear-gradient(#fff 0 27%, #225fb3 27% 73%, #fff 73%); }
+.pool-ball.eight { background: #111; }
+.pool-ball:not(:disabled) { cursor: pointer; }
+.pool-ball.selected { outline: 4px solid #ffe08a; outline-offset: 3px; z-index: 4; }
+.pool-safeties { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; }
+.pool-safeties button { min-width: 0; min-height: 34px; padding: 3px; border: 2px solid #17322d; border-radius: 6px; background: #d9c79b; color: #102433; font-size: .78rem; font-weight: 900; }
+
+.half-court { position: relative; width: 100%; aspect-ratio: 1.65 / 1; overflow: hidden; border: 8px solid #17322d; border-radius: 14px; background: repeating-linear-gradient(90deg, #d99c55 0 34px, #d4934d 34px 36px); box-shadow: inset 0 0 0 3px #f4d099; }
+.half-court::before { content: ""; position: absolute; inset: 6%; border: 3px solid #fff9; border-top: 0; }
+.court-hoop { position: absolute; z-index: 2; top: 7%; left: 50%; translate: -50%; width: 42px; height: 25px; border-bottom: 5px solid #d8432f; color: #d8432f; text-align: center; font-size: 1.45rem; }
+.court-key { position: absolute; top: 6%; left: 36%; width: 28%; height: 44%; border: 3px solid #fff9; }
+.court-arc { position: absolute; top: 20%; left: 12%; width: 76%; height: 82%; border: 3px solid #fff9; border-radius: 50% 50% 0 0; }
+.court-ball { position: absolute; z-index: 2; top: 29%; left: 50%; translate: -50%; font-size: clamp(1.7rem, 5vw, 2.8rem); filter: drop-shadow(2px 3px 2px #0006); }
+.shot-actions { position: absolute; z-index: 3; left: 5%; right: 5%; bottom: 7%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.shot-actions button { min-width: 0; min-height: 64px; padding: 6px 3px; border: 3px solid #17322d; border-radius: 50% 50% 10px 10px; background: #f5ecd4ee; color: #102433; display: grid; gap: 2px; place-items: center; box-shadow: 0 3px 0 #17322d; }
+.shot-actions button:not(:disabled):hover { translate: 0 -3px; }
+.shot-actions strong { font-size: .9rem; }
+.shot-actions span { font-size: .72rem; }
+.shot-actions small { color: #7c301d; font-size: .58rem; font-weight: 900; }
+.court-meta { min-height: 30px; }
+.court-meta > strong { color: #9e311e; }
+
+@media (max-width: 680px) {
+  .board-column.board-pool,
+  .board-column.board-basketball { width: min(100%, 34rem, max(18rem, calc(var(--host-max-height, 100svh) - 20rem))); }
+  .pool-table { border-width: 8px; border-radius: 13px; }
+  .pool-score,
+  .court-score,
+  .court-meta { font-size: .68rem; }
+  .pool-score strong,
+  .court-score strong,
+  .court-meta strong { font-size: .72rem; }
+  .shot-actions { gap: 5px; }
+  .shot-actions button { min-height: 54px; }
+  .shot-actions strong { font-size: .78rem; }
+  .shot-actions span { font-size: .62rem; }
+  .shot-actions small { font-size: .5rem; }
+  .arena .table.table-pool .controls,
+  .arena .table.table-basketball .controls { margin-top: 6px; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+  .arena .table.table-pool .controls button,
+  .arena .table.table-basketball .controls button { min-height: 36px; padding: 3px; font-size: .72rem; }
+  .arena .table.table-pool .captures,
+  .arena .table.table-basketball .captures { margin-top: 6px; font-size: .72rem; line-height: 1.2; }
+}
+
+@media (max-height: 560px) and (min-width: 681px) {
+  .arena .table.table-pool,
+  .arena .table.table-basketball { grid-template-columns: minmax(135px, 175px) minmax(0, 1fr) minmax(120px, 155px); padding: 8px; gap: 8px; }
+  .arena .table.table-pool .roles,
+  .arena .table.table-basketball .roles { grid-column: 1; grid-row: 1; order: 0; display: flex; flex-direction: column; padding: 6px; gap: 8px; }
+  .arena .table.table-pool .roles > div:not(.turn),
+  .arena .table.table-basketball .roles > div:not(.turn) { font-size: .72rem; gap: 5px; }
+  .arena .table.table-pool .roles .turn,
+  .arena .table.table-basketball .roles .turn { padding: 7px 0; border-inline: 0; border-block: 1px dashed #687685; }
+  .arena .table.table-pool .board-column.board-pool,
+  .arena .table.table-basketball .board-column.board-basketball { grid-column: 2; grid-row: 1; order: 0; width: min(100%, 34rem); max-width: none; }
+  .arena .table.table-pool .history,
+  .arena .table.table-basketball .history { grid-column: 3; grid-row: 1; order: 0; padding: 8px; }
+  .arena .table.table-pool .controls,
+  .arena .table.table-basketball .controls { margin-top: 6px; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+  .arena .table.table-pool .controls button,
+  .arena .table.table-basketball .controls button { min-height: 34px; padding: 3px; font-size: .72rem; }
+  .pool-safeties button { min-height: 30px; }
+  .half-court { aspect-ratio: 1.9 / 1; }
+  .shot-actions button { min-height: 44px; }
+}

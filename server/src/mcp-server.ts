@@ -14,9 +14,9 @@ import {
 } from "./tool-contracts.js";
 import { ToolService } from "./tool-service.js";
 
-export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v16/widget.html";
-export const LEGACY_WIDGET_RESOURCE_URIS = ["ui://gpt-game-arena/v15/widget.html", "ui://gpt-game-arena/v14/widget.html", "ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"] as const;
-export const WIDGET_DESCRIPTION = "An interactive chess, Reversi, Tic-Tac-Toe, Connect Four, or 9x9, 13x13, or 19x19 Go board, including Go positions transcribed from an attached photo.";
+export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v17/widget.html";
+export const LEGACY_WIDGET_RESOURCE_URIS = ["ui://gpt-game-arena/v16/widget.html", "ui://gpt-game-arena/v15/widget.html", "ui://gpt-game-arena/v14/widget.html", "ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"] as const;
+export const WIDGET_DESCRIPTION = "An interactive Mini 8-Ball, Court Duel basketball, chess, Reversi, Tic-Tac-Toe, Connect Four, or 9x9, 13x13, or 19x19 Go game, including Go positions transcribed from an attached photo.";
 export type WidgetLoader = () => string | undefined | Promise<string | undefined>;
 
 export interface McpServerOptions {
@@ -24,14 +24,14 @@ export interface McpServerOptions {
 }
 
 export function createMcpServer(service: ToolService, options: McpServerOptions = {}): McpServer {
-  const server = new McpServer({ name: "gpt-game-arena", version: "0.1.0" });
+  const server = new McpServer({ name: "gpt-game-arena", version: "0.2.0" });
   const loadWidgetHtml = options.loadWidgetHtml ?? defaultWidgetLoader;
 
   for (const resourceUri of [WIDGET_RESOURCE_URI, ...LEGACY_WIDGET_RESOURCE_URIS]) {
     registerWidgetResource(server, resourceUri, loadWidgetHtml);
   }
 
-  registerTool(server, service, "create_game", "Create game", "Use this when starting chess, Reversi, Tic-Tac-Toe, Connect Four, or Go. Set difficulty to easy, medium, or hard; an omitted difficulty defaults to medium. For Go, set boardSize to 9, 13, or 19; an omitted boardSize defaults to 9.", {
+  registerTool(server, service, "create_game", "Create game", "Use this when starting Mini 8-Ball Pool, Court Duel basketball, chess, Reversi, Tic-Tac-Toe, Connect Four, or Go. Set difficulty to easy, medium, or hard; an omitted difficulty defaults to medium. For Go, set boardSize to 9, 13, or 19; an omitted boardSize defaults to 9. Pool and basketball use their finite legal move strings exactly as returned by the snapshot.", {
     readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false,
   }, { ui: { visibility: ["model", "app"] } });
   registerTool(server, service, "import_go_position", "Continue Go from a photo", "Use this when, and only when, the user wants to continue an existing Go position from an attached board image or an explicit stone list. Inspect the image yourself and transcribe every visible stone into blackStones and whiteStones. Unless visible labels establish another orientation, map the image's left edge to column A and its top edge to the highest rank; Go columns skip I. Map roles literally: 'I am White' means playerColor white, while 'you/GPT are White' means playerColor black. Set turn to the color that moves next. If board size, any stone color or intersection, the requested role, or the next turn is genuinely unclear, ask one concise question before calling. Captures may be omitted when unknown and then start at zero. Only claim the position opened after a matching IMPORT_CONFIRMED receipt. The widget will ask the user to verify the transcription; do not make a game move until that review is accepted. For a correction before play, call this tool again with the complete corrected position instead of using play_game_move for setup stones.", {

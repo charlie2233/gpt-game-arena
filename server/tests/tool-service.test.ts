@@ -24,6 +24,17 @@ function temporaryStorePath(): string {
   return join(directory, "game-sessions.json");
 }
 
+function persistedBasketballSeed(persistencePath: string, gameId: string): string {
+  const document = JSON.parse(readFileSync(persistencePath, "utf8")) as {
+    sessions?: Array<{ gameId?: unknown; kind?: unknown; basketballOutcomeSeed?: unknown }>;
+  };
+  const record = document.sessions?.find((session) => session.gameId === gameId && session.kind === "basketball");
+  if (typeof record?.basketballOutcomeSeed !== "string") {
+    throw new Error("Expected a persisted Court Duel outcome seed.");
+  }
+  return record.basketballOutcomeSeed;
+}
+
 function expectRuleError(action: () => unknown, code: GameRuleError["code"]): void {
   let error: unknown;
   try {
@@ -301,6 +312,7 @@ describe("ToolService", () => {
       expectedResetEpoch: 0,
     });
 
+    if (ended.kind !== "chess" || moved.kind !== "chess") throw new Error("Expected Chess snapshots.");
     expect(ended).toMatchObject({
       gameId: created.gameId,
       status: "finished",
@@ -486,6 +498,24 @@ describe("ToolService", () => {
     expect(reset.legalMoves).toEqual(["C4", "D3", "E6", "F5"]);
   });
 
+  it("creates, plays, and resets Mini 8-Ball without losing difficulty", () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({ game: "pool", playerColor: "black", difficulty: "hard" });
+    const moved = service.playGameMove({ gameId: created.gameId, actor: "player", move: "POT:1:TM", expectedVersion: 0, expectedResetEpoch: 0 });
+    expect(moved).toMatchObject({ kind: "pool", stateVersion: 1, difficulty: "hard", turn: "black", cueBall: { x: 32, y: 9 } });
+    const reset = service.resetGame({ gameId: created.gameId });
+    expect(reset).toMatchObject({ gameId: created.gameId, kind: "pool", playerColor: "black", difficulty: "hard", stateVersion: 0, resetEpoch: 1, cueBall: { x: 12, y: 25 } });
+  });
+
+  it("creates, plays, and resets Court Duel without losing difficulty", () => {
+    const service = new ToolService(new GameStore());
+    const created = service.createGame({ game: "basketball", playerColor: "black", difficulty: "hard" });
+    const moved = service.playGameMove({ gameId: created.gameId, actor: "player", move: "drive", expectedVersion: 0, expectedResetEpoch: 0 });
+    expect(moved).toMatchObject({ kind: "basketball", stateVersion: 1, difficulty: "hard", turn: "white", attempts: { black: 1, white: 0 }, energy: { black: 2, white: 4 } });
+    const reset = service.resetGame({ gameId: created.gameId });
+    expect(reset).toMatchObject({ gameId: created.gameId, kind: "basketball", playerColor: "black", difficulty: "hard", stateVersion: 0, resetEpoch: 1, score: { black: 0, white: 0 }, energy: { black: 4, white: 4 } });
+  });
+
   it("returns not_found for unknown IDs", () => {
     const service = new ToolService(new GameStore());
 
@@ -499,7 +529,7 @@ describe("ToolService", () => {
     expectRuleError(() => service.resetGame({ gameId: "missing" }), "not_found");
   });
 
-  it("replays durable sessions for all five game kinds after a process restart", () => {
+  it("replays durable sessions for all seven game kinds after a process restart", () => {
     const persistencePath = temporaryStorePath();
     const service = new ToolService(new GameStore({ persistencePath }));
     const cases = [
@@ -508,6 +538,8 @@ describe("ToolService", () => {
       { game: "tic-tac-toe", playerColor: "black", move: "A1" },
       { game: "connect-four", playerColor: "black", move: "D" },
       { game: "reversi", playerColor: "black", move: "C4" },
+      { game: "pool", playerColor: "black", move: "POT:1:TM" },
+      { game: "basketball", playerColor: "black", move: "drive" },
     ] as const;
 
     const expected = cases.map((testCase) => {
@@ -529,6 +561,92 @@ describe("ToolService", () => {
     for (const snapshot of expected) {
       expect(restarted.getGameState({ gameId: snapshot.gameId })).toEqual(snapshot);
     }
+  });
+
+  it("keeps the Court Duel seed private while preserving its sequence through clone, end, reset, and restart", () => {
+    const primaryPath = temporaryStorePath();
+    const replayPath = temporaryStorePath();
+    const primary = new ToolService(new GameStore({ persistencePath: primaryPath }));
+    const createdOutput = executeTool(primary, "create_game", {
+      game: "basketball",
+      playerColor: "black",
+      difficulty: "hard",
+    });
+    const created = createdOutput.structuredContent;
+    const seed = persistedBasketballSeed(primaryPath, created.gameId);
+
+    expect(seed).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(createdOutput)).not.toContain(seed);
+    expect(JSON.stringify(createdOutput)).not.toMatch(/basketballOutcomeSeed|outcomeSeed/);
+
+    const firstOutput = executeTool(primary, "play_game_move", {
+      gameId: created.gameId,
+      actor: "player",
+      move: "drive",
+      expectedVersion: 0,
+      expectedResetEpoch: 0,
+    });
+    expect(persistedBasketballSeed(primaryPath, created.gameId)).toBe(seed);
+    expect(JSON.stringify(firstOutput)).not.toContain(seed);
+    writeFileSync(replayPath, readFileSync(primaryPath, "utf8"), "utf8");
+
+    const replay = new ToolService(new GameStore({ persistencePath: replayPath }));
+    const primaryReply = primary.playGameMove({
+      gameId: created.gameId,
+      actor: "gpt",
+      move: "three",
+      expectedVersion: 1,
+      expectedResetEpoch: 0,
+    });
+    const replayReply = replay.playGameMove({
+      gameId: created.gameId,
+      actor: "gpt",
+      move: "three",
+      expectedVersion: 1,
+      expectedResetEpoch: 0,
+    });
+    expect(replayReply).toEqual(primaryReply);
+    expect(persistedBasketballSeed(primaryPath, created.gameId)).toBe(seed);
+    expect(persistedBasketballSeed(replayPath, created.gameId)).toBe(seed);
+
+    const primaryEnded = primary.endGame({
+      gameId: created.gameId,
+      confirmed: true,
+      expectedVersion: 2,
+      expectedResetEpoch: 0,
+    });
+    const replayEnded = replay.endGame({
+      gameId: created.gameId,
+      confirmed: true,
+      expectedVersion: 2,
+      expectedResetEpoch: 0,
+    });
+    expect(replayEnded).toEqual(primaryEnded);
+    expect(persistedBasketballSeed(primaryPath, created.gameId)).toBe(seed);
+
+    const primaryReset = primary.resetGame({ gameId: created.gameId });
+    const replayReset = replay.resetGame({ gameId: created.gameId });
+    expect(replayReset).toEqual(primaryReset);
+    expect(primaryReset).toMatchObject({ resetEpoch: 1, stateVersion: 0, shotResults: [] });
+    expect(persistedBasketballSeed(primaryPath, created.gameId)).toBe(seed);
+    expect(persistedBasketballSeed(replayPath, created.gameId)).toBe(seed);
+
+    const primaryAfterReset = primary.playGameMove({
+      gameId: created.gameId,
+      actor: "player",
+      move: "drive",
+      expectedVersion: 0,
+      expectedResetEpoch: 1,
+    });
+    const replayAfterReset = replay.playGameMove({
+      gameId: created.gameId,
+      actor: "player",
+      move: "drive",
+      expectedVersion: 0,
+      expectedResetEpoch: 1,
+    });
+    expect(replayAfterReset).toEqual(primaryAfterReset);
+    expect(JSON.stringify(primaryAfterReset)).not.toContain(seed);
   });
 
   it("persists pending/confirmed imported review state, later moves, and a reset back to pending", () => {
@@ -768,6 +886,31 @@ describe("ToolService", () => {
         lastAccessedAt: Date.now(),
       }],
     })],
+    ["a Court Duel session without its private seed", JSON.stringify({
+      formatVersion: 1,
+      sessions: [{
+        gameId: "seedless-court-duel",
+        kind: "basketball",
+        playerColor: "black",
+        difficulty: "medium",
+        resetEpoch: 0,
+        events: [],
+        lastAccessedAt: Date.now(),
+      }],
+    })],
+    ["a malformed Court Duel private seed", JSON.stringify({
+      formatVersion: 1,
+      sessions: [{
+        gameId: "malformed-seed-court-duel",
+        kind: "basketball",
+        playerColor: "black",
+        difficulty: "medium",
+        resetEpoch: 0,
+        basketballOutcomeSeed: "public-and-too-short",
+        events: [],
+        lastAccessedAt: Date.now(),
+      }],
+    })],
   ])("fails closed instead of discarding %s", (_label, content) => {
     const persistencePath = temporaryStorePath();
     writeFileSync(persistencePath, content, "utf8");
@@ -777,7 +920,7 @@ describe("ToolService", () => {
   });
 
   it("exposes game kind and stone color as narrow TypeScript inputs", () => {
-    expectTypeOf<GameKind>().toEqualTypeOf<"chess" | "go" | "tic-tac-toe" | "connect-four" | "reversi">();
+    expectTypeOf<GameKind>().toEqualTypeOf<"chess" | "go" | "tic-tac-toe" | "connect-four" | "reversi" | "pool" | "basketball">();
     expectTypeOf<GameDifficulty>().toEqualTypeOf<"easy" | "medium" | "hard">();
     expectTypeOf<StoneColor>().toEqualTypeOf<"white" | "black">();
     expectTypeOf<GoBoardSize>().toEqualTypeOf<9 | 13 | 19>();

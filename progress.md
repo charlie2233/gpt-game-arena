@@ -229,3 +229,36 @@ Original prompt: also implement select difficuktuy
   - 1280×720 Chess: 384×384 board, eight equal 47px ranks, all center hit-tests correct, and the complete table ends at 705px.
   - Finished Tic-Tac-Toe: exactly two 148px Reset/Refresh tracks; the End Game confirmation keeps both action buttons visible in the short pane.
   - In-app browser diagnostics returned no console errors. The bundled web-game Playwright client produced `shot-0.png` plus authoritative `state-0.json` with no `errors-*.json` artifact.
+
+## Add Pool and Basketball Duel
+
+### Original prompt
+
+- add more games like pool, basktball starsetc.
+
+### Decisions
+
+- [x] Use original game identities: **Mini 8-Ball** and **Court Duel**, without copying Basketball Stars branding or assets.
+- [x] Keep the existing generic eight-tool contract; every action remains one exact string from the authoritative snapshot's `legalMoves` array.
+- [x] Keep both sports games deterministic and replay-safe so refresh, reset, persistence, and GPT narration cannot disagree with the server.
+- [x] Mini 8-Ball uses finite `POT:<ball>:<pocket>` and `SAFE:<zone>` actions, group clearance, extra turns for pots, and an 8-ball win.
+- [x] Court Duel uses `drive`, `pull-up`, and `three`, public energy/accuracy, five regulation attempts per side, and bounded overtime.
+
+### TODO
+
+- [x] Add strict server engines, snapshot schemas, replay/persistence coverage, and MCP catalog support for both games.
+- [x] Add responsive, accessible Pool and Court Duel boards with score/progress displays and authoritative result feedback.
+- [x] Add Easy, Medium, and Hard game-specific GPT evaluation without exposing deterministic outcome rolls.
+- [x] Run the full automated matrix plus required browser-client, text-state, viewport, and console checks.
+- [x] Sync, commit, push, and verify the public GitHub revision; keep hosted ChatGPT acceptance as a separate deployment gate.
+
+### Verification status
+
+- [x] Server coverage reaches 147 tests and web coverage reaches 103 tests (250 total), including rules, persistence, MCP/tool contracts, replay determinism, semantic snapshot invariants, difficulty strategy, accessibility, and compact text state.
+- [x] Court Duel outcomes use HMAC-SHA256 with a random persisted 256-bit server-private seed. Clone, end, reset, and restart preserve the sequence; malformed or missing seeds fail closed; snapshots and tool output never expose the seed.
+- [x] Court Duel snapshots are rejected when shot options, legal moves, history/results, points, score, energy, attempts, streak, turn, phase, round, status, winner, or version disagree.
+- [x] Pool clears pending ball selection across moves, reset, and new games; keyboard users can select a ball with Enter and Tab directly to its first legal pocket, with a polite live instruction.
+- [x] The bundled browser-game client played one complete two-ply Pool safety exchange and one complete two-ply Court Duel round. Both produced authoritative `state-0.json` snapshots and screenshots with no `errors-*.json` artifact.
+- [x] At 800×520, the Pool table is 394×197 and the Court is 394×207; both keep controls and status fully visible.
+- [x] At 320×568, Mini 8-Ball and Court Duel keep the board, one-row three-button game controls, and final status inside the exact 320×568 document. In-app browser diagnostics returned no warnings or errors.
+- [ ] Deploy the v17 widget to an approved stable HTTPS endpoint and reconnect it in ChatGPT before calling either game hosted-live.

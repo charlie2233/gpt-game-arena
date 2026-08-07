@@ -7,6 +7,12 @@ const base = { gameId: "new", difficulty: "hard", playerColor: "black", turn: "b
 const tic = () => ({ ...base, kind: "tic-tac-toe" as const, legalMoves: ["A3", "B2"], board: Array.from({ length: 3 }, () => Array<"white" | "black" | null>(3).fill(null)) });
 const connect = () => ({ ...base, kind: "connect-four" as const, legalMoves: ["A", "D"], board: Array.from({ length: 6 }, () => Array<"white" | "black" | null>(7).fill(null)) });
 const reversi = () => ({ ...base, kind: "reversi" as const, legalMoves: ["C4", "D3"], board: Array.from({ length: 8 }, () => Array<"white" | "black" | null>(8).fill(null)), score: { black: 2, white: 2 } });
+const pool = () => ({ ...base, kind: "pool" as const, legalMoves: ["POT:1:TM", "SAFE:L"], cueBall: { x: 12, y: 25 }, balls: [{ id: 1, group: "solids", x: 32, y: 9 }, { id: 8, group: "eight", x: 76, y: 35 }] });
+const basketball = () => ({ ...base, kind: "basketball" as const, legalMoves: ["drive", "pull-up", "three"], score: { black: 0, white: 0 }, energy: { black: 4, white: 4 }, streak: { black: 0, white: 0 }, attempts: { black: 0, white: 0 }, phase: "regulation", round: 1, shotOptions: [{ move: "drive", points: 2, energyCost: 2, accuracy: 82 }, { move: "pull-up", points: 2, energyCost: 1, accuracy: 66 }, { move: "three", points: 3, energyCost: 0, accuracy: 48 }], shotResults: [] });
+const basketballAfterDrive = () => {
+  const move = { actor: "player", color: "black", notation: "drive", ply: 1 } as const;
+  return { ...basketball(), turn: "white", stateVersion: 1, moveHistory: [move], lastMove: move, score: { black: 2, white: 0 }, energy: { black: 2, white: 4 }, streak: { black: 1, white: 0 }, attempts: { black: 1, white: 0 }, shotResults: [{ actor: "player", color: "black", move: "drive", ply: 1, made: true, points: 2, accuracy: 82 }] } as const;
+};
 describe("authoritative snapshot validation", () => {
   it("rejects shallow malformed host outputs", () => { expect(isSnapshot(chess)).toBe(true); expect(isSnapshot({ ...chess, difficulty: undefined })).toBe(false); expect(isSnapshot({ ...chess, difficulty: "expert" })).toBe(false); expect(isSnapshot({ ...chess, board: chess.board.slice(1) })).toBe(false); expect(isSnapshot({ ...chess, stateVersion: -1 })).toBe(false); expect(isSnapshot({ ...chess, board: [{ square: "e2", color: "white" }, ...chess.board.slice(1)] })).toBe(false); });
   it("requires a normalized bounded game id", () => { for (const gameId of ["", " ", " g", "g ", "x".repeat(129)]) expect(isSnapshot({ ...chess, gameId })).toBe(false); expect(isSnapshot({ ...chess, gameId: "x".repeat(128) })).toBe(true); });
@@ -75,6 +81,39 @@ describe("authoritative snapshot validation", () => {
     expect(isSnapshot({ ...reversi(), winningLine: ["A1", "B1", "C1"] })).toBe(false);
     expect(isSnapshot({ ...reversi(), score: { black: 2, white: 2, extra: true } })).toBe(false);
     expect(isSnapshot({ ...reversi(), moveHistory: [{ actor: "player", color: "black", notation: "C4", ply: 1, extra: true }] })).toBe(false);
+  });
+  it("accepts strict Pool and Court Duel snapshots and rejects hidden or malformed state", () => {
+    expect(isSnapshot(pool())).toBe(true);
+    expect(isSnapshot({ ...pool(), legalMoves: ["pot:1:TM"] })).toBe(false);
+    expect(isSnapshot({ ...pool(), cueBall: { x: 101, y: 25 } })).toBe(false);
+    expect(isSnapshot({ ...pool(), balls: [{ id: 1, group: "stripes", x: 32, y: 9 }] })).toBe(false);
+    expect(isSnapshot({ ...pool(), balls: [{ id: 8, group: "eight", x: 70, y: 30 }, { id: 8, group: "eight", x: 76, y: 35 }] })).toBe(false);
+    expect(isSnapshot(basketball())).toBe(true);
+    expect(isSnapshot({ ...basketball(), legalMoves: ["dunk"] })).toBe(false);
+    expect(isSnapshot({ ...basketball(), energy: { black: 5, white: 4 } })).toBe(false);
+    expect(isSnapshot({ ...basketball(), shotOptions: [{ move: "three", points: 3, energyCost: 0, accuracy: 93 }] })).toBe(false);
+    expect(isSnapshot({ ...basketball(), hiddenRoll: 17 })).toBe(false);
+  });
+  it("rejects internally inconsistent Court Duel results, totals, options, and phase", () => {
+    const opening = basketball();
+    const moved = basketballAfterDrive();
+    const shot = moved.shotResults[0];
+    expect(isSnapshot(moved)).toBe(true);
+    expect(isSnapshot({ ...moved, status: "finished", finishReason: "ended", stateVersion: 2, legalMoves: [] })).toBe(true);
+    for (const invalid of [
+      { ...opening, legalMoves: ["drive"] },
+      { ...opening, round: 2 },
+      { ...opening, phase: "overtime" },
+      { ...opening, shotOptions: [...opening.shotOptions, opening.shotOptions[0]] },
+      { ...moved, score: { black: 3, white: 0 } },
+      { ...moved, attempts: { black: 0, white: 0 } },
+      { ...moved, turn: "black" },
+      { ...moved, stateVersion: 2 },
+      { ...moved, moveHistory: [{ ...moved.moveHistory[0], notation: "three" }] },
+      { ...moved, shotResults: [{ ...shot, made: false, points: 2 }] },
+      { ...moved, shotResults: [{ ...shot, accuracy: 83 }] },
+      { ...moved, shotOptions: [{ ...moved.shotOptions[0], points: 3 }, ...moved.shotOptions.slice(1)] },
+    ]) expect(isSnapshot(invalid)).toBe(false);
   });
 });
 

@@ -1,5 +1,5 @@
 import { Chess, type PieceSymbol, type Square } from "chess.js";
-import type { ChessPiece, ChessSnapshot, Color, ConnectFourSnapshot, GameSnapshot, GoSnapshot, ReversiSnapshot, TicTacToeSnapshot } from "./types";
+import type { BasketballMove, BasketballSnapshot, ChessPiece, ChessSnapshot, Color, ConnectFourSnapshot, GameSnapshot, GoSnapshot, PoolSnapshot, ReversiSnapshot, TicTacToeSnapshot } from "./types";
 
 const GO_COLUMNS = "ABCDEFGHJKLMNOPQRST";
 const PIECE_VALUE: Record<ChessPiece, number> = { p: 1, n: 3, b: 3.25, r: 5, q: 9, k: 100 };
@@ -43,6 +43,11 @@ export type EmbeddedMoveDecision = {
   captures?: { black: number; white: number };
   consecutivePasses?: number;
   score?: { black: number; white: number };
+  energy?: { black: number; white: number };
+  attempts?: { black: number; white: number };
+  phase?: "regulation" | "overtime";
+  round?: number;
+  shotOptions?: Array<{ move: BasketballMove; points: 2 | 3; energyCost: 0 | 1 | 2; accuracy: number }>;
 };
 
 export function chooseStandaloneMove(game: GameSnapshot): string | undefined {
@@ -71,6 +76,8 @@ export function chooseStandaloneMove(game: GameSnapshot): string | undefined {
   if (game.kind === "tic-tac-toe") return game.difficulty === "easy" ? candidates[stableHash(positionKey(game)) % candidates.length] : rankedTicMoves(game, candidates, game.difficulty === "hard")[0];
   if (game.kind === "connect-four") return game.difficulty === "easy" ? candidates[stableHash(positionKey(game)) % candidates.length] : rankedConnectMoves(game, candidates, game.difficulty === "hard" ? 5 : 3)[0];
   if (game.kind === "reversi") return game.difficulty === "easy" ? candidates[stableHash(positionKey(game)) % candidates.length] : rankedReversiMoves(game, candidates, game.difficulty === "hard" ? 3 : 1)[0];
+  if (game.kind === "pool") return game.difficulty === "easy" ? candidates[stableHash(positionKey(game)) % candidates.length] : rankedPoolMoves(game, candidates, game.difficulty === "hard" ? 5 : 2)[0];
+  if (game.kind === "basketball") return game.difficulty === "easy" ? candidates[stableHash(positionKey(game)) % candidates.length] : rankedBasketballMoves(game, candidates, game.difficulty === "hard" ? 6 : 3)[0];
   if (game.difficulty === "easy") return candidates[stableHash(positionKey(game)) % candidates.length];
   return rankedChessMoves(game, candidates, game.difficulty === "hard" ? 3 : 2)[0];
 }
@@ -387,6 +394,237 @@ function evaluateReversi(board: (Color | null)[][], root: Color): number {
   return score;
 }
 
+type PoolPoint = { x: number; y: number };
+type PoolSearchState = {
+  cueBall: PoolPoint;
+  balls: PoolSnapshot["balls"];
+  turn: Color;
+  winner?: Color;
+};
+
+const POOL_POCKETS: Record<string, PoolPoint> = {
+  TL: { x: 0, y: 0 }, TM: { x: 50, y: 0 }, TR: { x: 100, y: 0 },
+  BL: { x: 0, y: 50 }, BM: { x: 50, y: 50 }, BR: { x: 100, y: 50 },
+};
+const POOL_SAFETIES: Record<string, PoolPoint> = {
+  L: { x: 18, y: 25 }, C: { x: 50, y: 25 }, R: { x: 82, y: 25 }, T: { x: 50, y: 7 }, B: { x: 50, y: 43 },
+};
+
+function rankedPoolMoves(game: PoolSnapshot, moves: string[], depth: number): string[] {
+  const state: PoolSearchState = { cueBall: { ...game.cueBall }, balls: game.balls.map((ball) => ({ ...ball })), turn: game.turn };
+  const root = game.turn;
+  const scores = new Map<string, number>();
+  for (const move of moves) {
+    const next = applyPoolSearchMove(state, move);
+    scores.set(move, next ? poolSearch(next, root, depth - 1, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY) : Number.NEGATIVE_INFINITY);
+  }
+  return [...moves].sort((left, right) => (scores.get(right) ?? Number.NEGATIVE_INFINITY) - (scores.get(left) ?? Number.NEGATIVE_INFINITY) || poolMoveOrder(right) - poolMoveOrder(left) || left.localeCompare(right));
+}
+
+function poolSearch(state: PoolSearchState, root: Color, depth: number, alphaStart: number, betaStart: number): number {
+  if (state.winner) return state.winner === root ? 1_000_000 + depth : -1_000_000 - depth;
+  if (depth <= 0) return evaluatePool(state, root);
+  const moves = poolLegalMoves(state).sort((left, right) => poolMoveOrder(right) - poolMoveOrder(left) || left.localeCompare(right));
+  if (moves.length === 0) return evaluatePool(state, root);
+  const maximizing = state.turn === root;
+  let value = maximizing ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+  let alpha = alphaStart;
+  let beta = betaStart;
+  for (const move of moves) {
+    const next = applyPoolSearchMove(state, move);
+    if (!next) continue;
+    const child = poolSearch(next, root, depth - 1, alpha, beta);
+    if (maximizing) {
+      value = Math.max(value, child);
+      alpha = Math.max(alpha, value);
+    } else {
+      value = Math.min(value, child);
+      beta = Math.min(beta, value);
+    }
+    if (beta <= alpha) break;
+  }
+  return value;
+}
+
+function poolLegalMoves(state: PoolSearchState): string[] {
+  if (state.winner) return [];
+  const group = state.turn === "black" ? "solids" : "stripes";
+  const groupBalls = state.balls.filter((ball) => ball.group === group);
+  const targets = groupBalls.length > 0 ? groupBalls : state.balls.filter((ball) => ball.group === "eight");
+  const moves: string[] = [];
+  for (const target of targets) for (const [pocket, point] of Object.entries(POOL_POCKETS)) {
+    if (poolClearPot(state, target, point)) moves.push(`POT:${target.id}:${pocket}`);
+  }
+  for (const zone of ["L", "C", "R", "T", "B"]) moves.push(`SAFE:${zone}`);
+  return moves;
+}
+
+function applyPoolSearchMove(state: PoolSearchState, move: string): PoolSearchState | undefined {
+  if (!poolLegalMoves(state).includes(move)) return;
+  const next: PoolSearchState = { cueBall: { ...state.cueBall }, balls: state.balls.map((ball) => ({ ...ball })), turn: state.turn };
+  if (move.startsWith("POT:")) {
+    const ballId = Number(move.split(":")[1]);
+    const ball = next.balls.find((candidate) => candidate.id === ballId);
+    if (!ball) return;
+    next.cueBall = { x: ball.x, y: ball.y };
+    next.balls = next.balls.filter((candidate) => candidate.id !== ballId);
+    if (ball.group === "eight") next.winner = state.turn;
+  } else {
+    const point = POOL_SAFETIES[move.slice(5)];
+    if (!point) return;
+    next.cueBall = { ...point };
+    next.turn = otherColor(state.turn);
+  }
+  return next;
+}
+
+function poolClearPot(state: PoolSearchState, target: PoolSnapshot["balls"][number], pocket: PoolPoint): boolean {
+  const incoming = { x: target.x - state.cueBall.x, y: target.y - state.cueBall.y };
+  const outgoing = { x: pocket.x - target.x, y: pocket.y - target.y };
+  if (incoming.x * outgoing.x + incoming.y * outgoing.y <= 0) return false;
+  return state.balls.every((ball) => ball.id === target.id || distanceToPoolSegment(ball, state.cueBall, target) >= 5)
+    && state.balls.every((ball) => ball.id === target.id || distanceToPoolSegment(ball, target, pocket) >= 5);
+}
+
+function distanceToPoolSegment(point: PoolPoint, start: PoolPoint, end: PoolPoint): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = dx * dx + dy * dy;
+  const projection = length === 0 ? 0 : Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / length));
+  return Math.hypot(point.x - (start.x + projection * dx), point.y - (start.y + projection * dy));
+}
+
+function evaluatePool(state: PoolSearchState, root: Color): number {
+  const rootGroup = root === "black" ? "solids" : "stripes";
+  const opponentGroup = root === "black" ? "stripes" : "solids";
+  const rootRemaining = state.balls.filter((ball) => ball.group === rootGroup).length;
+  const opponentRemaining = state.balls.filter((ball) => ball.group === opponentGroup).length;
+  const rootProgress = 3 - rootRemaining;
+  const opponentProgress = 3 - opponentRemaining;
+  const rootReady = rootRemaining === 0 && state.balls.some((ball) => ball.group === "eight") ? 1 : 0;
+  const opponentReady = opponentRemaining === 0 && state.balls.some((ball) => ball.group === "eight") ? 1 : 0;
+  const potMobility = poolLegalMoves(state).filter((move) => move.startsWith("POT:")).length;
+  return (rootProgress - opponentProgress) * 900 + (rootReady - opponentReady) * 2_500 + (state.turn === root ? potMobility : -potMobility) * 35;
+}
+
+function poolMoveOrder(move: string): number {
+  if (/^POT:8:/.test(move)) return 100_000;
+  if (move.startsWith("POT:")) return 10_000;
+  return move === "SAFE:C" ? 100 : 0;
+}
+
+type BasketballSearchState = {
+  turn: Color;
+  score: Record<Color, number>;
+  energy: Record<Color, number>;
+  streak: Record<Color, number>;
+  attempts: Record<Color, number>;
+  previousMove: Partial<Record<Color, BasketballMove>>;
+  phase: "regulation" | "overtime";
+  winner?: Color | "draw";
+};
+
+const BASKETBALL_PROFILES: ReadonlyArray<{ move: BasketballMove; points: 2 | 3; energyCost: 0 | 1 | 2; baseAccuracy: number }> = [
+  { move: "drive", points: 2, energyCost: 2, baseAccuracy: 82 },
+  { move: "pull-up", points: 2, energyCost: 1, baseAccuracy: 66 },
+  { move: "three", points: 3, energyCost: 0, baseAccuracy: 48 },
+];
+
+function rankedBasketballMoves(game: BasketballSnapshot, moves: string[], depth: number): string[] {
+  const previousMove: Partial<Record<Color, BasketballMove>> = {};
+  for (const result of game.shotResults) previousMove[result.color] = result.move;
+  const state: BasketballSearchState = {
+    turn: game.turn,
+    score: { ...game.score },
+    energy: { ...game.energy },
+    streak: { ...game.streak },
+    attempts: { ...game.attempts },
+    previousMove,
+    phase: game.phase,
+  };
+  const root = game.turn;
+  const scores = new Map<string, number>();
+  for (const move of moves) {
+    const option = basketballOptions(state).find((candidate) => candidate.move === move);
+    if (!option) {
+      scores.set(move, Number.NEGATIVE_INFINITY);
+      continue;
+    }
+    scores.set(move, basketballExpectedValue(state, option, root, depth));
+  }
+  const order = ["drive", "pull-up", "three"];
+  return [...moves].sort((left, right) => (scores.get(right) ?? Number.NEGATIVE_INFINITY) - (scores.get(left) ?? Number.NEGATIVE_INFINITY) || order.indexOf(left) - order.indexOf(right));
+}
+
+function basketballExpectedValue(state: BasketballSearchState, option: ReturnType<typeof basketballOptions>[number], root: Color, depth: number): number {
+  const probability = option.accuracy / 100;
+  const made = applyBasketballOutcome(state, option, true);
+  const missed = applyBasketballOutcome(state, option, false);
+  return probability * basketballSearch(made, root, depth - 1) + (1 - probability) * basketballSearch(missed, root, depth - 1);
+}
+
+function basketballSearch(state: BasketballSearchState, root: Color, depth: number): number {
+  if (state.winner) return state.winner === "draw" ? 0 : state.winner === root ? 1_000_000 + depth : -1_000_000 - depth;
+  if (depth <= 0) return evaluateBasketball(state, root);
+  const options = basketballOptions(state);
+  const values = options.map((option) => basketballExpectedValue(state, option, root, depth));
+  return state.turn === root ? Math.max(...values) : Math.min(...values);
+}
+
+function basketballOptions(state: BasketballSearchState) {
+  return BASKETBALL_PROFILES.filter((profile) => state.energy[state.turn] >= profile.energyCost).map((profile) => ({
+    ...profile,
+    accuracy: Math.max(20, Math.min(92, profile.baseAccuracy + Math.min(10, state.streak[state.turn] * 5) - (state.previousMove[state.turn] === profile.move ? 12 : 0))),
+  }));
+}
+
+function applyBasketballOutcome(state: BasketballSearchState, option: ReturnType<typeof basketballOptions>[number], made: boolean): BasketballSearchState {
+  const color = state.turn;
+  const next: BasketballSearchState = {
+    turn: state.turn,
+    score: { ...state.score },
+    energy: { ...state.energy },
+    streak: { ...state.streak },
+    attempts: { ...state.attempts },
+    previousMove: { ...state.previousMove, [color]: option.move },
+    phase: state.phase,
+  };
+  next.energy[color] -= option.energyCost;
+  next.attempts[color] += 1;
+  if (made) next.score[color] += option.points;
+  next.streak[color] = made ? next.streak[color] + 1 : 0;
+  if (color === "black") {
+    next.turn = "white";
+    return next;
+  }
+  const completedRound = next.attempts.white;
+  if (completedRound < 5) {
+    next.turn = "black";
+    return next;
+  }
+  if (next.score.black !== next.score.white) {
+    next.winner = next.score.black > next.score.white ? "black" : "white";
+    return next;
+  }
+  if (completedRound >= 8) {
+    next.winner = "draw";
+    return next;
+  }
+  next.phase = "overtime";
+  next.energy.black = Math.min(4, next.energy.black + 1);
+  next.energy.white = Math.min(4, next.energy.white + 1);
+  next.turn = "black";
+  return next;
+}
+
+function evaluateBasketball(state: BasketballSearchState, root: Color): number {
+  const opponent = otherColor(root);
+  const scoreLead = state.score[root] - state.score[opponent];
+  const energyLead = state.energy[root] - state.energy[opponent];
+  const attemptLead = state.attempts[root] - state.attempts[opponent];
+  return scoreLead * 1_000 + energyLead * 30 - attemptLead * 20;
+}
+
 export function embeddedMoveDecision(game: GameSnapshot): EmbeddedMoveDecision {
   const candidateMoves = embeddedMoveCandidates(game);
   const position = game.kind === "chess"
@@ -394,7 +632,11 @@ export function embeddedMoveDecision(game: GameSnapshot): EmbeddedMoveDecision {
       if (!cell.piece || !cell.color) return ".";
       return cell.color === "white" ? cell.piece.toUpperCase() : cell.piece;
     }).join("")).join("/")
-    : game.board.map((row) => row.map((cell) => cell === "black" ? "B" : cell === "white" ? "W" : ".").join("")).join("/");
+    : game.kind === "pool"
+      ? [`C@${game.cueBall.x},${game.cueBall.y}`, ...game.balls.map((ball) => `${ball.id}${ball.group === "solids" ? "S" : ball.group === "stripes" ? "R" : "E"}@${ball.x},${ball.y}`)].join("|")
+      : game.kind === "basketball"
+        ? `score:B${game.score.black}-W${game.score.white}|energy:B${game.energy.black}-W${game.energy.white}|attempts:B${game.attempts.black}-W${game.attempts.white}|${game.phase}:R${game.round}|options:${game.shotOptions.filter((option) => game.legalMoves.includes(option.move)).map((option) => `${option.move}/${option.points}pt/${option.energyCost}e/${option.accuracy}%`).join(",")}`
+        : game.board.map((row) => row.map((cell) => cell === "black" ? "B" : cell === "white" ? "W" : ".").join("")).join("/");
   return {
     gameId: game.gameId,
     kind: game.kind,
@@ -410,7 +652,11 @@ export function embeddedMoveDecision(game: GameSnapshot): EmbeddedMoveDecision {
           ? "rows 3-to-1; columns A-to-C; B=black, W=white, .=empty"
           : game.kind === "connect-four"
             ? "rows 6-to-1; columns A-to-G; B=black, W=white, .=empty"
-            : "rows 8-to-1; columns A-to-H; B=black, W=white, .=empty",
+            : game.kind === "reversi"
+              ? "rows 8-to-1; columns A-to-H; B=black, W=white, .=empty"
+              : game.kind === "pool"
+                ? "100x50 table; C=cue, S=solid, R=stripe, E=8-ball; pockets TL/TM/TR/BL/BM/BR"
+                : "score, energy, attempts, round, and public move/points/energy/accuracy options",
     position,
     ...(game.lastMove ? { lastMove: { actor: game.lastMove.actor, color: game.lastMove.color, move: game.lastMove.notation, ply: game.lastMove.ply } } : {}),
     legalMoveCount: game.legalMoves.length,
@@ -418,6 +664,7 @@ export function embeddedMoveDecision(game: GameSnapshot): EmbeddedMoveDecision {
     candidateMoves,
     ...(game.kind === "go" ? { captures: game.captures, consecutivePasses: game.consecutivePasses } : {}),
     ...(game.kind === "reversi" ? { score: game.score } : {}),
+    ...(game.kind === "basketball" ? { score: game.score, energy: game.energy, attempts: game.attempts, phase: game.phase, round: game.round, shotOptions: game.shotOptions.filter((option) => game.legalMoves.includes(option.move)) } : {}),
   };
 }
 
@@ -478,7 +725,9 @@ function gameThinkingInstruction(game: GameSnapshot): string {
   if (game.kind === "go") return "Go priorities: capture or rescue urgent groups, check liberties and atari, avoid self-atari and eye-filling, then prefer efficient corner/side development, connection, cuts, and whole-board balance; pass only when the position is settled.";
   if (game.kind === "tic-tac-toe") return "Tic-Tac-Toe priorities: win, block, create or stop a fork, then center, corners, and edges.";
   if (game.kind === "connect-four") return "Connect Four priorities: win, block, create or stop double threats, avoid enabling an immediate reply, then prefer central control.";
-  return "Reversi priorities: secure corners, limit opponent mobility and frontier access, value stable edges, avoid unsafe corner-adjacent squares, and count immediate flips last.";
+  if (game.kind === "reversi") return "Reversi priorities: secure corners, limit opponent mobility and frontier access, value stable edges, avoid unsafe corner-adjacent squares, and count immediate flips last.";
+  if (game.kind === "pool") return "Mini 8-Ball priorities: take a legal 8-ball winner, extend a runout with clear pots, preserve future pot lanes, and use a safety only when it reduces the opponent's chances.";
+  return "Court Duel priorities: use only public accuracy, score pressure, remaining matched attempts, energy, and streaks; never try to predict or reverse-engineer the hidden deterministic result roll.";
 }
 
 function strategicallyRankedMoves(game: GameSnapshot, moves: string[]): string[] {
@@ -490,7 +739,9 @@ function strategicallyRankedMoves(game: GameSnapshot, moves: string[]): string[]
   }
   if (game.kind === "tic-tac-toe") return rankedTicMoves(game, moves, game.difficulty === "hard");
   if (game.kind === "connect-four") return rankedConnectMoves(game, moves, game.difficulty === "hard" ? 5 : game.difficulty === "medium" ? 3 : 1);
-  return rankedReversiMoves(game, moves, game.difficulty === "hard" ? 3 : 1);
+  if (game.kind === "reversi") return rankedReversiMoves(game, moves, game.difficulty === "hard" ? 3 : 1);
+  if (game.kind === "pool") return rankedPoolMoves(game, moves, game.difficulty === "hard" ? 5 : game.difficulty === "medium" ? 2 : 1);
+  return rankedBasketballMoves(game, moves, game.difficulty === "hard" ? 6 : game.difficulty === "medium" ? 3 : 1);
 }
 
 function bestScored(moves: string[], score: (move: string) => number): string {
@@ -518,7 +769,11 @@ function stableHash(value: string): number {
 function positionKey(game: GameSnapshot): string {
   const board = game.kind === "chess"
     ? game.board.map((cell) => `${cell.square}${cell.color?.[0] ?? "."}${cell.piece ?? "."}`).join("")
-    : game.board.map((row) => row.map((stone) => stone?.[0] ?? ".").join("")).join("/");
+    : game.kind === "pool"
+      ? `${game.cueBall.x},${game.cueBall.y}|${game.balls.map((ball) => `${ball.id}@${ball.x},${ball.y}`).join("|")}`
+      : game.kind === "basketball"
+        ? `${game.score.black}-${game.score.white}|${game.energy.black}-${game.energy.white}|${game.streak.black}-${game.streak.white}|${game.attempts.black}-${game.attempts.white}|${game.shotResults.map((shot) => `${shot.color[0]}${shot.move}${shot.made ? 1 : 0}`).join("|")}`
+        : game.board.map((row) => row.map((stone) => stone?.[0] ?? ".").join("")).join("/");
   return `${game.kind}|${game.turn}|${game.stateVersion}|${board}|${game.legalMoves.join(",")}`;
 }
 

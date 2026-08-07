@@ -6,7 +6,7 @@ import { App } from "./App";
 import { GameBridge } from "./bridge";
 import { isSnapshot } from "./game-client";
 import { chooseStandaloneMove, embeddedMoveDecision } from "./move-strategy";
-import type { Board, ChessSnapshot, GameDifficulty, GoBoardSize, GoSnapshot, ChessSquare, TicTacToeSnapshot, ConnectFourSnapshot, ReversiCoordinate, ReversiSnapshot } from "./types";
+import type { BasketballSnapshot, Board, ChessSnapshot, GameDifficulty, GoBoardSize, GoSnapshot, ChessSquare, TicTacToeSnapshot, ConnectFourSnapshot, PoolSnapshot, ReversiCoordinate, ReversiSnapshot } from "./types";
 const chess = (version = 0, difficulty: GameDifficulty = "medium"): ChessSnapshot => ({ gameId: "chess-1", kind: "chess", difficulty, playerColor: "white", turn: "white", status: "active", legalMoves: ["e2e4"], moveHistory: [], stateVersion: version, message: "White to move.", board: Array.from({ length: 8 }, (_, r) => Array.from({ length: 8 }, (_, c) => ({ square: `${"abcdefgh"[c]}${8-r}` as ChessSquare, ...(r === 6 && c === 4 ? { color: "white" as const, piece: "p" as const } : {}) }))).flat() as ChessSnapshot["board"] });
 function chessAdvance(previous: ChessSnapshot, actor: "player" | "gpt", notation: string, turn: "white" | "black", legalMoves: string[], message: string): ChessSnapshot {
   const move = { actor, color: previous.turn, notation, ply: previous.moveHistory.length + 1 } as const;
@@ -22,6 +22,8 @@ const importedGo = (playerColor: "white" | "black" = "white", turn: "white" | "b
 const tic = (): TicTacToeSnapshot => ({ gameId: "tic", kind: "tic-tac-toe", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["A1", "A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: Array.from({ length: 3 }, () => Array<"white" | "black" | null>(3).fill(null)) as Board<3, 3> });
 const four = (): ConnectFourSnapshot => ({ gameId: "four", kind: "connect-four", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["A", "B", "C", "D", "E", "F", "G"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: Array.from({ length: 6 }, () => Array<"white" | "black" | null>(7).fill(null)) as Board<6, 7> });
 const reversi = (): ReversiSnapshot => ({ gameId: "rev", kind: "reversi", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["C4", "D3", "E6", "F5"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: [[null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, "black", "white", null, null, null], [null, null, null, "white", "black", null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null]], score: { black: 2, white: 2 } });
+const pool = (): PoolSnapshot => ({ gameId: "pool", kind: "pool", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["POT:1:TM", "POT:1:TR", "POT:2:TM", "POT:2:BM", "POT:3:BM", "POT:3:BR", "SAFE:L", "SAFE:C", "SAFE:R", "SAFE:T", "SAFE:B"], moveHistory: [], stateVersion: 0, message: "Black (solids) to shoot.", cueBall: { x: 12, y: 25 }, balls: [{ id: 1, group: "solids", x: 32, y: 9 }, { id: 2, group: "solids", x: 36, y: 20 }, { id: 3, group: "solids", x: 34, y: 34 }, { id: 9, group: "stripes", x: 53, y: 13 }, { id: 10, group: "stripes", x: 54, y: 29 }, { id: 11, group: "stripes", x: 72, y: 18 }, { id: 8, group: "eight", x: 76, y: 35 }] });
+const basketball = (): BasketballSnapshot => ({ gameId: "court", kind: "basketball", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["drive", "pull-up", "three"], moveHistory: [], stateVersion: 0, message: "Black to shoot in round 1. Score 0-0.", score: { black: 0, white: 0 }, energy: { black: 4, white: 4 }, streak: { black: 0, white: 0 }, attempts: { black: 0, white: 0 }, phase: "regulation", round: 1, shotOptions: [{ move: "drive", points: 2, energyCost: 2, accuracy: 82 }, { move: "pull-up", points: 2, energyCost: 1, accuracy: 66 }, { move: "three", points: 3, energyCost: 0, accuracy: 48 }], shotResults: [] });
 const reversiDirections = [-1, 0, 1].flatMap(row => [-1, 0, 1].map(column => [row, column] as const)).filter(([row, column]) => row || column);
 function reversiFixturePlay(game: ReversiSnapshot, move: ReversiCoordinate): ReversiSnapshot {
   const board = game.board.map(row => [...row]) as Board<8, 8>; const row = 8 - Number(move[1]); const column = move.charCodeAt(0) - 65; const opponent = game.turn === "black" ? "white" : "black";
@@ -50,7 +52,7 @@ describe("App", () => {
     render(<App />);
     const user = userEvent.setup();
     const picker = await screen.findByRole("combobox", { name: "NEW GAME" });
-    expect(within(picker).getAllByRole("option").map(option => option.textContent)).toEqual(["Chess", "Tic-Tac-Toe", "Connect Four", "Reversi", "Quick Go · 9×9", "Go · 13×13", "Real Go · 19×19"]);
+    expect(within(picker).getAllByRole("option").map(option => option.textContent)).toEqual(["Chess", "Mini 8-Ball", "Court Duel", "Tic-Tac-Toe", "Connect Four", "Reversi", "Quick Go · 9×9", "Go · 13×13", "Real Go · 19×19"]);
     expect(picker).toHaveValue("chess");
     await screen.findByRole("group", { name: "Chess board" });
     await user.selectOptions(picker, "go-19");
@@ -479,11 +481,49 @@ describe("App", () => {
     bridge.dispose();
   });
   it("creates every new game with black and no boardSize, preserving the active board until Start", async () => {
-    const variants: Array<[string, TicTacToeSnapshot | ConnectFourSnapshot | ReversiSnapshot]> = [["tic-tac-toe", tic()], ["connect-four", four()], ["reversi", reversi()]];
+    const variants: Array<[string, TicTacToeSnapshot | ConnectFourSnapshot | ReversiSnapshot | PoolSnapshot | BasketballSnapshot]> = [["tic-tac-toe", tic()], ["connect-four", four()], ["reversi", reversi()], ["pool", pool()], ["basketball", basketball()]];
     for (const [preset, snapshot] of variants) {
       cleanup(); vi.mocked(fetch).mockReset(); vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: snapshot }) } as Response);
       render(<App initialGame={chess()}/>); const user = userEvent.setup(); await user.selectOptions(screen.getByRole("combobox", { name: "NEW GAME" }), preset); expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible(); await user.click(screen.getByRole("button", { name: "Start game" })); await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/tools/create_game", expect.objectContaining({ body: JSON.stringify({ game: preset, playerColor: "black", difficulty: "medium" }) }))); expect(JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string)).not.toHaveProperty("boardSize");
     }
+  });
+  it("plays an exact Mini 8-Ball pot from a selected ball and pocket", async () => {
+    const opening = pool();
+    const move = { actor: "player", color: "black", notation: "POT:1:TM", ply: 1 } as const;
+    const after: PoolSnapshot = { ...opening, cueBall: { x: 32, y: 9 }, balls: opening.balls.filter((ball) => ball.id !== 1), legalMoves: ["POT:2:BL", "POT:3:BL", "SAFE:L", "SAFE:C", "SAFE:R", "SAFE:T", "SAFE:B"], moveHistory: [move], lastMove: move, stateVersion: 1 };
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: after }) } as Response);
+    render(<App initialGame={opening}/>);
+    const user = userEvent.setup();
+    expect(screen.getByRole("group", { name: "Mini 8-Ball pool table" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /Ball 1, solids, 2 legal pockets/ }));
+    await user.click(screen.getByRole("button", { name: "Pot ball 1 in the top middle pocket" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string)).toEqual({ gameId: "pool", actor: "player", move: "POT:1:TM", expectedVersion: 0, expectedResetEpoch: 0 });
+    expect(screen.getByText(/Solids left/).parentElement).toHaveTextContent("Solids left 2");
+    expect(screen.getByText("POT:1:TM · Player (Solids)")).toBeVisible();
+    const text = JSON.parse(window.render_game_to_text!());
+    expect(text.coordinateSystem).toContain("x=0-100");
+    expect(text.game).toMatchObject({ kind: "pool", stateVersion: 1, cueBall: { x: 32, y: 9 }, lastMove: { notation: "POT:1:TM" } });
+  });
+  it("plays Court Duel through the authoritative player shot and one GPT reply", async () => {
+    const opening = basketball();
+    const playerMove = { actor: "player", color: "black", notation: "drive", ply: 1 } as const;
+    const afterPlayer: BasketballSnapshot = { ...opening, turn: "white", score: { black: 2, white: 0 }, energy: { black: 2, white: 4 }, streak: { black: 1, white: 0 }, attempts: { black: 1, white: 0 }, moveHistory: [playerMove], lastMove: playerMove, stateVersion: 1, message: "White to shoot in round 1. Score 2-0.", shotResults: [{ actor: "player", color: "black", ply: 1, move: "drive", made: true, points: 2, accuracy: 82 }], shotOptions: opening.shotOptions };
+    const gptMove = chooseStandaloneMove(afterPlayer) as "drive" | "pull-up" | "three";
+    expect(afterPlayer.legalMoves).toContain(gptMove);
+    const profile = afterPlayer.shotOptions.find((option) => option.move === gptMove)!;
+    const gptRecord = { actor: "gpt", color: "white", notation: gptMove, ply: 2 } as const;
+    const afterGpt: BasketballSnapshot = { ...afterPlayer, turn: "black", score: { black: 2, white: profile.points }, energy: { black: 2, white: 4 - profile.energyCost }, streak: { black: 1, white: 1 }, attempts: { black: 1, white: 1 }, round: 2, moveHistory: [playerMove, gptRecord], lastMove: gptRecord, stateVersion: 2, message: `Black to shoot in round 2. Score 2-${profile.points}.`, shotResults: [...afterPlayer.shotResults, { actor: "gpt", color: "white", ply: 2, move: gptMove, made: true, points: profile.points, accuracy: profile.accuracy }], shotOptions: [{ move: "drive", points: 2, energyCost: 2, accuracy: 75 }, { move: "pull-up", points: 2, energyCost: 1, accuracy: 71 }, { move: "three", points: 3, energyCost: 0, accuracy: 53 }] };
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterPlayer }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterGpt }) } as Response);
+    render(<App initialGame={opening}/>);
+    expect(screen.getByRole("region", { name: "Court Duel basketball game" })).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: /Drive, 2 points, 82 percent accuracy/ }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string)).toEqual({ gameId: "court", actor: "player", move: "drive", expectedVersion: 0, expectedResetEpoch: 0 });
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[1][1] as RequestInit).body as string)).toEqual({ gameId: "court", actor: "gpt", move: gptMove, expectedVersion: 1, expectedResetEpoch: 0 });
+    expect(screen.getByText(new RegExp(`GPT made ${profile.points}`))).toBeVisible();
+    const text = JSON.parse(window.render_game_to_text!());
+    expect(text.game).toMatchObject({ kind: "basketball", stateVersion: 2, round: 2, score: afterGpt.score, energy: afterGpt.energy });
   });
   it("plays a reachable Tic-Tac-Toe opening and sends the exact deterministic GPT request", async () => {
     const after: TicTacToeSnapshot = { ...tic(), turn: "white", legalMoves: ["A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3"], moveHistory: [{ actor: "player", color: "black", notation: "A1", ply: 1 }], lastMove: { actor: "player", color: "black", notation: "A1", ply: 1 }, stateVersion: 1, message: "White to move.", board: [[null, null, null], [null, null, null], ["black", null, null]] };

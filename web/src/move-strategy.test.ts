@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Chess, type Square } from "chess.js";
 import { chooseStandaloneMove, embeddedMoveCandidates, embeddedMoveDecision, embeddedMovePrompt } from "./move-strategy";
-import type { Board, ChessCell, ChessSnapshot, ConnectFourSnapshot, GameDifficulty, GoBoardSize, GoSnapshot, ReversiSnapshot, TicTacToeSnapshot } from "./types";
+import type { BasketballSnapshot, Board, ChessCell, ChessSnapshot, ConnectFourSnapshot, GameDifficulty, GoBoardSize, GoSnapshot, PoolSnapshot, ReversiSnapshot, TicTacToeSnapshot } from "./types";
 
 const emptyChessBoard = (): ChessCell[] => Array.from({ length: 8 }, (_, row) => Array.from({ length: 8 }, (_, column) => ({ square: `${"abcdefgh"[column]}${8 - row}` as ChessCell["square"] }))).flat();
 function chess(difficulty: GameDifficulty, legalMoves: string[], pieces: Array<{ square: string; color: "white" | "black"; piece: "p" | "n" | "b" | "r" | "q" | "k" }> = []): ChessSnapshot {
@@ -12,6 +12,8 @@ function chess(difficulty: GameDifficulty, legalMoves: string[], pieces: Array<{
 const tic = (difficulty: GameDifficulty, legalMoves: TicTacToeSnapshot["legalMoves"], board = Array.from({ length: 3 }, () => Array<"white" | "black" | null>(3).fill(null)) as Board<3, 3>): TicTacToeSnapshot => ({ gameId: "tic", kind: "tic-tac-toe", difficulty, playerColor: "white", turn: "black", status: "active", legalMoves, moveHistory: [], stateVersion: 0, message: "", board });
 const connect = (difficulty: GameDifficulty, legalMoves: ConnectFourSnapshot["legalMoves"], board = Array.from({ length: 6 }, () => Array<"white" | "black" | null>(7).fill(null)) as Board<6, 7>): ConnectFourSnapshot => ({ gameId: "four", kind: "connect-four", difficulty, playerColor: "white", turn: "black", status: "active", legalMoves, moveHistory: [], stateVersion: 0, message: "", board });
 const reversi = (difficulty: GameDifficulty, legalMoves: ReversiSnapshot["legalMoves"], board = Array.from({ length: 8 }, () => Array<"white" | "black" | null>(8).fill(null)) as Board<8, 8>): ReversiSnapshot => ({ gameId: "rev", kind: "reversi", difficulty, playerColor: "white", turn: "black", status: "active", legalMoves, moveHistory: [], stateVersion: 0, message: "", board, score: { black: 2, white: 2 } });
+const pool = (difficulty: GameDifficulty): PoolSnapshot => ({ gameId: "pool-strategy", kind: "pool", difficulty, playerColor: "white", turn: "black", status: "active", legalMoves: ["POT:1:TM", "POT:1:TR", "POT:2:TM", "POT:2:BM", "POT:3:BM", "POT:3:BR", "SAFE:L", "SAFE:C", "SAFE:R", "SAFE:T", "SAFE:B"], moveHistory: [], stateVersion: 0, message: "", cueBall: { x: 12, y: 25 }, balls: [{ id: 1, group: "solids", x: 32, y: 9 }, { id: 2, group: "solids", x: 36, y: 20 }, { id: 3, group: "solids", x: 34, y: 34 }, { id: 9, group: "stripes", x: 53, y: 13 }, { id: 10, group: "stripes", x: 54, y: 29 }, { id: 11, group: "stripes", x: 72, y: 18 }, { id: 8, group: "eight", x: 76, y: 35 }] });
+const basketball = (difficulty: GameDifficulty): BasketballSnapshot => ({ gameId: "court-strategy", kind: "basketball", difficulty, playerColor: "white", turn: "black", status: "active", legalMoves: ["drive", "pull-up", "three"], moveHistory: [], stateVersion: 0, message: "", score: { black: 0, white: 0 }, energy: { black: 4, white: 4 }, streak: { black: 0, white: 0 }, attempts: { black: 0, white: 0 }, phase: "regulation", round: 1, shotOptions: [{ move: "drive", points: 2, energyCost: 2, accuracy: 82 }, { move: "pull-up", points: 2, energyCost: 1, accuracy: 66 }, { move: "three", points: 3, energyCost: 0, accuracy: 48 }], shotResults: [] });
 function go(difficulty: GameDifficulty, legalMoves: string[], boardSize: GoBoardSize = 9): GoSnapshot {
   return { gameId: "go-strategy", kind: "go", difficulty, playerColor: "white", turn: "black", status: "active", legalMoves, moveHistory: [], stateVersion: 4, message: "Black to move.", boardSize, board: Array.from({ length: boardSize }, () => Array<"white" | "black" | null>(boardSize).fill(null)), captures: { black: 0, white: 0 }, consecutivePasses: 0 };
 }
@@ -187,6 +189,8 @@ describe("standalone move strategy", () => {
     expect(embeddedMovePrompt(tic("hard", ["A1"]))).toContain("create or stop a fork");
     expect(embeddedMovePrompt(connect("hard", ["D"]))).toContain("create or stop double threats");
     expect(embeddedMovePrompt(reversi("hard", ["D3"]))).toContain("limit opponent mobility");
+    expect(embeddedMovePrompt(pool("hard"))).toContain("extend a runout");
+    expect(embeddedMovePrompt(basketball("hard"))).toContain("never try to predict");
   });
 
   it("keeps large-board decision state bounded, legal, unique, and spatially varied", () => {
@@ -270,8 +274,32 @@ describe("standalone move strategy", () => {
     expect(chooseStandaloneMove(game)).toBe("B8");
   });
   it("keeps every difficulty exact-legal and deterministic for the new kinds", () => {
-    for (const difficulty of ["easy", "medium", "hard"] as const) for (const game of [tic(difficulty, ["A1", "B2", "C3"]), connect(difficulty, ["A", "D", "G"]), reversi(difficulty, ["C4", "D3", "F5"])]) {
+    for (const difficulty of ["easy", "medium", "hard"] as const) for (const game of [tic(difficulty, ["A1", "B2", "C3"]), connect(difficulty, ["A", "D", "G"]), reversi(difficulty, ["C4", "D3", "F5"]), pool(difficulty), basketball(difficulty)]) {
       const move = chooseStandaloneMove(game); expect(game.legalMoves).toContain(move); expect(chooseStandaloneMove(game)).toBe(move);
+    }
+  });
+
+  it("makes Medium and Hard Pool finish a legal 8-ball runout", () => {
+    for (const difficulty of ["medium", "hard"] as const) {
+      const game = pool(difficulty);
+      game.cueBall = { x: 34, y: 34 };
+      game.balls = game.balls.filter((ball) => ball.group !== "solids");
+      game.legalMoves = ["POT:8:TR", "SAFE:L", "SAFE:C", "SAFE:R", "SAFE:T", "SAFE:B"];
+      expect(chooseStandaloneMove(game)).toBe("POT:8:TR");
+      const decision = embeddedMoveDecision(game);
+      expect(decision.position).toContain("8E@76,35");
+      expect(decision.positionFormat).toContain("100x50 table");
+    }
+  });
+
+  it("uses public Court Duel odds and compact score state without exposing a roll", () => {
+    for (const difficulty of ["medium", "hard"] as const) {
+      const game = basketball(difficulty);
+      expect(game.legalMoves).toContain(chooseStandaloneMove(game));
+      const decision = embeddedMoveDecision(game);
+      expect(decision).toMatchObject({ score: { black: 0, white: 0 }, energy: { black: 4, white: 4 }, attempts: { black: 0, white: 0 }, phase: "regulation", round: 1 });
+      expect(decision.position).toContain("drive/2pt/2e/82%");
+      expect(JSON.stringify(decision)).not.toContain("roll");
     }
   });
 

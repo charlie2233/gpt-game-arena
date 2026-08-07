@@ -54,7 +54,7 @@ const importGoPositionSchema = z.discriminatedUnion("boardSize", [
  */
 export const mcpGameSnapshotSummarySchema = z4.object({
   gameId: z4.string(),
-  kind: z4.enum(["chess", "go", "tic-tac-toe", "connect-four", "reversi"]),
+  kind: z4.enum(["chess", "go", "tic-tac-toe", "connect-four", "reversi", "pool", "basketball"]),
   turn: z4.enum(["white", "black"]),
   stateVersion: z4.number().int().nonnegative(),
   resetEpoch: z4.number().int().nonnegative().optional(),
@@ -64,7 +64,7 @@ export const mcpGameSnapshotSummarySchema = z4.object({
 
 export const toolInputSchemas = {
   create_game: z.object({
-    game: z.enum(["chess", "go", "tic-tac-toe", "connect-four", "reversi"]),
+    game: z.enum(["chess", "go", "tic-tac-toe", "connect-four", "reversi", "pool", "basketball"]),
     playerColor: z.enum(["white", "black"]),
     boardSize: goBoardSizeSchema.optional(),
     difficulty: difficultySchema.default("medium"),

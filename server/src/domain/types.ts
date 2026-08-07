@@ -1,4 +1,4 @@
-export type GameKind = "chess" | "go" | "tic-tac-toe" | "connect-four" | "reversi";
+export type GameKind = "chess" | "go" | "tic-tac-toe" | "connect-four" | "reversi" | "pool" | "basketball";
 export type StoneColor = "white" | "black";
 export type GameActor = "player" | "gpt";
 export type GameStatus = "active" | "finished";
@@ -115,4 +115,76 @@ export interface ReversiGameSnapshot extends BaseGameSnapshot {
   score: { black: number; white: number };
 }
 
-export type GameSnapshot = ChessGameSnapshot | GoGameSnapshot | TicTacToeGameSnapshot | ConnectFourGameSnapshot | ReversiGameSnapshot;
+export type PoolPocket = "TL" | "TM" | "TR" | "BL" | "BM" | "BR";
+export type PoolSafetyZone = "L" | "C" | "R" | "T" | "B";
+export type PoolBallId = 1 | 2 | 3 | 8 | 9 | 10 | 11;
+export type PoolMove = `POT:${PoolBallId}:${PoolPocket}` | `SAFE:${PoolSafetyZone}`;
+export type PoolBallGroup = "solids" | "stripes" | "eight";
+
+export interface PoolBall {
+  id: PoolBallId;
+  group: PoolBallGroup;
+  x: number;
+  y: number;
+}
+
+export interface PoolMoveRecord extends MoveRecord {
+  notation: PoolMove;
+}
+
+export interface PoolGameSnapshot extends BaseGameSnapshot {
+  kind: "pool";
+  /** Integer coordinates on a 100 by 50 table, measured from the top-left rail. */
+  cueBall: { x: number; y: number };
+  balls: PoolBall[];
+  legalMoves: PoolMove[];
+  moveHistory: PoolMoveRecord[];
+  lastMove?: PoolMoveRecord;
+}
+
+export type BasketballMove = "drive" | "pull-up" | "three";
+
+export interface BasketballMoveRecord extends MoveRecord {
+  notation: BasketballMove;
+}
+
+export interface ShotOption {
+  move: BasketballMove;
+  points: 2 | 3;
+  energyCost: 0 | 1 | 2;
+  accuracy: number;
+}
+
+export interface ShotResult {
+  ply: number;
+  actor: GameActor;
+  color: StoneColor;
+  move: BasketballMove;
+  made: boolean;
+  points: 0 | 2 | 3;
+  accuracy: number;
+}
+
+export interface BasketballGameSnapshot extends BaseGameSnapshot {
+  kind: "basketball";
+  legalMoves: BasketballMove[];
+  moveHistory: BasketballMoveRecord[];
+  lastMove?: BasketballMoveRecord;
+  score: { black: number; white: number };
+  energy: { black: number; white: number };
+  streak: { black: number; white: number };
+  attempts: { black: number; white: number };
+  phase: "regulation" | "overtime";
+  round: number;
+  shotOptions: ShotOption[];
+  shotResults: ShotResult[];
+}
+
+export type GameSnapshot =
+  | ChessGameSnapshot
+  | GoGameSnapshot
+  | TicTacToeGameSnapshot
+  | ConnectFourGameSnapshot
+  | ReversiGameSnapshot
+  | PoolGameSnapshot
+  | BasketballGameSnapshot;

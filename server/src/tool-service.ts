@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { GameActor, GameDifficulty, GameKind, GameSnapshot, GoBoardSize, GoPositionSetup, StoneColor } from "./domain/types.js";
 import { GameRuleError } from "./domain/errors.js";
-import { cloneGameSession, confirmImportedGoPosition, createGameSession, endGameSession } from "./game-session.js";
+import { cloneGameSession, confirmImportedGoPosition, createGameSession, descriptorFromSession, endGameSession } from "./game-session.js";
 import { GameStore } from "./game-store.js";
 import { parseGameSnapshot } from "./snapshot-schema.js";
 
@@ -106,7 +106,9 @@ export class ToolService {
   }
 
   resetGame(input: { gameId: string }): GameSnapshot {
-    const current = this.store.get(input.gameId).snapshot();
+    const currentSession = this.store.get(input.gameId);
+    const current = currentSession.snapshot();
+    const currentDescriptor = descriptorFromSession(currentSession);
     const replacement = createGameSession({
       gameId: current.gameId,
       kind: current.kind,
@@ -117,8 +119,16 @@ export class ToolService {
         boardSize: current.boardSize,
         ...(current.initialPosition === undefined ? {} : { initialPosition: current.initialPosition }),
       } : {}),
+      ...(current.kind === "basketball" ? {
+        basketballOutcomeSeed: requiredBasketballOutcomeSeed(currentDescriptor.basketballOutcomeSeed),
+      } : {}),
     });
     this.store.replace(replacement);
     return replacement.snapshot();
   }
+}
+
+function requiredBasketballOutcomeSeed(value: string | undefined): string {
+  if (value === undefined) throw new Error("Court Duel session is missing its server-private outcome seed.");
+  return value;
 }
