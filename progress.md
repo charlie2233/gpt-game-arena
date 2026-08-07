@@ -408,7 +408,8 @@ Original prompt: also implement select difficuktuy
 - [x] Guard Start/opening races so late create or opening receipts cannot replace a newer authoritative notification or a newer reset epoch.
 - [x] Keep active games' existing Reset flow and present finished games as `Try again` with the exact confirmation copy, while continuing to use the same authoritative `reset_game` contract and preserving game, difficulty, board size, and player side.
 - [x] Exposed `draft.side` and the context-sensitive Reset/Try-again label and prompt through `window.render_game_to_text`.
-- [x] Extended the chooser to four responsive controls without changing board-sizing rules; the narrow-phone layout uses a second-row Start action and hides only the decorative title below 401px.
+- [x] Extended the chooser to four responsive controls; the narrow-phone layout uses a second-row Start action below 401px, and the decorative title stays hidden through the compact 760px layout.
+- [x] Keep Chess and Tic-Tac-Toe in the compact single-column table through 760px, and use a confirmation-only short-landscape grid that places the board beside the dialog while preserving autofocus and the focus trap.
 
 ### TDD and validation status
 
@@ -418,5 +419,6 @@ Original prompt: also implement select difficuktuy
 - [x] Web TypeScript check and production build passed; `git diff --check` passed.
 - [x] Responsive browser guard at 416×360 passed with all chooser controls, the full Chess board, controls, and status visible and all 64 square center hit-tests correct.
 - [x] Closed the 681–700px header boundary by keeping the non-shrinking title hidden through 760px; the focused CSS regression guard passes at both widths, and web typecheck plus the production build pass.
+- [x] Responsive CSS guards pass 6/6 for the 681/700/760 table boundary and short-landscape confirmation structure; focused Try-again App coverage passes 2/2, and web typecheck plus the production build pass.
 - [ ] The canonical parallel web run reached 166/171 but the shared machine was CPU-starved: unrelated pre-existing App, GoBoard, and move-strategy tests exceeded their 5-second limits, and the existing Hard-Chess 2-second budget measured 5.3 seconds. A fresh sequential/canonical rerun and the final 390×844 browser guard remain the handoff gates.
 - [ ] Stable hosted ChatGPT acceptance remains separate; the live Node server on port 8000 and Cloudflare tunnel were not stopped, restarted, or modified.
