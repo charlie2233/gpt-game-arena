@@ -348,10 +348,11 @@ Original prompt: also implement select difficuktuy
 - [x] A fresh built-server black-box smoke created Hard Chess, recorded `e2e4`, terminated cleanly, restarted on the same save path, and restored the exact game ID at version 1 with one matching move.
 - [x] The public temporary tunnel completed an MCP initialize/list/create/move flow and returned a matching authoritative move receipt. This is developer-live proof only, not stable-host acceptance.
 - [x] The v20 browser client and the static website passed desktop/mobile viewport, text-state, visual, and console-error checks; the complete game board stays visible and does not force the ChatGPT conversation to the bottom.
+- [x] GitHub Pages deployed the public website; the home, privacy, terms, and support URLs each returned HTTPS 200, and Formspree accepted one secret-free support smoke submission.
 
 ### Remaining external gates
 
-- [ ] Publish and verify the GitHub Pages site, then fill the verified publisher/legal identity and final host/log/support retention details.
+- [ ] Fill the verified publisher/legal identity and final host/log/support retention details in the now-live policy pages.
 - [ ] Owner chooses a source-code license or intentionally keeps the public repository unlicensed.
 - [ ] Owner approves a paid persistent host; deploy one replica, set its exact public origin, and prove create/move/redeploy/resume over HTTPS.
 - [ ] Record the short demo against the final stable production endpoint and confirm the prepared listing assets/screenshots in Apps Management.
