@@ -61,6 +61,42 @@ Deploy this file-backed baseline only as one replica on a host with a real persi
 
 The repository includes a [`render.yaml`](render.yaml) blueprint for the smallest honest stable beta: a paid single Render web service, one instance, and a 1 GB persistent disk at `/data`. After the service has been created intentionally, the Blueprint deploys a pushed revision only after its GitHub checks pass. Set `PUBLIC_BASE_URL` to the exact resulting HTTPS origin. Proxy trust is deliberately unset: after deployment, verify the real proxy path and test that a direct client cannot spoof `X-Forwarded-For`, then set either `TRUSTED_PROXY_CIDRS` to the observed proxy addresses or `TRUST_PROXY_HOPS` to the verified fixed hop count—never both. Re-run rate-limit and forwarded-address tests after that setting changes. Point the submitted universal MCP URL to the stable public `/mcp` endpoint only after `/health`, `/ready`, persistence across a service restart, the public MCP handshake, and an actual hosted ChatGPT move all pass.
 
+### Stable production acceptance
+
+The two-phase verifier checks one exact v21 production origin before and after a real provider restart. Keep the OpenAI portal challenge configured for both phases. Save the portal token as exactly one non-empty line in a regular, non-symlink file under the ignored `.data/` directory (or outside the repository), then restrict it to mode `0600`. Do not put the token itself in a command, shell history, commit, support message, or acceptance receipt.
+
+```sh
+mkdir -p .data
+chmod 700 .data
+chmod 600 .data/openai-apps-challenge-token.txt
+
+TURNPLAY_PRODUCTION_ORIGIN='https://replace-with-exact-render-origin.onrender.com'
+npm run verify:production -- \
+  --phase seed \
+  --base-url "$TURNPLAY_PRODUCTION_ORIGIN" \
+  --state-file .data/production-acceptance-v21.json \
+  --require-challenge \
+  --challenge-token-file .data/openai-apps-challenge-token.txt
+```
+
+The seed phase verifies HTTPS health/readiness, security headers, the exact portal challenge, the reviewed eight-tool MCP catalog, and the v21 widget's exact domain, immutable release marker, MIME type, and pinned SHA-256 bundle digest. Every challenge and MCP response must carry the same non-cacheable process identity as the phase's health/readiness checks, and response bodies are time- and size-bounded. It then creates and renders one Hard Tic-Tac-Toe game, applies player `A3` and GPT `B2` exactly once, verifies the exact reviewed board/legal-move/message snapshot, rereads it authoritatively, and finalizes the private receipt at mode `0600`. The receipt path is atomically reserved before the first network request, so concurrent seeds cannot both mutate a game or overwrite evidence. A failed or interrupted seed leaves that reservation in place; reconcile the ambiguous run before intentionally removing it, and never blindly rerun the seed. The receipt is not an authentication credential, but it contains a private game ID, boot identity, and expected-state digest; keep it out of Git and do not share it.
+
+Next, restart or redeploy the same single Render service without detaching, replacing, or clearing its `/data` disk. After the service is ready, run the resume phase with the same origin, token file, and receipt:
+
+```sh
+TURNPLAY_PRODUCTION_ORIGIN='https://replace-with-exact-render-origin.onrender.com'
+npm run verify:production -- \
+  --phase resume \
+  --base-url "$TURNPLAY_PRODUCTION_ORIGIN" \
+  --state-file .data/production-acceptance-v21.json \
+  --require-challenge \
+  --challenge-token-file .data/openai-apps-challenge-token.txt
+```
+
+Resume succeeds only when the observed process boot identity changed and the exact seeded game, version, history, render, v21 resource, domain, and challenge survived. This is restart proof only after the provider configuration independently confirms exactly one live service instance; the included Render Blueprint enforces that topology. Running resume against the still-running seed process does not prove a restart, and the verifier rejects phase requests split across different process identities. Real production mode also rejects HTTP, localhost/IP/example origins, redirects, paths, credentials, and known temporary tunnel hosts such as `trycloudflare.com` and `ngrok`; `--allow-http-localhost` exists only for local harness simulation and can never close the hosted production gate.
+
+Even a passing seed/resume pair is endpoint and persistence evidence, not visible ChatGPT acceptance. The remaining release gates are owner approval of the paid Render service and disk, followed by reconnecting the stable `/mcp` URL in ChatGPT, refreshing the v21 metadata, and visibly completing a real player move plus matching GPT move on the mounted v21 board.
+
 The Node server persists sessions to the versioned JSON move log at `.data/game-sessions.json` by default. Set `GAME_STORE_PATH` to an absolute path, or to a path relative to the server process working directory, to override it. Saved sessions use a 30-day sliding game-activity window by default; creation, moves, resets, import confirmation, and manual end extend it, while read-only state/render calls do not rewrite the save. A 15-minute maintenance sweep, startup, and later mutations physically prune expired records. Set `GAME_STORE_TTL_MS` to a positive integer number of milliseconds to override it. `GAME_STORE_MAX_SESSIONS` defaults to 1,000 and accepts values up to 10,000. When the active-session limit is full, a new game is refused instead of silently deleting an existing save. Readiness storage probes share one in-flight check and cache its result for 15 seconds. Primary writes and v1 backups use collision-resistant same-directory temporary files, sync the file, rename it atomically, and sync the directory; startup and maintenance remove at most 32 recognized temporary files older than 24 hours per pass. Before upgrading a v1 store to v2, the server keeps an exact mode-`0600` copy at `<GAME_STORE_PATH>.v1.bak`; it is removed after seven days by default, configurable with `GAME_STORE_LEGACY_BACKUP_TTL_MS`. An empty legacy Court Duel can receive a new private outcome seed safely; a played legacy Court Duel that never persisted its seed is retained as explicitly unavailable because its exact prior makes and misses cannot be reconstructed. Such a record returns a safe incompatibility error without blocking other saved games. The server fails startup if an existing file has invalid JSON, an unknown format version, invalid metadata, duplicate IDs, or any other active move history that the rules engine cannot replay.
 
 The widget and standalone `/preview` persist only a strict v2 resume pointer (`activeGameId`) plus the draft game, difficulty, and side selectors. They never cache a board, legal moves, history, message, reset epoch, or state version. On reload, a saved pointer renders no board and permits no board action until one `get_game_state` read returns a validated authoritative snapshot; expired or failed restores clear the pointer and expose the New Game chooser. Legacy snapshot saves are migrated only by extracting their game ID and safe draft preferences, and their cached game state is never rendered.

@@ -34,12 +34,28 @@ describe("HTTP game arena app", () => {
     expect(health.headers["x-content-type-options"]).toBe("nosniff");
     expect(health.headers["referrer-policy"]).toBe("no-referrer");
     expect(health.headers["content-security-policy"]).toContain("default-src 'none'");
+    expect(health.headers["cache-control"]).toBe("no-store");
+    expect(health.headers["x-turnplay-boot-id"]).toMatch(/^[0-9a-f]{32}$/);
     const ready = await request(app).get("/ready");
     expect(ready.status).toBe(200);
     expect(ready.body).toEqual({ ready: true });
+    expect(ready.headers["cache-control"]).toBe("no-store");
+    expect(ready.headers["x-turnplay-boot-id"]).toBe(health.headers["x-turnplay-boot-id"]);
     const preview = await request(app).get("/preview");
     expect(preview.status).toBe(200);
     expect(preview.text).toContain("fixture");
+  });
+
+  it("reuses one non-cacheable boot identity across apps in the same process", async () => {
+    const first = createHttpApp(new ToolService(new GameStore()), { loadWidgetHtml: () => "<!doctype html>" });
+    const second = createHttpApp(new ToolService(new GameStore()), { loadWidgetHtml: () => "<!doctype html>" });
+    const [firstHealth, secondHealth] = await Promise.all([
+      request(first).get("/health"),
+      request(second).get("/health"),
+    ]);
+    expect(firstHealth.headers["x-turnplay-boot-id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(secondHealth.headers["x-turnplay-boot-id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(secondHealth.headers["x-turnplay-boot-id"]).toBe(firstHealth.headers["x-turnplay-boot-id"]);
   });
 
   it("reports unready when authoritative storage loses readiness", async () => {
@@ -49,6 +65,8 @@ describe("HTTP game arena app", () => {
     const response = await request(app).get("/ready");
     expect(response.status).toBe(503);
     expect(response.body).toEqual({ ready: false });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["x-turnplay-boot-id"]).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it("serves the exact OpenAI app domain challenge only when configured", async () => {
@@ -56,6 +74,8 @@ describe("HTTP game arena app", () => {
     const missing = await request(disabled).get("/.well-known/openai-apps-challenge");
     expect(missing.status).toBe(404);
     expect(missing.text).toBe("Not found.");
+    expect(missing.headers["cache-control"]).toBe("no-store");
+    expect(missing.headers["x-turnplay-boot-id"]).toMatch(/^[0-9a-f]{32}$/);
 
     const enabled = createHttpApp(new ToolService(new GameStore()), {
       openAiAppsChallengeToken: "challenge_token-123",
@@ -64,6 +84,7 @@ describe("HTTP game arena app", () => {
     expect(challenge.status).toBe(200);
     expect(challenge.type).toBe("text/plain");
     expect(challenge.headers["cache-control"]).toBe("no-store");
+    expect(challenge.headers["x-turnplay-boot-id"]).toMatch(/^[0-9a-f]{32}$/);
     expect(challenge.text).toBe("challenge_token-123");
   });
 
@@ -296,8 +317,11 @@ describe("HTTP game arena app", () => {
     });
     expect(initialize.status).toBe(200);
     expect(initialize.body.result.serverInfo.name).toBe("gpt-game-arena");
+    expect(initialize.headers["cache-control"]).toBe("no-store");
+    expect(initialize.headers["x-turnplay-boot-id"]).toMatch(/^[0-9a-f]{32}$/);
     const list = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
     expect(list.status).toBe(200);
+    expect(list.headers["x-turnplay-boot-id"]).toBe(initialize.headers["x-turnplay-boot-id"]);
     expect(list.body.result.tools).toHaveLength(8);
     const call = await request(app).post("/mcp").set("Accept", "application/json, text/event-stream").send({
       jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "create_game", arguments: { game: "go", playerColor: "black", boardSize: 13, difficulty: "hard" } },

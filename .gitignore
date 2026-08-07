@@ -6,4 +6,6 @@ coverage
 playwright-report/
 test-results/
 .data/
+production-acceptance-*.json
+openai-apps-challenge-token*
 .DS_Store

@@ -443,3 +443,18 @@ Original prompt: also implement select difficuktuy
 - [x] Made the default browser command artifact-safe: it never rebuilds `web/dist`, never binds port 8000, and runs with a uniquely cleaned temporary save. CI builds first in its own runner and runs the unit suites serially so the Chess timing check does not compete with other test files.
 - [x] Pinned patched Vitest and Ajv releases. `npm audit` reports zero critical/high findings; two moderate SDK/Hono findings remain because resolving them today would silently raise the server runtime from its advertised Node 18 floor to Node 20.
 - [ ] Stable hosted ChatGPT acceptance remains a separate production-endpoint gate. The live Node process and Cloudflare tunnel were not stopped or restarted; the intended v21 `web/dist` artifact was rebuilt locally and may be read by that process on a later widget-resource request.
+
+## Stable production acceptance harness
+
+### Implemented
+
+- [x] Added a provider-neutral `verify:production` seed/resume workflow for one exact v21 origin. Seed checks health, readiness, security headers, the exact OpenAI challenge, all eight reviewed MCP tools, the current widget resource/domain plus immutable marker and pinned bundle digest, and one exact board/legal-move receipt-confirmed Hard Tic-Tac-Toe player/GPT sequence before writing private evidence.
+- [x] Keep the portal token in a descriptor-validated, size-bounded, non-symlink mode-`0600` file supplied with `--challenge-token-file`; never place the token in CLI arguments, logs, receipts, Git, or support messages. The seed receipt is atomically reserved before networking, private mode `0600`, size-bounded on resume, and never overwritten implicitly; a failed seed retains its reservation to block an unsafe repeated mutation.
+- [x] Bind every challenge and MCP response to the same non-cacheable process identity as health/readiness, with time- and size-bounded bodies. Resume requires that identity to change, then verifies that the exact authoritative game state and reviewed v21 render survived on the same origin and persistent disk. Same-process and within-phase split routing are rejected; interpreting the changed identity as a restart additionally depends on the separately verified one-instance provider topology.
+- [x] Production-origin validation rejects HTTP, localhost/IP/example origins, redirects, URL paths or credentials, and known temporary tunnels. Explicit `--allow-http-localhost` runs are local simulations only and do not satisfy production acceptance.
+
+### Remaining external gates
+
+- [ ] Owner approves and creates the paid single-instance Render service with its 1 GB `/data` disk, exact `PUBLIC_BASE_URL`, bounded host-log retention, and verified proxy topology.
+- [ ] Run the documented seed phase against that stable HTTPS origin, restart or redeploy the same service without clearing the disk, and run the documented resume phase with the same mode-`0600` token and receipt files.
+- [ ] Reconnect the stable `/mcp` URL in ChatGPT, refresh metadata to v21, and visibly complete a real player turn plus matching GPT turn on the mounted v21 board. A passing command-line harness or localhost simulation cannot prove this final UI gate.

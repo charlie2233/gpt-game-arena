@@ -62,6 +62,10 @@ jobs:
             fi
             sleep 1
           done
+          curl --fail --silent --show-error http://127.0.0.1:18080/ready >/dev/null
+          curl --fail --silent --show-error --dump-header "$RUNNER_TEMP/seed-health.headers" --output /dev/null \
+            http://127.0.0.1:18080/health
+          seed_boot_id=$(node -e "const h=require('fs').readFileSync(process.argv[1],'utf8'); const m=h.match(/^x-turnplay-boot-id:\\s*([0-9a-f]{32})\\s*$/im); if(!m) process.exit(1); process.stdout.write(m[1])" "$RUNNER_TEMP/seed-health.headers")
           curl --fail --silent --show-error \
             --header 'Content-Type: application/json' \
             --data '{"game":"chess","playerColor":"white","difficulty":"medium"}' \
@@ -86,6 +90,11 @@ jobs:
             fi
             sleep 1
           done
+          curl --fail --silent --show-error http://127.0.0.1:18080/ready >/dev/null
+          curl --fail --silent --show-error --dump-header "$RUNNER_TEMP/restarted-health.headers" --output /dev/null \
+            http://127.0.0.1:18080/health
+          restarted_boot_id=$(node -e "const h=require('fs').readFileSync(process.argv[1],'utf8'); const m=h.match(/^x-turnplay-boot-id:\\s*([0-9a-f]{32})\\s*$/im); if(!m) process.exit(1); process.stdout.write(m[1])" "$RUNNER_TEMP/restarted-health.headers")
+          node -e "if(process.argv[1]===process.argv[2]) process.exit(1)" "$seed_boot_id" "$restarted_boot_id"
           curl --fail --silent --show-error \
             --header 'Content-Type: application/json' \
             --data "{\"gameId\":\"$game_id\"}" \

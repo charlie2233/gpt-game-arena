@@ -11,6 +11,7 @@ RUN npm ci
 COPY tsconfig.base.json ./
 COPY server server
 COPY web web
+COPY scripts scripts
 RUN npm run build
 
 FROM node:22.22.0-bookworm-slim AS runtime
