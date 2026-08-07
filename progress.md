@@ -262,3 +262,32 @@ Original prompt: also implement select difficuktuy
 - [x] At 800×520, the Pool table is 394×197 and the Court is 394×207; both keep controls and status fully visible.
 - [x] At 320×568, Mini 8-Ball and Court Duel keep the board, one-row three-button game controls, and final status inside the exact 320×568 document. In-app browser diagnostics returned no warnings or errors.
 - [ ] Deploy the v17 widget to an approved stable HTTPS endpoint and reconnect it in ChatGPT before calling either game hosted-live.
+
+## Saved games
+
+### Original prompt
+
+- make sure a game sa ve
+
+### Reproduced
+
+- [x] The same ChatGPT card already cached and reconciled its last authoritative snapshot, and the JSON event log already replayed all seven game kinds after a one-process restart.
+- [x] Standalone `/preview` forgot the game ID on reload and silently created a fresh medium Chess game.
+- [x] The server's hidden one-hour inactivity timeout made a cached board unplayable after expiry, and reaching the session limit silently evicted the least-recently-used save.
+
+### TODO
+
+- [x] Auto-save and reconcile the standalone browser's exact game ID, reset epoch, state version, and snapshot before any fallback game creation.
+- [x] Extend the sliding retention default to 30 days, expose validated retention/capacity settings, and refuse new games instead of deleting an existing save at capacity.
+- [x] Prove move, reset, and manual-end persistence for all seven game kinds plus a real built-server stop/restart.
+- [x] Run the complete automated matrix, production builds, browser-game client, and screenshot/text/error inspection.
+- [ ] Keep stable hosted persistence and secure cross-chat saved-game ownership as explicit deployment gates; widget/local browser state is not a database.
+
+### Verification status
+
+- [x] Complete automated matrix passes: 167 server + 111 web = 278 tests, including exact standalone remount recovery, malformed/blocked browser storage, 30-day sliding retention, capacity preservation, and move/end/reset restart replay for all seven game kinds.
+- [x] Workspace typecheck, both production builds, and `git diff --check` pass; the current cache-busting widget resource is v18 with v17 through v11 retained.
+- [x] A built-server black-box acceptance created Hard Chess, played `e2e4`, killed the OS process, restarted against the same save file, and restored the same game ID at reset epoch 0 / state version 1 with exactly one history entry.
+- [x] A real browser reload restored the same standalone game ID/version with exactly one `get_game_state` request and zero `create_game` requests; the saved envelope reported format version 1.
+- [x] The required browser-game client produced `shot-0.png` plus authoritative `state-0.json`, with no error artifact. Visual inspection confirmed the full 1280×720 Chess board, selectors, End game/Reset/Refresh controls, and status remain visible.
+- [ ] Deploy v18 against approved persistent hosted storage and reconnect it in ChatGPT before calling saves durable across container replacement or available as a secure cross-chat library.

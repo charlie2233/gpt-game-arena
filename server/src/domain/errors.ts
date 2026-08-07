@@ -1,5 +1,6 @@
 export type GameRuleErrorCode =
   | "not_found"
+  | "store_full"
   | "stale_version"
   | "wrong_actor"
   | "illegal_move"

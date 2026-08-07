@@ -1,8 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
 
 import { ChessGame } from "../src/domain/chess-game.js";
 import { GameRuleError } from "../src/domain/errors.js";
-import { GameStore } from "../src/game-store.js";
+import { DEFAULT_GAME_STORE_TTL_MS, GameStore } from "../src/game-store.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function temporaryStorePath(): string {
+  const directory = mkdtempSync(join(tmpdir(), "gpt-game-arena-store-"));
+  temporaryDirectories.push(directory);
+  return join(directory, "game-sessions.json");
+}
 
 function expectRuleError(action: () => unknown, code: GameRuleError["code"]): void {
   let error: unknown;
@@ -56,20 +74,21 @@ describe("GameStore", () => {
     expect((error as GameRuleError).code).toBe("not_found");
   });
 
-  it("evicts the least recently used session when capacity is exceeded", () => {
-    const store = new GameStore({ maxSessions: 2 });
+  it("refuses a new save at capacity without deleting persisted games", () => {
+    const persistencePath = temporaryStorePath();
+    const store = new GameStore({ maxSessions: 2, persistencePath });
     const a = ChessGame.create("a", "white");
     const b = ChessGame.create("b", "white");
     const c = ChessGame.create("c", "white");
 
     store.put(a);
     store.put(b);
-    expect(store.get("a")).toBe(a);
-    store.put(c);
+    expectRuleError(() => store.put(c), "store_full");
 
-    expect(store.get("a")).toBe(a);
-    expect(store.get("c")).toBe(c);
-    expectRuleError(() => store.get("b"), "not_found");
+    const restarted = new GameStore({ maxSessions: 2, persistencePath });
+    expect(restarted.get("a").snapshot()).toEqual(a.snapshot());
+    expect(restarted.get("b").snapshot()).toEqual(b.snapshot());
+    expectRuleError(() => restarted.get("c"), "not_found");
   });
 
   it("prunes expired sessions while retaining recently accessed sessions", () => {
@@ -87,7 +106,25 @@ describe("GameStore", () => {
     expectRuleError(() => store.replace(ChessGame.create("expiring", "black")), "not_found");
   });
 
-  it("replaces by authoritative ID without exceeding capacity", () => {
+  it("uses a 30-day sliding default TTL and expires at the exact boundary", () => {
+    let time = 0;
+    const store = new GameStore({ now: () => time });
+    const session = ChessGame.create("long-save", "white");
+
+    store.put(session);
+    time = DEFAULT_GAME_STORE_TTL_MS - 1;
+    expect(store.get("long-save")).toBe(session);
+
+    const refreshedAt = time;
+    time = refreshedAt + DEFAULT_GAME_STORE_TTL_MS - 1;
+    expect(store.get("long-save")).toBe(session);
+
+    const refreshedAgainAt = time;
+    time = refreshedAgainAt + DEFAULT_GAME_STORE_TTL_MS;
+    expectRuleError(() => store.get("long-save"), "not_found");
+  });
+
+  it("allows an authoritative replacement at capacity but refuses a new ID", () => {
     let time = 0;
     const store = new GameStore({ maxSessions: 2, now: () => time });
     const a = ChessGame.create("a", "white");
@@ -100,10 +137,10 @@ describe("GameStore", () => {
     time += 1;
     store.replace(replacement);
     time += 1;
-    store.put(ChessGame.create("c", "white"));
+    expectRuleError(() => store.put(ChessGame.create("c", "white")), "store_full");
 
     expect(store.get("a")).toBe(replacement);
-    expectRuleError(() => store.get("b"), "not_found");
-    expect(store.get("c").snapshot().gameId).toBe("c");
+    expect(store.get("b")).toBe(b);
+    expectRuleError(() => store.get("c"), "not_found");
   });
 });

@@ -32,7 +32,9 @@ interface StoredSession {
   lastAccessedAt: number;
 }
 
-const maxPersistedSessions = 10_000;
+export const DEFAULT_GAME_STORE_MAX_SESSIONS = 1_000;
+export const MAX_GAME_STORE_SESSIONS = 10_000;
+export const DEFAULT_GAME_STORE_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const maxPersistedEvents = 10_000;
 
 const persistedMoveSchema = z.object({
@@ -93,7 +95,7 @@ const persistedSessionSchema = z.discriminatedUnion("kind", [
 
 const persistedStoreSchema = z.object({
   formatVersion: z.literal(1),
-  sessions: z.array(persistedSessionSchema).max(maxPersistedSessions),
+  sessions: z.array(persistedSessionSchema).max(MAX_GAME_STORE_SESSIONS),
 }).strict();
 
 type PersistedStore = z.infer<typeof persistedStoreSchema>;
@@ -165,8 +167,8 @@ export class GameStore {
   private writeSequence = 0;
 
   constructor(options: GameStoreOptions = {}) {
-    this.maxSessions = options.maxSessions ?? 1_000;
-    this.ttlMs = options.ttlMs ?? 60 * 60 * 1_000;
+    this.maxSessions = options.maxSessions ?? DEFAULT_GAME_STORE_MAX_SESSIONS;
+    this.ttlMs = options.ttlMs ?? DEFAULT_GAME_STORE_TTL_MS;
     this.now = options.now ?? Date.now;
     this.persistencePath = options.persistencePath;
     this.validateOptions();
@@ -176,8 +178,11 @@ export class GameStore {
   put(session: GameSession): void {
     this.mutateAndPersist(() => {
       this.pruneExpired();
-      this.store(session.snapshot().gameId, session);
-      this.evictOverflow();
+      const gameId = session.snapshot().gameId;
+      if (!this.sessions.has(gameId) && this.sessions.size >= this.maxSessions) {
+        throw new GameRuleError("store_full", "The game save limit has been reached.");
+      }
+      this.store(gameId, session);
     });
   }
 
@@ -199,7 +204,6 @@ export class GameStore {
         throw new GameRuleError("not_found", `Game ${gameId} was not found.`);
       }
       this.store(gameId, session);
-      this.evictOverflow();
     });
   }
 
@@ -217,17 +221,9 @@ export class GameStore {
     }
   }
 
-  private evictOverflow(): void {
-    while (this.sessions.size > this.maxSessions) {
-      const leastRecentlyUsed = this.sessions.keys().next().value as string | undefined;
-      if (leastRecentlyUsed === undefined) return;
-      this.sessions.delete(leastRecentlyUsed);
-    }
-  }
-
   private validateOptions(): void {
-    if (!Number.isInteger(this.maxSessions) || this.maxSessions < 1 || this.maxSessions > maxPersistedSessions) {
-      throw new RangeError(`maxSessions must be an integer between 1 and ${maxPersistedSessions}.`);
+    if (!Number.isInteger(this.maxSessions) || this.maxSessions < 1 || this.maxSessions > MAX_GAME_STORE_SESSIONS) {
+      throw new RangeError(`maxSessions must be an integer between 1 and ${MAX_GAME_STORE_SESSIONS}.`);
     }
     if (!Number.isFinite(this.ttlMs) || this.ttlMs <= 0) {
       throw new RangeError("ttlMs must be a positive finite number.");

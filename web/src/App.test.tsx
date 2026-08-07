@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { GameBridge } from "./bridge";
 import { isSnapshot } from "./game-client";
+import { loadStandaloneGame, saveStandaloneGame } from "./game-save";
 import { chooseStandaloneMove, embeddedMoveDecision } from "./move-strategy";
 import type { BasketballSnapshot, Board, ChessSnapshot, GameDifficulty, GoBoardSize, GoSnapshot, ChessSquare, TicTacToeSnapshot, ConnectFourSnapshot, PoolSnapshot, ReversiCoordinate, ReversiSnapshot } from "./types";
 const chess = (version = 0, difficulty: GameDifficulty = "medium"): ChessSnapshot => ({ gameId: "chess-1", kind: "chess", difficulty, playerColor: "white", turn: "white", status: "active", legalMoves: ["e2e4"], moveHistory: [], stateVersion: version, message: "White to move.", board: Array.from({ length: 8 }, (_, r) => Array.from({ length: 8 }, (_, c) => ({ square: `${"abcdefgh"[c]}${8-r}` as ChessSquare, ...(r === 6 && c === 4 ? { color: "white" as const, piece: "p" as const } : {}) }))).flat() as ChessSnapshot["board"] });
@@ -34,8 +35,8 @@ function reversiFixturePlay(game: ReversiSnapshot, move: ReversiCoordinate): Rev
   return { ...game, board, turn: nextTurn, legalMoves, moveHistory: [...game.moveHistory, record], lastMove: record, stateVersion: game.stateVersion + 1, message: opponentMoves.length ? `${nextTurn === "black" ? "Black" : "White"} to move.` : `${opponent === "black" ? "Black" : "White"} has no legal move; ${game.turn === "black" ? "Black" : "White"} moves again.`, score: { black, white } };
 }
 describe("App", () => {
-  afterEach(() => { cleanup(); vi.useRealTimers(); Reflect.deleteProperty(window, "openai"); });
-  beforeEach(() => { vi.stubGlobal("fetch", vi.fn()); });
+  afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); window.localStorage.clear(); Reflect.deleteProperty(window, "openai"); });
+  beforeEach(() => { window.localStorage.clear(); vi.stubGlobal("fetch", vi.fn()); });
   it("selects a legal chess destination then plays a deterministic standalone GPT reply", async () => {
     const reply: ChessSnapshot = { ...chess(1), turn: "black", legalMoves: ["a7a5", "a7a6"] }; const gpt = { ...chess(2), turn: "white", legalMoves: ["d2d4"] };
     const gptMove = chooseStandaloneMove(reply);
@@ -43,6 +44,57 @@ describe("App", () => {
     vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: chess() }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reply }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: gpt }) } as Response);
     render(<App />); await screen.findByRole("button", { name: /white pawn on e2, movable source/i }); const user = userEvent.setup(); await user.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i })); await user.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3)); expect(fetch).toHaveBeenLastCalledWith("/api/tools/play_game_move", expect.objectContaining({ body: expect.stringContaining(gptMove as string) }));
+  });
+  it("saves each authoritative standalone update and restores the exact game before creating a fallback", async () => {
+    const start = { ...chess(), gameId: "standalone-saved" };
+    const afterPlayer = chessAdvance(start, "player", "e2e4", "black", ["a7a5", "a7a6"], "Black to move.");
+    const gptMove = chooseStandaloneMove(afterPlayer)!;
+    const afterGpt = chessAdvance(afterPlayer, "gpt", gptMove, "white", ["d2d4"], "Saved GPT reply.");
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: start }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterPlayer }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterGpt }) } as Response);
+
+    const firstMount = render(<App />);
+    const pawn = await screen.findByRole("button", { name: /white pawn on e2, movable source/i });
+    await waitFor(() => expect(pawn).toBeEnabled());
+    await waitFor(() => expect(loadStandaloneGame()).toEqual(start));
+    const user = userEvent.setup();
+    await user.click(pawn);
+    await user.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
+    await waitFor(() => expect(loadStandaloneGame()).toEqual(afterGpt));
+    firstMount.unmount();
+
+    fetchMock.mockReset().mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterGpt }) } as Response);
+    render(<App />);
+
+    expect(screen.getByText("Saved GPT reply.")).toBeVisible();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith("/api/tools/get_game_state", expect.objectContaining({ body: '{"gameId":"standalone-saved"}' }));
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/tools/create_game")).toBe(false);
+    await waitFor(() => expect(screen.getByRole("button", { name: /refresh/i })).toBeEnabled());
+    expect(JSON.parse(window.render_game_to_text!()).game).toMatchObject({ gameId: "standalone-saved", stateVersion: 2 });
+  });
+  it("keeps standalone play working when browser storage writes fail", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("quota exceeded"); });
+    const reply: ChessSnapshot = { ...chess(1), turn: "black", legalMoves: ["a7a5"] };
+    const gpt = { ...chess(2), turn: "white", legalMoves: ["d2d4"], message: "Storage-independent reply." };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: chess() }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reply }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: gpt }) } as Response);
+
+    render(<App />);
+    const user = userEvent.setup();
+    const pawn = await screen.findByRole("button", { name: /white pawn on e2, movable source/i });
+    await waitFor(() => expect(pawn).toBeEnabled());
+    await user.click(pawn);
+    await user.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
+
+    expect(await screen.findByText("Storage-independent reply.")).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
   it("renders Go legal coordinates and Pass", async () => { vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: chess() }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: go() }) } as Response); render(<App />); const user = userEvent.setup(); const picker = await screen.findByRole("combobox", { name: "NEW GAME" }); await user.selectOptions(picker, "go-9"); await user.click(screen.getByRole("button", { name: "Start game" })); expect(await screen.findByRole("button", { name: /Play at A9, empty, legal move/i })).toBeEnabled(); expect(fetch).toHaveBeenLastCalledWith("/api/tools/create_game", expect.objectContaining({ body: '{"game":"go","playerColor":"black","difficulty":"medium"}' })); expect(screen.getByRole("button", { name: /pass/i })).toBeEnabled(); });
   it("starts standard 19x19 Go from the game chooser", async () => {
@@ -210,6 +262,7 @@ describe("App", () => {
   });
   it("restores an embedded game from ChatGPT widget state after reload", async () => {
     const setWidgetState = vi.fn();
+    saveStandaloneGame(basketball());
     Object.defineProperty(window, "openai", { configurable: true, value: { toolOutput: chess(), widgetState: { game: go(9, "hard") }, setWidgetState } });
     const postMessage = vi.fn();
     const target = { postMessage } as unknown as Window;

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, expectTypeOf, it } from "vitest";
 
 import { GameRuleError } from "../src/domain/errors.js";
-import { executeTool, toolInputSchemas } from "../src/tool-contracts.js";
+import { executeTool, toolInputSchemas, toToolFailure } from "../src/tool-contracts.js";
 import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
 import type { GameDifficulty, GameKind, GoBoardSize, StoneColor } from "../src/domain/types.js";
@@ -47,6 +47,18 @@ function expectRuleError(action: () => unknown, code: GameRuleError["code"]): vo
 }
 
 describe("ToolService", () => {
+  it("reports a full save store without leaking internal error details", () => {
+    const failure = toToolFailure(new GameRuleError("store_full", "SECRET_STORE_DETAIL"));
+    expect(failure).toEqual({
+      isError: true,
+      content: [{
+        type: "text",
+        text: "store_full: The game save limit has been reached. Existing saved games were preserved.",
+      }],
+    });
+    expect(JSON.stringify(failure)).not.toContain("SECRET_STORE_DETAIL");
+  });
+
   it("preserves whitespace-padded moves for domain rejection instead of normalizing them", () => {
     const service = new ToolService(new GameStore());
     const created = service.createGame({ game: "tic-tac-toe", playerColor: "black" });
@@ -529,7 +541,7 @@ describe("ToolService", () => {
     expectRuleError(() => service.resetGame({ gameId: "missing" }), "not_found");
   });
 
-  it("replays durable sessions for all seven game kinds after a process restart", () => {
+  it("replays moves, manual ends, and resets for all seven game kinds after process restarts", () => {
     const persistencePath = temporaryStorePath();
     const service = new ToolService(new GameStore({ persistencePath }));
     const cases = [
@@ -557,11 +569,30 @@ describe("ToolService", () => {
       });
     });
 
-    const restarted = new ToolService(new GameStore({ persistencePath }));
+    const restartedAfterMoves = new ToolService(new GameStore({ persistencePath }));
     for (const snapshot of expected) {
-      expect(restarted.getGameState({ gameId: snapshot.gameId })).toEqual(snapshot);
+      expect(restartedAfterMoves.getGameState({ gameId: snapshot.gameId })).toEqual(snapshot);
     }
-  });
+
+    const ended = expected.map((snapshot) => restartedAfterMoves.endGame({
+      gameId: snapshot.gameId,
+      confirmed: true,
+      expectedVersion: snapshot.stateVersion,
+      expectedResetEpoch: snapshot.resetEpoch ?? 0,
+    }));
+    const restartedAfterEnds = new ToolService(new GameStore({ persistencePath }));
+    for (const snapshot of ended) {
+      expect(restartedAfterEnds.getGameState({ gameId: snapshot.gameId })).toEqual(snapshot);
+      expect(snapshot).toMatchObject({ status: "finished", finishReason: "ended" });
+    }
+
+    const reset = ended.map((snapshot) => restartedAfterEnds.resetGame({ gameId: snapshot.gameId }));
+    const restartedAfterResets = new ToolService(new GameStore({ persistencePath }));
+    for (const snapshot of reset) {
+      expect(restartedAfterResets.getGameState({ gameId: snapshot.gameId })).toEqual(snapshot);
+      expect(snapshot).toMatchObject({ status: "active", stateVersion: 0, resetEpoch: 1, moveHistory: [] });
+    }
+  }, 20_000);
 
   it("keeps the Court Duel seed private while preserving its sequence through clone, end, reset, and restart", () => {
     const primaryPath = temporaryStorePath();

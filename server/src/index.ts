@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { createHttpApp } from "./http-app.js";
 import { GameStore } from "./game-store.js";
+import { gameStoreRuntimeOptionsFromEnvironment } from "./runtime-config.js";
 import { ToolService } from "./tool-service.js";
 
 function portFromEnvironment(value: string | undefined): number {
@@ -18,7 +19,8 @@ try {
   const defaultStorePath = fileURLToPath(new URL("../../.data/game-sessions.json", import.meta.url));
   const configuredStorePath = process.env.GAME_STORE_PATH;
   const storePath = configuredStorePath === undefined ? defaultStorePath : resolve(configuredStorePath);
-  const app = createHttpApp(new ToolService(new GameStore({ persistencePath: storePath })));
+  const runtimeOptions = gameStoreRuntimeOptionsFromEnvironment(process.env);
+  const app = createHttpApp(new ToolService(new GameStore({ persistencePath: storePath, ...runtimeOptions })));
   const listener = app.listen(port, "0.0.0.0", () => {
     console.log(`Preview: http://localhost:${port}/preview`);
     console.log(`MCP: http://localhost:${port}/mcp`);

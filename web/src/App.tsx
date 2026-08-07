@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { GameBridge } from "./bridge";
 import { GameClient, isSnapshot } from "./game-client";
+import { clearStandaloneGame, loadStandaloneGame, saveStandaloneGame } from "./game-save";
 import { ChessBoard } from "./components/ChessBoard";
 import { GoBoard } from "./components/GoBoard";
 import { GameChrome } from "./components/GameChrome";
@@ -128,8 +129,10 @@ function isConfirmedManualEnd(snapshot: GameSnapshot): boolean {
 export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBridge; initialGame?: GameSnapshot } = {}) {
   const [bridge] = useState(() => suppliedBridge ?? new GameBridge());
   const [client] = useState(() => new GameClient(bridge));
-  const [hostSeed] = useState<GameSnapshot | undefined>(() => initialGame === undefined ? initialHostState() : undefined);
-  const initialSnapshot = initialGame ?? hostSeed;
+  const [recoverySeed] = useState<GameSnapshot | undefined>(() => initialGame === undefined
+    ? initialHostState() ?? (bridge.embedded ? undefined : loadStandaloneGame())
+    : undefined);
+  const initialSnapshot = initialGame ?? recoverySeed;
   const [game, setGame] = useState<GameSnapshot | undefined>(() => initialSnapshot);
   const [selected, setSelected] = useState<string>();
   const [gamePreset, setGamePreset] = useState<GamePreset>(() => presetFor(initialSnapshot));
@@ -261,7 +264,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
     };
   }, [action, bridge, commitBusy, gptTurn, stop]);
   useEffect(() => {
-    if (!bridge.embedded || !hostSeed || recoveryStarted.current) return;
+    if (!recoverySeed || recoveryStarted.current) return;
     recoveryStarted.current = true;
     const version = epoch.current;
     commitBusy(true);
@@ -270,24 +273,28 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       try {
         let reconciled: GameSnapshot | undefined;
         try {
-          const authoritative = await client.state(hostSeed.gameId);
+          const authoritative = await client.state(recoverySeed.gameId);
           if (version !== epoch.current) return;
           const current = gameRef.current;
-          if (!current || current.gameId !== hostSeed.gameId) return;
+          if (!current || current.gameId !== recoverySeed.gameId) return;
           reconciled = current;
-          if (authoritative.gameId !== hostSeed.gameId) throw new Error("The game service returned the wrong saved game.");
+          if (authoritative.gameId !== recoverySeed.gameId) throw new Error("The game service returned the wrong saved game.");
           if (compareSnapshotPosition(authoritative, current) >= 0) {
             apply(authoritative, version);
             reconciled = authoritative;
-          } else if (compareSnapshotPosition(current, hostSeed) === 0) {
+          } else if (compareSnapshotPosition(current, recoverySeed) === 0) {
             setError("The saved board is newer than the server session. Use Refresh to try again.");
             return;
           }
         } catch (reason) {
           if (version !== epoch.current) return;
-          if (isNotFoundError(reason)) { setError(expiredSessionMessage); return; }
+          if (isNotFoundError(reason)) {
+            if (!bridge.embedded) clearStandaloneGame();
+            setError(expiredSessionMessage);
+            return;
+          }
           const current = gameRef.current;
-          if (!current || current.gameId !== hostSeed.gameId || compareSnapshotPosition(current, hostSeed) <= 0) {
+          if (!current || current.gameId !== recoverySeed.gameId || compareSnapshotPosition(current, recoverySeed) <= 0) {
             setError("Could not reconnect to this saved game. Use Refresh to try again.");
             return;
           }
@@ -303,10 +310,14 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
         if (version === epoch.current) commitBusy(false);
       }
     })();
-  }, [apply, bridge.embedded, client, commitBusy, gptTurn, hostSeed]);
+  }, [apply, bridge.embedded, client, commitBusy, gptTurn, recoverySeed]);
   useEffect(() => { if (!game && !bridge.embedded) void action(() => client.create({ game: "chess", playerColor: "white", difficulty: "medium" }), undefined, true); }, [action, bridge.embedded, client, game]);
   useEffect(() => {
-    if (!game || !bridge.embedded) return;
+    if (!game) return;
+    if (!bridge.embedded) {
+      saveStandaloneGame(game);
+      return;
+    }
     const host = chatGptHost();
     if (!host?.setWidgetState) return;
     void Promise.resolve(host.setWidgetState({ game })).catch(() => undefined);
