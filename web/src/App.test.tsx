@@ -676,6 +676,69 @@ describe("App", () => {
     expect(gptCalls()).toHaveLength(1);
     bridge.dispose();
   });
+  it("lets an exact reset notification supersede a deferred human move response", async () => {
+    const postMessage = vi.fn();
+    const target = { postMessage } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const start = { ...chess(0, "hard"), resetEpoch: 0, message: "Before reset notification." };
+    const delayed = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Delayed human response.");
+    const reset: ChessSnapshot = { ...canonicalChessReset(1, "hard"), message: "Reset notification won." };
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    const calls = (name: string) => postMessage.mock.calls.map(([request]) => request as { method?: string; params?: { name?: string; arguments?: { actor?: string } } }).filter(request => request.method === "tools/call" && request.params?.name === name);
+
+    render(<App bridge={bridge} initialGame={start}/>);
+    fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
+    fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
+    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
+
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: reset } } }));
+
+    await waitFor(() => expect(screen.getByText("Reset notification won.")).toBeVisible());
+    expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeEnabled();
+    expect(JSON.parse(window.render_game_to_text!()).game).toMatchObject({ resetEpoch: 1, stateVersion: 0, message: "Reset notification won." });
+
+    await respond(2, { structuredContent: delayed });
+    await Promise.resolve();
+
+    expect(screen.getByText("Reset notification won.")).toBeVisible();
+    expect(screen.queryByText("Delayed human response.")).not.toBeInTheDocument();
+    expect(JSON.parse(window.render_game_to_text!()).game).toMatchObject({ resetEpoch: 1, stateVersion: 0, message: "Reset notification won." });
+    expect(calls("play_game_move")).toHaveLength(1);
+    expect(calls("play_game_move").filter(request => request.params?.arguments?.actor === "gpt")).toHaveLength(0);
+    bridge.dispose();
+  });
+  it("continues one GPT turn when an exact human-move notification supersedes its deferred response", async () => {
+    const postMessage = vi.fn();
+    const target = { postMessage } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const start = { ...chess(0, "hard"), resetEpoch: 0 };
+    const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Human notification landed.");
+    const gptMove = chooseStandaloneMove(after)!;
+    const afterGpt = chessAdvance(after, "gpt", gptMove, "white", ["e2e4"], "One GPT continuation landed.");
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    const calls = (name: string) => postMessage.mock.calls.map(([request]) => request as { method?: string; params?: { name?: string; arguments?: { actor?: string } } }).filter(request => request.method === "tools/call" && request.params?.name === name);
+    const gptCalls = () => calls("play_game_move").filter(request => request.params?.arguments?.actor === "gpt");
+
+    render(<App bridge={bridge} initialGame={start}/>);
+    fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
+    fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
+    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
+
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: after } } }));
+
+    await waitFor(() => expect(gptCalls()).toHaveLength(1));
+    expect(gptCalls()[0]).toEqual(expect.objectContaining({ params: { name: "play_game_move", arguments: { gameId: after.gameId, actor: "gpt", move: gptMove, expectedVersion: after.stateVersion, expectedResetEpoch: 0 } } }));
+    await respond(2, { structuredContent: after });
+    expect(gptCalls()).toHaveLength(1);
+
+    await respond(3, { structuredContent: afterGpt });
+    await waitFor(() => expect(screen.getByText("One GPT continuation landed.")).toBeVisible());
+    expect(gptCalls()).toHaveLength(1);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    bridge.dispose();
+  });
   it("ignores a structurally valid but corrupt reset notification during a pending GPT receipt", async () => {
     const postMessage = vi.fn();
     const target = { postMessage } as unknown as Window;

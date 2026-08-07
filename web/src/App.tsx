@@ -264,9 +264,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
         if (current.stateVersion === 0 || barrier?.gameId === next.gameId || resetPending.current !== next.gameId) return;
         resetBarrier.current = { gameId: next.gameId, staleHistory: [...current.moveHistory], legacyCeiling: current.stateVersion + 1 };
         resetPending.current = undefined;
-        stop(); commitBusy(false); setStarting(false); setError(undefined); setSelected(undefined); gameRef.current = next; setGame(next); return;
-      }
-      if (epochComparison === 0) {
+      } else if (epochComparison === 0) {
         if (next.stateVersion <= current.stateVersion) return;
         if (!historyStartsWith(next.moveHistory, current.moveHistory)) return;
         if (barrier?.gameId === next.gameId && barrier.staleHistory.length === 0 && next.stateVersion <= barrier.legacyCeiling) return;
@@ -276,8 +274,13 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
         resetBarrier.current = undefined;
         resetPending.current = undefined;
       }
-      gameRef.current = next;
-      setGame(next);
+      if (busyRef.current) {
+        stop();
+        resetPending.current = undefined;
+        commitBusy(false);
+        setStarting(false);
+      }
+      apply(next, epoch.current);
       setSelected(undefined);
       setError(undefined);
       if (!busyRef.current && next.status === "active" && next.turn !== next.playerColor && !requiresImportReview(next)) {
@@ -292,7 +295,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       context();
       lifecycleTimer.current = window.setTimeout(() => { stop(); bridge.dispose(); lifecycleTimer.current = undefined; }, 0);
     };
-  }, [action, bridge, commitBusy, gptTurn, stop]);
+  }, [action, apply, bridge, commitBusy, gptTurn, stop]);
   useEffect(() => {
     if (!recoverySeed || recoveryStarted.current) return;
     recoveryStarted.current = true;
