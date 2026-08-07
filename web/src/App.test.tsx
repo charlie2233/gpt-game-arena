@@ -393,7 +393,7 @@ describe("App", () => {
   it("prefers an initial authoritative tool output over a stale restore pointer with zero state reads", async () => {
     const setWidgetState = vi.fn();
     saveStandaloneGame(resumeStateFromSnapshot(basketball()));
-    Object.defineProperty(window, "openai", { configurable: true, value: { toolOutput: { structuredContent: chess() }, widgetState: resumeStateFromSnapshot(go(9, "hard")), setWidgetState } });
+    Object.defineProperty(window, "openai", { configurable: true, value: { toolOutput: { structuredContent: chess() }, initialState: { structuredContent: go(13, "easy") }, widgetState: resumeStateFromSnapshot(go(9, "hard")), setWidgetState } });
     const postMessage = vi.fn();
     const target = { postMessage } as unknown as Window;
     const bridge = new GameBridge(target, 100_000);
@@ -408,6 +408,47 @@ describe("App", () => {
     expect(state).toEqual({ formatVersion: 2, activeGameId: "chess-1", draft: { game: "chess", difficulty: "medium", side: "white" } });
     expect(JSON.stringify(state)).not.toMatch(/board|legalMoves|stateVersion|message/);
     expect(postMessage.mock.calls.filter(([request]) => (request as { params?: { name?: string } }).params?.name === "get_game_state")).toHaveLength(0);
+    bridge.dispose();
+  });
+  it.each([
+    ["an error", { isError: true, content: [{ type: "text", text: "tool output failed" }] }],
+    ["an empty object", {}],
+    ["malformed structured content", { structuredContent: { kind: "chess" } }],
+  ])("does not fall through from %s toolOutput to a valid initialState", (_label, toolOutput) => {
+    Object.defineProperty(window, "openai", { configurable: true, value: { toolOutput, initialState: { structuredContent: go(13, "hard") } } });
+    const target = { postMessage: vi.fn() } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    render(<App bridge={bridge}/>);
+    expect(screen.getByRole("alert")).toHaveTextContent("The game result could not be loaded");
+    expect(screen.queryByRole("group", { name: "13 by 13 Go board" })).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toBeVisible();
+    bridge.dispose();
+  });
+  it("falls through from null toolOutput to a valid initialState", () => {
+    Object.defineProperty(window, "openai", { configurable: true, value: { toolOutput: null, initialState: { structuredContent: go(13, "hard") } } });
+    const target = { postMessage: vi.fn() } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    render(<App bridge={bridge}/>);
+    expect(screen.getByRole("group", { name: "13 by 13 Go board" })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    bridge.dispose();
+  });
+  it("ignores every unsolicited tool result while the pointer's one authoritative read is pending", async () => {
+    const pointer = { ...chess(), gameId: "restore-a", message: "Cached A must not render." };
+    const unsolicitedA = { ...pointer, message: "Unsolicited A must not render." };
+    const authoritativeA = { ...pointer, stateVersion: 2, message: "Authoritative A rendered." };
+    Object.defineProperty(window, "openai", { configurable: true, value: { widgetState: resumeStateFromSnapshot(pointer), setWidgetState: vi.fn() } });
+    const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    render(<App bridge={bridge}/>);
+    await respond(1, validInit());
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "get_game_state", arguments: { gameId: "restore-a" } } }), "*"));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { result: { structuredContent: go(9, "hard") } } } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { result: { structuredContent: unsolicitedA } } } }));
+    expect(screen.getByRole("status")).toHaveTextContent("Restoring saved game…");
+    expect(screen.queryByRole("group")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unsolicited A must not render.")).not.toBeInTheDocument();
+    await respond(2, { structuredContent: authoritativeA });
+    expect(await screen.findByText("Authoritative A rendered.")).toBeVisible();
+    expect(postMessage.mock.calls.filter(([request]) => (request as { params?: { name?: string } }).params?.name === "get_game_state")).toHaveLength(1);
     bridge.dispose();
   });
   it("restores a legacy embedded pointer once under StrictMode without rendering its cached board, then continues one GPT turn", async () => {
@@ -550,6 +591,33 @@ describe("App", () => {
     await respond(2, { structuredContent: go(13) });
     expect(await screen.findByRole("group", { name: "13 by 13 Go board" })).toBeVisible();
     expect(postMessage.mock.calls.filter(([request]) => (request as { method?: string; params?: { name?: string } }).method === "tools/call" && (request as { params?: { name?: string } }).params?.name !== "create_game")).toHaveLength(0);
+    bridge.dispose();
+  });
+  it("keeps bootstrap notifications closed after an explicit Start Game fails", async () => {
+    const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    render(<App bridge={bridge}/>);
+    await respond(1, validInit());
+    await userEvent.setup().click(screen.getByRole("button", { name: "Start game" }));
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: expect.objectContaining({ name: "create_game" }) }), "*"));
+    await respond(2, { isError: true, content: [{ type: "text", text: "create refused" }] });
+    expect(await screen.findByRole("alert")).toHaveTextContent("create refused");
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { result: { structuredContent: go(9, "hard") } } } }));
+    await Promise.resolve();
+    expect(screen.getByRole("alert")).toHaveTextContent("create refused");
+    expect(screen.queryByRole("group", { name: "9 by 9 Go board" })).not.toBeInTheDocument();
+    expect(postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "tools/call")).toHaveLength(1);
+    bridge.dispose();
+  });
+  it("applies a GPT-owned late bootstrap result without initiating any tool call", async () => {
+    const late = { ...chess(), turn: "black" as const, legalMoves: ["a7a6"], message: "Late authoritative GPT turn." };
+    const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    render(<App bridge={bridge}/>);
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { result: { structuredContent: late } } } }));
+    expect(await screen.findByText("Late authoritative GPT turn.")).toBeVisible();
+    expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible();
+    expect(postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "tools/call")).toHaveLength(0);
     bridge.dispose();
   });
   it.each([
@@ -941,14 +1009,12 @@ describe("App", () => {
     expect(calls("play_game_move").filter(request => request.params?.arguments?.actor === "gpt")).toHaveLength(0);
     bridge.dispose();
   });
-  it("continues one GPT turn when an exact human-move notification supersedes its deferred response", async () => {
+  it("applies an exact human-move notification without initiating the GPT continuation", async () => {
     const postMessage = vi.fn();
     const target = { postMessage } as unknown as Window;
     const bridge = new GameBridge(target, 100_000);
     const start = { ...chess(0, "hard"), resetEpoch: 0 };
     const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Human notification landed.");
-    const gptMove = chooseStandaloneMove(after)!;
-    const afterGpt = chessAdvance(after, "gpt", gptMove, "white", ["e2e4"], "One GPT continuation landed.");
     const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
     const calls = (name: string) => postMessage.mock.calls.map(([request]) => request as { method?: string; params?: { name?: string; arguments?: { actor?: string } } }).filter(request => request.method === "tools/call" && request.params?.name === name);
     const gptCalls = () => calls("play_game_move").filter(request => request.params?.arguments?.actor === "gpt");
@@ -961,14 +1027,14 @@ describe("App", () => {
 
     window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: after } } }));
 
-    await waitFor(() => expect(gptCalls()).toHaveLength(1));
-    expect(gptCalls()[0]).toEqual(expect.objectContaining({ params: { name: "play_game_move", arguments: { gameId: after.gameId, actor: "gpt", move: gptMove, expectedVersion: after.stateVersion, expectedResetEpoch: 0 } } }));
-    await respond(2, { structuredContent: after });
-    expect(gptCalls()).toHaveLength(1);
+    await waitFor(() => expect(screen.getByText("Human notification landed.")).toBeVisible());
+    expect(gptCalls()).toHaveLength(0);
+    expect(calls("play_game_move")).toHaveLength(1);
 
-    await respond(3, { structuredContent: afterGpt });
-    await waitFor(() => expect(screen.getByText("One GPT continuation landed.")).toBeVisible());
-    expect(gptCalls()).toHaveLength(1);
+    await respond(2, { structuredContent: after });
+    expect(screen.getByText("Human notification landed.")).toBeVisible();
+    expect(gptCalls()).toHaveLength(0);
+    expect(calls("play_game_move")).toHaveLength(1);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     bridge.dispose();
   });
@@ -1242,7 +1308,7 @@ describe("App", () => {
     expect(screen.queryByText("Stale reset")).not.toBeInTheDocument();
     bridge.dispose();
   });
-  it("continues a late embedded result with a direct GPT move when GPT still owns the turn", async () => {
+  it("applies a late GPT-owned notification without initiating another move", async () => {
     const target = { postMessage: vi.fn() } as unknown as Window;
     const bridge = new GameBridge(target, 100_000);
     const playerMove = { actor: "player", color: "black", notation: "C4", ply: 1 } as const;
@@ -1260,9 +1326,10 @@ describe("App", () => {
       data: { jsonrpc: "2.0", id: 1, result: validInit() },
     }));
 
-    await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "gpt", expectedVersion: 2 }) } }), "*"));
+    await waitFor(() => expect(screen.getByText("White moves again")).toBeVisible());
+    expect(target.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ method: "tools/call" }), "*");
     expect(target.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ method: "ui/message" }), "*");
-    expect(screen.getByText("GPT thinking…")).toBeVisible();
+    expect(JSON.parse(window.render_game_to_text!()).game).toMatchObject({ stateVersion: 2, message: "White moves again" });
     bridge.dispose();
   });
   it("uses embedded tools/call for a selected-side opening without get_game_state or ui/message", async () => {

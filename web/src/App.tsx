@@ -69,17 +69,24 @@ type InitialAppState = { game?: GameSnapshot; resume?: WidgetResumeState; draft:
 function initialAppState(bridge: GameBridge, initialGame: GameSnapshot | undefined): InitialAppState {
   if (isSnapshot(initialGame)) return { game: initialGame, draft: draftFromSnapshot(initialGame), emptyMode: "idle", autoStartStandalone: false };
   const host = chatGptHost();
-  const lifecycleCandidates = [host?.toolOutput, host?.initialState];
-  const authoritative = lifecycleCandidates.map(snapshotFromHost).find((candidate): candidate is GameSnapshot => candidate !== undefined);
-  if (authoritative) return { game: authoritative, draft: draftFromSnapshot(authoritative), emptyMode: "idle", autoStartStandalone: false };
+  const hostDraft = parseWidgetState(host?.widgetState)?.draft ?? DEFAULT_GAME_DRAFT;
+  if (host?.toolOutput !== undefined && host.toolOutput !== null) {
+    const authoritative = snapshotFromHost(host.toolOutput);
+    return authoritative
+      ? { game: authoritative, draft: draftFromSnapshot(authoritative), emptyMode: "idle", autoStartStandalone: false }
+      : { draft: hostDraft, emptyMode: "idle", error: "The game result could not be loaded. Start a new game to continue.", autoStartStandalone: false };
+  }
+  if (host?.initialState !== undefined && host.initialState !== null) {
+    const authoritative = snapshotFromHost(host.initialState);
+    return authoritative
+      ? { game: authoritative, draft: draftFromSnapshot(authoritative), emptyMode: "idle", autoStartStandalone: false }
+      : { draft: hostDraft, emptyMode: "idle", error: "The game result could not be loaded. Start a new game to continue.", autoStartStandalone: false };
+  }
   if (!bridge.embedded) {
     const resume = loadStandaloneGame();
     return resume?.activeGameId
       ? { resume, draft: resume.draft, emptyMode: "restoring", autoStartStandalone: false }
       : { draft: resume?.draft ?? DEFAULT_GAME_DRAFT, emptyMode: "idle", autoStartStandalone: true };
-  }
-  if (lifecycleCandidates.some(candidate => candidate !== undefined && candidate !== null)) {
-    return { draft: parseWidgetState(host?.widgetState)?.draft ?? DEFAULT_GAME_DRAFT, emptyMode: "idle", error: "The game result could not be loaded. Start a new game to continue.", autoStartStandalone: false };
   }
   const resume = parseWidgetState(host?.widgetState);
   return resume?.activeGameId
@@ -206,7 +213,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const [error, setError] = useState<string | undefined>(() => initial.error);
   const [endConfirmation, setEndConfirmation] = useState<EndConfirmation>();
   const [resetConfirmation, setResetConfirmation] = useState<ResetConfirmation>();
-  const epoch = useRef(0); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const startingRef = useRef(starting); const pendingGptReceipt = useRef<PendingGptReceipt>(); const resetBarrier = useRef<ResetBarrier>(); const resetPending = useRef<string>(); const recoveryStarted = useRef(false); const fallbackStarted = useRef(false); const lifecycleTimer = useRef<number>(); const endGameTrigger = useRef<HTMLButtonElement>(null); const resetGameTrigger = useRef<HTMLButtonElement>(null); const restoreConfirmationFocus = useRef<"end" | "reset">();
+  const epoch = useRef(0); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const startingRef = useRef(starting); const pendingGptReceipt = useRef<PendingGptReceipt>(); const resetBarrier = useRef<ResetBarrier>(); const resetPending = useRef<string>(); const recoveryStarted = useRef(false); const restorePending = useRef(Boolean(restoreGameId)); const bootstrapNotificationsClosed = useRef(false); const fallbackStarted = useRef(false); const lifecycleTimer = useRef<number>(); const endGameTrigger = useRef<HTMLButtonElement>(null); const resetGameTrigger = useRef<HTMLButtonElement>(null); const restoreConfirmationFocus = useRef<"end" | "reset">();
   const stop = useCallback(() => { epoch.current += 1; pendingGptReceipt.current = undefined; }, []);
   const commitBusy = useCallback((next: boolean) => { busyRef.current = next; setBusy(next); }, []);
   const commitStarting = useCallback((next: boolean) => { startingRef.current = next; setStarting(next); }, []);
@@ -278,10 +285,11 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
     let alive = true;
     const initEpoch = epoch.current;
     const unsubscribe = bridge.onToolResult(result => {
+      if (restorePending.current) return;
       const validEnvelope = result !== null && typeof result === "object";
       const next = validEnvelope ? result.structuredContent : undefined;
       const current = gameRef.current;
-      if (!current && startingRef.current) return;
+      if (!current && (startingRef.current || bootstrapNotificationsClosed.current)) return;
       if (!validEnvelope || result.isError || !isSnapshot(next)) {
         if (!current) {
           stop();
@@ -302,7 +310,6 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
         setDifficultyPreset(next.difficulty);
         setSidePreset(next.playerColor);
         apply(next, epoch.current);
-        if (next.status === "active" && next.turn !== next.playerColor && !requiresImportReview(next)) void action(() => Promise.resolve(next), gptTurn);
         return;
       }
       if (next.gameId !== current.gameId) return;
@@ -340,12 +347,10 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       apply(next, epoch.current);
       setSelected(undefined);
       setError(undefined);
-      if (!busyRef.current && next.status === "active" && next.turn !== next.playerColor && !requiresImportReview(next)) {
-        void action(() => Promise.resolve(next), gptTurn);
-      }
     });
     const input = bridge.onToolInput(() => {
       if (gameRef.current || startingRef.current) return;
+      restorePending.current = false;
       stop();
       discardGame();
       commitBusy(false);
@@ -355,6 +360,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
     });
     const cancelled = bridge.onToolCancelled(() => {
       if (gameRef.current || startingRef.current) return;
+      restorePending.current = false;
       stop();
       discardGame();
       commitBusy(false);
@@ -372,10 +378,11 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       context();
       lifecycleTimer.current = window.setTimeout(() => { stop(); bridge.dispose(); lifecycleTimer.current = undefined; }, 0);
     };
-  }, [action, apply, bridge, commitBusy, commitStarting, discardGame, gptTurn, stop]);
+  }, [apply, bridge, commitBusy, commitStarting, discardGame, stop]);
   useEffect(() => {
     if (!restoreGameId || recoveryStarted.current) return;
     recoveryStarted.current = true;
+    restorePending.current = true;
     const version = epoch.current;
     commitBusy(true);
     setError(undefined);
@@ -387,8 +394,10 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
           authoritative = await client.state(restoreGameId);
           if (version !== epoch.current) return;
           if (authoritative.gameId !== restoreGameId) throw new Error("The game service returned the wrong saved game.");
+          restorePending.current = false;
         } catch (reason) {
           if (version !== epoch.current) return;
+          restorePending.current = false;
           discardGame();
           setEmptyMode("idle");
           if (!bridge.embedded) clearStandaloneGame();
@@ -436,6 +445,8 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const humanMove = (move: string) => game && action(() => client.play(game.gameId, "player", move, game.stateVersion, resetEpochOf(game)), gptTurn);
   const chessSquare = (square: string) => { if (!game || game.kind !== "chess") return; if (!selected) { setSelected(square); return; } const legal = game.legalMoves.filter(move => move.startsWith(selected) && move.slice(2, 4) === square).sort(); const move = legal.find(m => m.endsWith("q")) ?? legal[0]; if (move) humanMove(move); else setSelected(undefined); };
   const startGame = () => {
+    restorePending.current = false;
+    bootstrapNotificationsClosed.current = true;
     if (gamePreset === "chess") return action(() => client.create({ game: "chess", playerColor: sidePreset, difficulty: difficultyPreset }), gptTurn, true);
     if (gamePreset === "tic-tac-toe" || gamePreset === "connect-four" || gamePreset === "reversi" || gamePreset === "pool" || gamePreset === "basketball") return action(() => client.create({ game: gamePreset, playerColor: sidePreset, difficulty: difficultyPreset }), gptTurn, true);
     const boardSize = Number(gamePreset.slice(3)) as GoBoardSize;
