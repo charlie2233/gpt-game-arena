@@ -265,6 +265,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
         if (barrier?.gameId === next.gameId && barrier.staleHistory.length === 0 && next.stateVersion <= barrier.legacyCeiling) return;
         if (barrier?.gameId === next.gameId && barrier.staleHistory.length > 0 && historyStartsWith(next.moveHistory, barrier.staleHistory)) return;
       } else {
+        if (!isConfirmedReset(current, next)) return;
         resetBarrier.current = undefined;
         resetPending.current = undefined;
       }

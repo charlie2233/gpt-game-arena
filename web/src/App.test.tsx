@@ -642,6 +642,81 @@ describe("App", () => {
     expect(calls("play_game_move")).toHaveLength(2);
     bridge.dispose();
   });
+  it("ignores a corrupt reset notification after the direct GPT receipt clears pending state", async () => {
+    const postMessage = vi.fn();
+    const target = { postMessage } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const start = { ...chess(0, "hard"), resetEpoch: 0 };
+    const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move.");
+    const gptMove = chooseStandaloneMove(after)!;
+    const direct = chessAdvance(after, "gpt", gptMove, "white", ["e2e4"], "Direct GPT receipt applied.");
+    const canonical = canonicalChessReset(1, "hard");
+    const corrupt: ChessSnapshot = { ...canonical, message: "Corrupt reset after receipt.", board: canonical.board.map(cell => cell.square === "a8" ? { ...cell, piece: "q" } : cell) as ChessSnapshot["board"] };
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    const calls = (name: string) => postMessage.mock.calls.map(([request]) => request as { method?: string; params?: { name?: string } }).filter(request => request.method === "tools/call" && request.params?.name === name);
+
+    render(<App bridge={bridge} initialGame={start}/>);
+    fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
+    fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
+    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
+    await respond(2, { structuredContent: after });
+    await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
+    await respond(3, { structuredContent: direct });
+    await waitFor(() => expect(screen.getByText("Direct GPT receipt applied.")).toBeVisible());
+
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: corrupt } } }));
+    await Promise.resolve();
+    expect(screen.getByText("Direct GPT receipt applied.")).toBeVisible();
+    expect(screen.queryByText("Corrupt reset after receipt.")).not.toBeInTheDocument();
+    expect(JSON.parse(window.render_game_to_text!()).game).toMatchObject({ resetEpoch: 0, stateVersion: 2 });
+    bridge.dispose();
+  });
+  it("ignores a corrupt reset notification while idle", async () => {
+    const target = { postMessage: vi.fn() } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const current = { ...chess(5), resetEpoch: 0, message: "Idle current board." };
+    const canonical = canonicalChessReset(1);
+    const corrupt: ChessSnapshot = { ...canonical, message: "Corrupt idle reset.", turn: "black" };
+    render(<App bridge={bridge} initialGame={current}/>);
+
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: corrupt } } }));
+    await Promise.resolve();
+
+    expect(screen.getByText("Idle current board.")).toBeVisible();
+    expect(screen.queryByText("Corrupt idle reset.")).not.toBeInTheDocument();
+    expect(JSON.parse(window.render_game_to_text!()).game).toMatchObject({ resetEpoch: 0, stateVersion: 5 });
+    bridge.dispose();
+  });
+  it("applies an exact canonical reset notification while idle", async () => {
+    const target = { postMessage: vi.fn() } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const current = { ...chess(5), resetEpoch: 0, message: "Before canonical notification." };
+    const reset: ChessSnapshot = { ...canonicalChessReset(1), message: "Canonical idle reset." };
+    render(<App bridge={bridge} initialGame={current}/>);
+
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: reset } } }));
+
+    await waitFor(() => expect(screen.getByText("Canonical idle reset.")).toBeVisible());
+    expect(screen.queryByText("Before canonical notification.")).not.toBeInTheDocument();
+    expect(JSON.parse(window.render_game_to_text!()).game).toMatchObject({ resetEpoch: 1, stateVersion: 0 });
+    bridge.dispose();
+  });
+  it("ignores a canonical-looking multi-epoch reset notification jump", async () => {
+    const target = { postMessage: vi.fn() } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const current = { ...chess(5), resetEpoch: 0, message: "Before epoch jump." };
+    const jump: ChessSnapshot = { ...canonicalChessReset(2), message: "Skipped reset epoch." };
+    render(<App bridge={bridge} initialGame={current}/>);
+
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: jump } } }));
+    await Promise.resolve();
+
+    expect(screen.getByText("Before epoch jump.")).toBeVisible();
+    expect(screen.queryByText("Skipped reset epoch.")).not.toBeInTheDocument();
+    expect(JSON.parse(window.render_game_to_text!()).game).toMatchObject({ resetEpoch: 0, stateVersion: 5 });
+    bridge.dispose();
+  });
   it("does not read or retry after a definite embedded GPT rejection", async () => {
     const postMessage = vi.fn();
     const target = { postMessage } as unknown as Window;
