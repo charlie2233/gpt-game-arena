@@ -366,12 +366,14 @@ Original prompt: also implement select difficuktuy
 - [x] Require the returned snapshot to be the exact one-ply GPT advance for the chosen notation, game ID, reset epoch, state version, and complete prior move identity (actor, color, notation, and ply) before applying it to the board.
 - [x] Ignore every tool-result notification while its direct GPT receipt or one-read reconciliation remains pending; explicit End/Reset actions synchronously invalidate that pending epoch before their own authoritative calls.
 - [x] Treat only an anchored `MOVE_NOT_APPLIED` protocol result, validation, or version failure as definite: report it without a state read or a second mutation.
-- [x] Treat transport or mismatched-confirmation outcomes as ambiguous: read state once and accept only the matching exact GPT advance, strict manual-End advance, or confirmed reset lifecycle; otherwise show the safe Refresh error.
+- [x] Treat transport or mismatched-confirmation outcomes as ambiguous: read state once and accept only the matching exact GPT advance, strict manual-End advance, or canonical per-game reset; otherwise show the safe Refresh error.
+- [x] Validate every direct or recovered reset against the exact server opening for Chess, normal/imported Go, Tic-Tac-Toe, Connect Four, Reversi, Pool, and Basketball, preserving array order while ignoring message text and object-key order.
 - [x] Preserved bridge follow-up-message compatibility independently; the App no longer uses that path. End/Reset interruption, Go import review, saved-game reconciliation, and repeated GPT turns remain supported.
 
 ### Verification status
 
-- [x] Focused `web/src/App.test.tsx`: 65 passing tests, including direct embedded success with one selected move/no message/no state read, exact receipt unlock, pending notification rejection (including corrupt End/Reset), anchored definite-result recognition, one-read GPT/End/Reset ambiguity recovery without replay, stale-recovery epoch suppression, Go review gating, repeated GPT turns, and explicit End/Reset interruption.
-- [x] Full web suite: 125 passing tests across 7 files.
+- [x] Focused `web/src/App.test.tsx`: 67 passing tests, including direct embedded success with one selected move/no message/no state read, exact receipt unlock, pending notification rejection, anchored definite-result recognition, one-read GPT/End/Reset recovery without replay, corrupt direct/GPT reset rejection, stale-recovery epoch suppression, Go review gating, repeated GPT turns, and explicit End/Reset interruption.
+- [x] Pure canonical reset validation: 16 passing tests covering every game kind, all three normal Go sizes, imported Go, lifecycle and per-kind corruption, canonical array order, and object-key reordering.
+- [x] Full web suite: 143 passing tests across 8 files.
 - [x] Web TypeScript check: `tsc -p tsconfig.json --noEmit` passes.
 - [ ] Hosted ChatGPT acceptance remains a separate stable-endpoint gate; the live server and temporary tunnel were not stopped, restarted, or modified during this increment.

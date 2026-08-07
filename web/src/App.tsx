@@ -8,7 +8,8 @@ import { GameChrome } from "./components/GameChrome";
 import { ConnectFourBoard, ReversiBoard, TicTacToeBoard } from "./components/SmallBoards";
 import { BasketballBoard, PoolBoard } from "./components/SportsBoards";
 import { chooseStandaloneMove } from "./move-strategy";
-import type { Color, GameDifficulty, GameSnapshot, GoBoardSize, GoPositionSetup } from "./types";
+import { isConfirmedReset } from "./reset-validation";
+import type { Color, GameDifficulty, GameSnapshot, GoBoardSize } from "./types";
 
 type GamePreset = "chess" | "tic-tac-toe" | "connect-four" | "reversi" | "pool" | "basketball" | `go-${GoBoardSize}`;
 const gamePresets: ReadonlyArray<{ value: GamePreset; label: string }> = [
@@ -150,39 +151,6 @@ function isConfirmedManualEndAdvance(previous: GameSnapshot, next: GameSnapshot)
     && next.legalMoves.length === 0
     && next.winner === previous.winner
     && nonLifecycleGameJson(next) === nonLifecycleGameJson(previous);
-}
-
-function sameStringList(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function sameGoInitialPosition(left: GoPositionSetup | undefined, right: GoPositionSetup | undefined): boolean {
-  if (left === undefined || right === undefined) return left === right;
-  return left.source === right.source
-    && left.turn === right.turn
-    && left.captures.black === right.captures.black
-    && left.captures.white === right.captures.white
-    && sameStringList(left.blackStones, right.blackStones)
-    && sameStringList(left.whiteStones, right.whiteStones);
-}
-
-function isConfirmedReset(previous: GameSnapshot, next: GameSnapshot): boolean {
-  if (next.gameId !== previous.gameId
-    || resetEpochOf(next) !== resetEpochOf(previous) + 1
-    || next.stateVersion !== 0
-    || next.status !== "active"
-    || next.moveHistory.length !== 0
-    || next.lastMove !== undefined
-    || next.winner !== undefined
-    || next.finishReason !== undefined
-    || next.kind !== previous.kind
-    || next.playerColor !== previous.playerColor
-    || next.difficulty !== previous.difficulty) return false;
-  if (previous.kind !== "go") return true;
-  return next.kind === "go"
-    && next.boardSize === previous.boardSize
-    && sameGoInitialPosition(next.initialPosition, previous.initialPosition)
-    && (previous.initialPosition === undefined ? next.importReview === undefined : next.importReview === "pending");
 }
 
 function isConfirmedGptRecovery(previous: GameSnapshot, next: GameSnapshot, expectedMove: string): boolean {

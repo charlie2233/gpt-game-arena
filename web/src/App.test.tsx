@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Chess, type Square } from "chess.js";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -9,11 +10,27 @@ import { loadStandaloneGame, saveStandaloneGame } from "./game-save";
 import { chooseStandaloneMove } from "./move-strategy";
 import type { BasketballSnapshot, Board, ChessSnapshot, GameDifficulty, GoBoardSize, GoSnapshot, ChessSquare, TicTacToeSnapshot, ConnectFourSnapshot, PoolSnapshot, ReversiCoordinate, ReversiSnapshot } from "./types";
 const chess = (version = 0, difficulty: GameDifficulty = "medium"): ChessSnapshot => ({ gameId: "chess-1", kind: "chess", difficulty, playerColor: "white", turn: "white", status: "active", legalMoves: ["e2e4"], moveHistory: [], stateVersion: version, message: "White to move.", board: Array.from({ length: 8 }, (_, r) => Array.from({ length: 8 }, (_, c) => ({ square: `${"abcdefgh"[c]}${8-r}` as ChessSquare, ...(r === 6 && c === 4 ? { color: "white" as const, piece: "p" as const } : {}) }))).flat() as ChessSnapshot["board"] });
+function canonicalChessReset(resetEpoch: number, difficulty: GameDifficulty = "medium"): ChessSnapshot {
+  const engine = new Chess();
+  const board: ChessSnapshot["board"] = [];
+  for (let rank = 8; rank >= 1; rank -= 1) for (const file of "abcdefgh") {
+    const square = `${file}${rank}` as ChessSquare;
+    const piece = engine.get(square as Square);
+    board.push(piece === undefined ? { square } : { square, color: piece.color === "w" ? "white" : "black", piece: piece.type });
+  }
+  return { ...chess(0, difficulty), resetEpoch, legalMoves: engine.moves({ verbose: true }).map(move => `${move.from}${move.to}${move.promotion ?? ""}`).sort(), board };
+}
 function chessAdvance(previous: ChessSnapshot, actor: "player" | "gpt", notation: string, turn: "white" | "black", legalMoves: string[], message: string): ChessSnapshot {
   const move = { actor, color: previous.turn, notation, ply: previous.moveHistory.length + 1 } as const;
   return { ...previous, turn, legalMoves, moveHistory: [...previous.moveHistory, move], lastMove: move, stateVersion: previous.stateVersion + 1, message };
 }
 const go = (boardSize: GoBoardSize = 9, difficulty: GameDifficulty = "medium"): GoSnapshot => ({ gameId: `go-${boardSize}`, kind: "go", difficulty, playerColor: "black", turn: "black", status: "active", legalMoves: [`A${boardSize}`, "pass"], moveHistory: [], stateVersion: 0, message: "Black to move.", boardSize, board: Array.from({ length: boardSize }, () => Array<"white" | "black" | null>(boardSize).fill(null)), captures: { black: 0, white: 0 }, consecutivePasses: 0 });
+function canonicalGoReset(resetEpoch: number, boardSize: GoBoardSize = 9, difficulty: GameDifficulty = "medium"): GoSnapshot {
+  const columns = "ABCDEFGHJKLMNOPQRST";
+  const moves: string[] = [];
+  for (let rank = 1; rank <= boardSize; rank += 1) for (let column = 0; column < boardSize; column += 1) moves.push(`${columns[column]}${rank}`);
+  return { ...go(boardSize, difficulty), resetEpoch, legalMoves: [...moves.sort(), "pass"] };
+}
 const importedGo = (playerColor: "white" | "black" = "white", turn: "white" | "black" = "white", resetEpoch = 0, importReview: "pending" | "confirmed" = "pending"): GoSnapshot => {
   const snapshot = { ...go(9, "hard"), gameId: "imported-go", resetEpoch, playerColor, turn, importReview, legalMoves: importReview === "pending" ? [] : [`A9`, "pass"], message: importReview === "pending" ? "Imported position awaiting confirmation." : `Imported position. ${turn === "white" ? "White" : "Black"} to move.`, initialPosition: { source: "imported" as const, blackStones: ["D4"], whiteStones: ["E4"], turn, captures: { black: 0, white: 0 } } };
   snapshot.board[5][3] = "black";
@@ -236,7 +253,7 @@ describe("App", () => {
   });
   it("shows safe accessible errors", async () => { vi.mocked(fetch).mockResolvedValue({ ok: false, json: async () => ({ error: { message: "Nope" } }) } as Response); render(<App />); expect(await screen.findByRole("alert")).toHaveTextContent("Nope"); });
   it("sends Go Pass with the authoritative version and accepts reset stateVersion zero", async () => {
-    const user = userEvent.setup(); const start = { ...go(9, "hard"), stateVersion: 5 }; const afterPass = { ...start, stateVersion: 6, turn: "white", legalMoves: ["B9"] }; const reset = { ...start, resetEpoch: 1, stateVersion: 0 };
+    const user = userEvent.setup(); const start = { ...go(9, "hard"), stateVersion: 5 }; const afterPass = { ...start, stateVersion: 6, turn: "white", legalMoves: ["B9"] }; const reset = canonicalGoReset(1, 9, "hard");
     vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterPass }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: { ...afterPass, stateVersion: 7, turn: "black", legalMoves: ["A9"] } }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reset }) } as Response);
     render(<App initialGame={start}/>); expect(screen.getByText("Hard difficulty")).toBeVisible(); await user.click(screen.getByRole("button", { name: /pass/i })); await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/tools/play_game_move", expect.objectContaining({ body: expect.stringContaining('"move":"pass"') }))); await user.click(screen.getByRole("button", { name: /reset/i })); await user.click(within(screen.getByRole("alertdialog", { name: "Reset this game?" })).getByRole("button", { name: "Reset game" })); await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Choose a piece")); expect(screen.getByText("Hard difficulty")).toBeVisible(); expect(fetch).toHaveBeenLastCalledWith("/api/tools/reset_game", expect.objectContaining({ body: '{"gameId":"go-9","confirmed":true,"expectedVersion":7,"expectedResetEpoch":0}' }));
   });
@@ -447,7 +464,7 @@ describe("App", () => {
     const bridge = new GameBridge(target, 100_000);
     const start = { ...chess(0, "hard"), resetEpoch: 0 };
     const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move.");
-    const reset: ChessSnapshot = { ...chess(0, "hard"), resetEpoch: 1, message: "Recovered reset." };
+    const reset: ChessSnapshot = { ...canonicalChessReset(1, "hard"), message: "Recovered reset." };
     const respond = async (id: number, result?: unknown, error?: string) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: error ? { jsonrpc: "2.0", id, error: { message: error } } : { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
     const calls = (name: string) => postMessage.mock.calls.map(([request]) => request as { method?: string; params?: { name?: string } }).filter(request => request.method === "tools/call" && request.params?.name === name);
 
@@ -469,6 +486,35 @@ describe("App", () => {
     expect(calls("get_game_state")).toHaveLength(1);
     bridge.dispose();
   });
+  it("rejects a corrupt Chess reset from the one ambiguous GPT recovery read", async () => {
+    const postMessage = vi.fn();
+    const target = { postMessage } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const start = { ...chess(0, "hard"), resetEpoch: 0 };
+    const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move.");
+    const canonical = canonicalChessReset(1, "hard");
+    const corrupt: ChessSnapshot = { ...canonical, message: "Corrupt reset read.", board: canonical.board.map(cell => cell.square === "a8" ? { ...cell, piece: "q" } : cell) as ChessSnapshot["board"] };
+    const respond = async (id: number, result?: unknown, error?: string) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: error ? { jsonrpc: "2.0", id, error: { message: error } } : { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    const calls = (name: string) => postMessage.mock.calls.map(([request]) => request as { method?: string; params?: { name?: string } }).filter(request => request.method === "tools/call" && request.params?.name === name);
+
+    render(<App bridge={bridge} initialGame={start}/>);
+    fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
+    fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
+    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
+    await respond(2, { structuredContent: after });
+    await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
+    await respond(3, undefined, "temporary host timeout");
+    await waitFor(() => expect(calls("get_game_state")).toHaveLength(1));
+    await respond(4, { structuredContent: corrupt });
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("GPT move was not confirmed. Use Refresh to continue."));
+    expect(screen.getByText("Black to move.")).toBeVisible();
+    expect(screen.queryByText("Corrupt reset read.")).not.toBeInTheDocument();
+    expect(calls("play_game_move")).toHaveLength(2);
+    expect(calls("get_game_state")).toHaveLength(1);
+    bridge.dispose();
+  });
   it("suppresses a stale GPT recovery read after an explicit Reset interrupts its epoch", async () => {
     const postMessage = vi.fn();
     const target = { postMessage } as unknown as Window;
@@ -477,7 +523,7 @@ describe("App", () => {
     const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move.");
     const gptMove = chooseStandaloneMove(after)!;
     const staleRecovery = chessAdvance(after, "gpt", gptMove, "white", ["e2e4"], "Stale recovered GPT move.");
-    const reset: ChessSnapshot = { ...chess(0, "hard"), resetEpoch: 1, message: "Explicit reset won." };
+    const reset: ChessSnapshot = { ...canonicalChessReset(1, "hard"), message: "Explicit reset won." };
     const respond = async (id: number, result?: unknown, error?: string) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: error ? { jsonrpc: "2.0", id, error: { message: error } } : { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
     const calls = (name: string) => postMessage.mock.calls.map(([request]) => request as { method?: string; params?: { name?: string } }).filter(request => request.method === "tools/call" && request.params?.name === name);
 
@@ -693,7 +739,7 @@ describe("App", () => {
     const target = { postMessage: vi.fn() } as unknown as Window;
     const bridge = new GameBridge(target, 100_000);
     const start = { ...chess(5), resetEpoch: 0 };
-    const reset = { ...chess(0), resetEpoch: 1, message: "Reset epoch" };
+    const reset = { ...canonicalChessReset(1), message: "Reset epoch" };
     const old = { ...chess(6), resetEpoch: 0, message: "Old epoch" };
     const fresh = { ...chess(1), resetEpoch: 1, message: "New epoch" };
     const reply = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await new Promise<void>(resolve => window.setTimeout(resolve, 0)); };
@@ -721,7 +767,7 @@ describe("App", () => {
     const oldPlayer = { actor: "player", color: "white", notation: "e2e4", ply: 1 } as const;
     const oldGpt = { actor: "gpt", color: "black", notation: "e7e5", ply: 2 } as const;
     const start = { ...chess(2), resetEpoch: 0, moveHistory: [oldPlayer, oldGpt], lastMove: oldGpt, message: "Old epoch" };
-    const reset = { ...chess(0), resetEpoch: 1, message: "Reset epoch" };
+    const reset = { ...canonicalChessReset(1), message: "Reset epoch" };
     const fresh = { ...chess(1), resetEpoch: 1, moveHistory: [oldPlayer], lastMove: oldPlayer, message: "New epoch" };
     const late = { ...chess(2), resetEpoch: 1, moveHistory: [oldPlayer, oldGpt], lastMove: oldGpt, message: "Late repeated GPT move" };
     const reply = async (id: number, result: unknown) => {
@@ -926,7 +972,7 @@ describe("App", () => {
   it("resets a finished game only after a matching authoritative receipt", async () => {
     const user = userEvent.setup();
     const finished: ChessSnapshot = { ...chess(4), resetEpoch: 2, status: "finished", winner: "black", finishReason: "ended", legalMoves: [], message: "Game ended." };
-    const reset: ChessSnapshot = { ...chess(0), resetEpoch: 3, message: "White to move." };
+    const reset: ChessSnapshot = canonicalChessReset(3);
     let resolveReset!: (response: Response) => void;
     vi.mocked(fetch).mockReturnValueOnce(new Promise<Response>(resolve => { resolveReset = resolve; }));
     render(<App initialGame={finished}/>);
@@ -939,6 +985,26 @@ describe("App", () => {
     resolveReset({ ok: true, json: async () => ({ structuredContent: reset }) } as Response);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Choose a piece to begin."));
     expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ mode: "active", resetGame: { available: true, confirmation: null }, game: { resetEpoch: 3, stateVersion: 0 } });
+  });
+  it("reconciles a corrupt direct reset receipt with one clean state read", async () => {
+    const user = userEvent.setup();
+    const start = { ...chess(6), resetEpoch: 3 };
+    const canonical = canonicalChessReset(4);
+    const corrupt: ChessSnapshot = { ...canonical, message: "Corrupt direct reset.", board: canonical.board.map(cell => cell.square === "a8" ? { ...cell, piece: "q" } : cell) as ChessSnapshot["board"] };
+    const recovered: ChessSnapshot = { ...canonical, message: "Clean reset recovery." };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: corrupt }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: recovered }) } as Response);
+    render(<App initialGame={start}/>);
+
+    await user.click(screen.getByRole("button", { name: /reset/i }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Reset game" }));
+
+    expect(await screen.findByText("Clean reset recovery.")).toBeVisible();
+    expect(screen.queryByText("Corrupt direct reset.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(["/api/tools/reset_game", "/api/tools/get_game_state"]);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === "/api/tools/reset_game")).toHaveLength(1);
   });
   it("does not reconcile a reset that is definitively rejected", async () => {
     const user = userEvent.setup();
@@ -956,7 +1022,7 @@ describe("App", () => {
   it("reconciles an uncertain reset with one state read and never repeats the mutation", async () => {
     const user = userEvent.setup();
     const start = { ...chess(6), resetEpoch: 3 };
-    const reset = { ...chess(0), resetEpoch: 4, message: "White to move." };
+    const reset = canonicalChessReset(4);
     vi.mocked(fetch)
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))
       .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reset }) } as Response);
@@ -992,7 +1058,7 @@ describe("App", () => {
     const bridge = new GameBridge(target, 100_000);
     const start = { ...chess(0, "hard"), resetEpoch: 0 };
     const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move.");
-    const reset = { ...chess(0, "hard"), resetEpoch: 1, message: "White to move." };
+    const reset = canonicalChessReset(1, "hard");
     const reply = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
