@@ -127,7 +127,10 @@ function isImportReviewDefinitelyNotApplied(reason: unknown): boolean {
 }
 
 function isGptMoveDefinitelyNotApplied(reason: unknown): boolean {
-  return reason instanceof Error && /\bMOVE_NOT_APPLIED\b|^(?:invalid_input|invalid_move|illegal_move|not_found|stale_version|version_conflict|game_finished|validation(?:_error)?):/i.test(reason.message);
+  return reason instanceof Error && (
+    /^MOVE_NOT_APPLIED(?:$|\s)/.test(reason.message)
+    || /^(?:invalid_input|invalid_move|illegal_move|not_found|stale_version|version_conflict|game_finished|validation(?:_error)?):/i.test(reason.message)
+  );
 }
 
 function isConfirmedManualEnd(snapshot: GameSnapshot): boolean {
@@ -182,6 +185,12 @@ function isConfirmedReset(previous: GameSnapshot, next: GameSnapshot): boolean {
     && (previous.initialPosition === undefined ? next.importReview === undefined : next.importReview === "pending");
 }
 
+function isConfirmedGptRecovery(previous: GameSnapshot, next: GameSnapshot, expectedMove: string): boolean {
+  return isConfirmedGptAdvance(previous, next, expectedMove)
+    || isConfirmedManualEndAdvance(previous, next)
+    || isConfirmedReset(previous, next);
+}
+
 export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBridge; initialGame?: GameSnapshot } = {}) {
   const [bridge] = useState(() => suppliedBridge ?? new GameBridge());
   const [client] = useState(() => new GameClient(bridge));
@@ -226,21 +235,27 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       if (requiresImportReview(current)) return;
       const move = chooseStandaloneMove(current);
       if (!move) return;
-      let reply: GameSnapshot;
+      let reply: GameSnapshot | undefined;
       const pending: PendingGptReceipt | undefined = bridge.embedded ? { epoch: version, gameId: current.gameId, expectedVersion: current.stateVersion, expectedResetEpoch: resetEpochOf(current), move } : undefined;
       if (pending) pendingGptReceipt.current = pending;
+      let recoveredFromState = false;
       try {
-        const directReply = await client.play(current.gameId, "gpt", move, current.stateVersion, resetEpochOf(current));
-        if (!bridge.embedded || isConfirmedGptAdvance(current, directReply, move)) reply = directReply;
-        else reply = await client.state(current.gameId);
-      } catch (reason) {
-        if (isGptMoveDefinitelyNotApplied(reason)) throw reason;
-        try { reply = await client.state(current.gameId); } catch { throw new Error("GPT move was not confirmed. Use Refresh to continue."); }
+        try {
+          const directReply = await client.play(current.gameId, "gpt", move, current.stateVersion, resetEpochOf(current));
+          if (!bridge.embedded || isConfirmedGptAdvance(current, directReply, move)) reply = directReply;
+        } catch (reason) {
+          if (isGptMoveDefinitelyNotApplied(reason)) throw reason;
+        }
+        if (!reply) {
+          recoveredFromState = true;
+          try { reply = await client.state(current.gameId); } catch { throw new Error("GPT move was not confirmed. Use Refresh to continue."); }
+        }
       } finally {
         if (pendingGptReceipt.current === pending) pendingGptReceipt.current = undefined;
       }
       if (version !== epoch.current) return;
-      if (bridge.embedded && !isConfirmedGptAdvance(current, reply, move)) throw new Error("GPT move was not confirmed. Use Refresh to continue.");
+      if (!reply) throw new Error("GPT move was not confirmed. Use Refresh to continue.");
+      if (bridge.embedded && !(recoveredFromState ? isConfirmedGptRecovery(current, reply, move) : isConfirmedGptAdvance(current, reply, move))) throw new Error("GPT move was not confirmed. Use Refresh to continue.");
       if (!bridge.embedded && (reply.gameId !== current.gameId || resetEpochOf(reply) !== resetEpochOf(current) || reply.stateVersion <= current.stateVersion)) throw new Error("The game service returned a non-advancing GPT state.");
       apply(reply, version);
       current = reply;
@@ -265,14 +280,6 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
         && pending.expectedVersion === current.stateVersion
         && pending.expectedResetEpoch === resetEpochOf(current)
         && (current.legalMoves as readonly string[]).includes(pending.move)) {
-        if (isConfirmedManualEndAdvance(current, next) || isConfirmedReset(current, next)) {
-          stop();
-          commitBusy(false);
-          setStarting(false);
-          setError(undefined);
-          setSelected(undefined);
-          apply(next, epoch.current);
-        }
         return;
       }
       const epochComparison = resetEpochOf(next) - resetEpochOf(current);
