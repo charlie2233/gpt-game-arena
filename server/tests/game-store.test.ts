@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -44,6 +44,30 @@ describe("GameStore", () => {
 
     store.replace(replacement);
     expect(store.get("match-1")).toBe(replacement);
+  });
+
+  it("keeps state reads side-effect free and does not rewrite persistence", () => {
+    let time = 100;
+    const persistencePath = temporaryStorePath();
+    const store = new GameStore({ persistencePath, now: () => time });
+    const session = ChessGame.create("read-only", "white");
+    store.put(session);
+    const before = readFileSync(persistencePath, "utf8");
+
+    time = 500;
+    expect(store.get("read-only")).toBe(session);
+    expect(readFileSync(persistencePath, "utf8")).toBe(before);
+  });
+
+  it("fails startup when the configured persistence directory is not writable", () => {
+    const persistencePath = temporaryStorePath();
+    const directory = dirname(persistencePath);
+    chmodSync(directory, 0o500);
+    try {
+      expect(() => new GameStore({ persistencePath })).toThrow(/not writable/);
+    } finally {
+      chmodSync(directory, 0o700);
+    }
   });
 
   it("throws not_found when getting a missing session", () => {
@@ -91,7 +115,7 @@ describe("GameStore", () => {
     expectRuleError(() => restarted.get("c"), "not_found");
   });
 
-  it("prunes expired sessions while retaining recently accessed sessions", () => {
+  it("expires inactive sessions while retaining recently mutated sessions", () => {
     let time = 0;
     const store = new GameStore({ maxSessions: 2, ttlMs: 1_000, now: () => time });
     const session = ChessGame.create("expiring", "white");
@@ -99,9 +123,10 @@ describe("GameStore", () => {
     store.put(session);
     time = 900;
     expect(store.get("expiring")).toBe(session);
+    store.replace(session);
     time = 1_500;
     expect(store.get("expiring")).toBe(session);
-    time = 2_501;
+    time = 1_900;
     expectRuleError(() => store.get("expiring"), "not_found");
     expectRuleError(() => store.replace(ChessGame.create("expiring", "black")), "not_found");
   });
@@ -114,10 +139,12 @@ describe("GameStore", () => {
     store.put(session);
     time = DEFAULT_GAME_STORE_TTL_MS - 1;
     expect(store.get("long-save")).toBe(session);
+    store.replace(session);
 
     const refreshedAt = time;
     time = refreshedAt + DEFAULT_GAME_STORE_TTL_MS - 1;
     expect(store.get("long-save")).toBe(session);
+    store.replace(session);
 
     const refreshedAgainAt = time;
     time = refreshedAgainAt + DEFAULT_GAME_STORE_TTL_MS;

@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Ajv } from "ajv";
@@ -11,9 +13,27 @@ import { GameStore } from "../src/game-store.js";
 import { ToolService } from "../src/tool-service.js";
 
 describe("MCP game arena server", () => {
+  it("keeps the reviewer submission manifest complete and bounded", async () => {
+    const manifest = JSON.parse(await readFile(new URL("../../chatgpt-app-submission.json", import.meta.url), "utf8")) as {
+      app_info?: { subtitle?: string };
+      tools?: Record<string, { annotations?: Record<string, boolean> }>;
+      test_cases?: unknown[];
+      negative_test_cases?: unknown[];
+    };
+    expect(Object.keys(manifest.tools ?? {}).sort()).toEqual([
+      "confirm_imported_go_position", "create_game", "end_game", "get_game_state", "import_go_position", "play_game_move", "render_game", "reset_game",
+    ]);
+    expect(manifest.app_info?.subtitle?.length).toBeLessThanOrEqual(30);
+    expect(manifest.test_cases).toHaveLength(5);
+    expect(manifest.negative_test_cases).toHaveLength(3);
+    for (const tool of Object.values(manifest.tools ?? {})) {
+      expect(Object.keys(tool.annotations ?? {}).sort()).toEqual(["destructiveHint", "openWorldHint", "readOnlyHint"]);
+    }
+  });
+
   it("registers eight game tools and the widget resource", async () => {
-    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v18/widget.html");
-    expect(LEGACY_WIDGET_RESOURCE_URIS).toEqual(["ui://gpt-game-arena/v17/widget.html", "ui://gpt-game-arena/v16/widget.html", "ui://gpt-game-arena/v15/widget.html", "ui://gpt-game-arena/v14/widget.html", "ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"]);
+    expect(WIDGET_RESOURCE_URI).toBe("ui://gpt-game-arena/v19/widget.html");
+    expect(LEGACY_WIDGET_RESOURCE_URIS).toEqual(["ui://gpt-game-arena/v18/widget.html", "ui://gpt-game-arena/v17/widget.html", "ui://gpt-game-arena/v16/widget.html", "ui://gpt-game-arena/v15/widget.html", "ui://gpt-game-arena/v14/widget.html", "ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"]);
     expect(WIDGET_DESCRIPTION).toContain("Mini 8-Ball");
     expect(WIDGET_DESCRIPTION).toContain("Court Duel");
     expect(WIDGET_DESCRIPTION).toContain("chess");
@@ -23,6 +43,7 @@ describe("MCP game arena server", () => {
     expect(WIDGET_DESCRIPTION).toContain("9x9, 13x13, or 19x19 Go");
     const server = createMcpServer(new ToolService(new GameStore()), {
       loadWidgetHtml: () => "<!doctype html><title>fixture</title>",
+      widgetDomain: "https://games.example.com",
     });
     const client = new Client({ name: "test-client", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -82,6 +103,9 @@ describe("MCP game arena server", () => {
     expect(tools.tools.find((tool) => tool.name === "end_game")?.description).toContain("explicitly confirms");
     expect(tools.tools.find((tool) => tool.name === "end_game")?.description).toContain("END_CONFIRMED");
     expect(tools.tools.find((tool) => tool.name === "reset_game")?.title).toBe("Reset game");
+    expect(tools.tools.find((tool) => tool.name === "reset_game")?.description).toContain("explicitly confirms");
+    expect(tools.tools.find((tool) => tool.name === "reset_game")?.description).toContain("RESET_CONFIRMED");
+    expect(tools.tools.find((tool) => tool.name === "reset_game")?.description).toContain("RESET_CONFIRMATION_UNKNOWN");
     const createTool = tools.tools.find((tool) => tool.name === "create_game");
     for (const game of ["Mini 8-Ball", "Court Duel", "chess", "Reversi", "Tic-Tac-Toe", "Connect Four", "Go"]) {
       expect(createTool?.description).toContain(game);
@@ -136,15 +160,33 @@ describe("MCP game arena server", () => {
       { boardSize: 9, playerColor: "white", blackStones: [], whiteStones: [] },
       { boardSize: 9, playerColor: "white", turn: "white", blackStones: [], whiteStones: [], secret: "SECRET" },
     ]) expect(validateImportInput(input)).toBe(false);
-    expect(JSON.stringify(tools.tools).length).toBeLessThan(15_000);
-    expect(confirmImportTool?.outputSchema).toBeUndefined();
-    for (const tool of tools.tools.filter((candidate) => candidate.name !== "confirm_imported_go_position")) {
+    expect(JSON.stringify(tools.tools).length).toBeLessThan(30_000);
+    for (const tool of tools.tools) {
       const outputSchema = tool.outputSchema as { type?: string; properties?: Record<string, unknown>; required?: string[] };
-      expect(outputSchema).toMatchObject({ type: "object", properties: { gameId: expect.any(Object), kind: expect.any(Object), stateVersion: expect.any(Object), importReview: expect.any(Object), legalMoves: expect.any(Object) } });
-      expect(outputSchema.required).toEqual(expect.arrayContaining(["gameId", "kind", "turn", "stateVersion", "legalMoves"]));
-      expect(outputSchema.required).not.toContain("resetEpoch");
-      expect(outputSchema.properties).not.toHaveProperty("board");
-      expect(JSON.stringify(outputSchema)).not.toContain("boardSize");
+      expect(outputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          gameId: expect.any(Object),
+          kind: expect.any(Object),
+          difficulty: expect.any(Object),
+          playerColor: expect.any(Object),
+          turn: expect.any(Object),
+          status: expect.any(Object),
+          stateVersion: expect.any(Object),
+          message: expect.any(Object),
+          legalMoves: expect.any(Object),
+          moveHistory: expect.any(Object),
+          board: expect.any(Object),
+          boardSize: expect.any(Object),
+          importReview: expect.any(Object),
+          score: expect.any(Object),
+          balls: expect.any(Object),
+          shotResults: expect.any(Object),
+        },
+      });
+      expect(outputSchema.required).toEqual(expect.arrayContaining([
+        "gameId", "kind", "difficulty", "playerColor", "turn", "status", "stateVersion", "resetEpoch", "message", "legalMoves", "moveHistory",
+      ]));
     }
     const playTool = tools.tools.find((tool) => tool.name === "play_game_move");
     expect(playTool?.inputSchema).toMatchObject({ properties: { expectedResetEpoch: { type: "integer", minimum: 0 } } });
@@ -174,6 +216,19 @@ describe("MCP game arena server", () => {
     expect(toolInputSchemas.end_game.safeParse({ gameId: "game", confirmed: true, expectedVersion: 0, expectedResetEpoch: 0 }).success).toBe(true);
     expect(toolInputSchemas.end_game.safeParse({ gameId: "game", confirmed: false, expectedVersion: 0, expectedResetEpoch: 0 }).success).toBe(false);
     expect(toolInputSchemas.end_game.safeParse({ gameId: "game", confirmed: true, expectedVersion: 0 }).success).toBe(false);
+    const resetTool = tools.tools.find((tool) => tool.name === "reset_game");
+    expect(resetTool?.inputSchema).toMatchObject({
+      properties: {
+        confirmed: { const: true },
+        expectedVersion: { type: "integer", minimum: 0 },
+        expectedResetEpoch: { type: "integer", minimum: 0 },
+      },
+      required: expect.arrayContaining(["gameId", "confirmed", "expectedVersion", "expectedResetEpoch"]),
+      additionalProperties: false,
+    });
+    expect(toolInputSchemas.reset_game.safeParse({ gameId: "game", confirmed: true, expectedVersion: 0, expectedResetEpoch: 0 }).success).toBe(true);
+    expect(toolInputSchemas.reset_game.safeParse({ gameId: "game", expectedVersion: 0, expectedResetEpoch: 0 }).success).toBe(false);
+    expect(toolInputSchemas.reset_game.safeParse({ gameId: "game", confirmed: false, expectedVersion: 0, expectedResetEpoch: 0 }).success).toBe(false);
 
     const created = await client.callTool({ name: "create_game", arguments: { game: "chess", playerColor: "white" } });
     expect(created.isError, JSON.stringify(created)).not.toBe(true);
@@ -259,7 +314,9 @@ describe("MCP game arena server", () => {
       structuredContent: { gameId: importedGameId, stateVersion: 2, importReview: "confirmed" },
       content: [{ text: expect.stringMatching(/^MOVE_CONFIRMED /) }],
     });
-    const resetImported = await client.callTool({ name: "reset_game", arguments: { gameId: importedGameId } });
+    const resetImported = await client.callTool({ name: "reset_game", arguments: {
+      gameId: importedGameId, confirmed: true, expectedVersion: 2, expectedResetEpoch: 0,
+    } });
     expect(resetImported.structuredContent).toMatchObject({
       gameId: importedGameId,
       stateVersion: 0,
@@ -312,7 +369,7 @@ describe("MCP game arena server", () => {
     expect(gameSnapshotSchema.safeParse({ ...basketballSnapshot, legalMoves: ["dunk"] }).success).toBe(false);
     expect(gameSnapshotSchema.safeParse({ ...basketballSnapshot, shotOptions: [{ move: "drive", points: 2, energyCost: 2, accuracy: 101 }] }).success).toBe(false);
     const ajv = new Ajv({ strict: false });
-    for (const tool of tools.tools.filter((candidate) => candidate.name !== "confirm_imported_go_position")) {
+    for (const tool of tools.tools) {
       const validate = ajv.compile(tool.outputSchema as object);
       expect(validate(snapshot), JSON.stringify(validate.errors)).toBe(true);
       expect(validate(goSnapshot), JSON.stringify(validate.errors)).toBe(true);
@@ -326,8 +383,8 @@ describe("MCP game arena server", () => {
       expect(validate({ ...ticTacToeSnapshot, legalMoves: ["a1"] }), JSON.stringify(validate.errors)).toBe(true);
       expect(validate({ ...snapshot, kind: "secret" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, internalSecret: "SECRET" }), JSON.stringify(validate.errors)).toBe(true);
-      expect(validate({ ...snapshot, difficulty: undefined }), JSON.stringify(validate.errors)).toBe(true);
-      expect(validate({ ...snapshot, difficulty: "expert" }), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...snapshot, difficulty: undefined }), JSON.stringify(validate.errors)).toBe(false);
+      expect(validate({ ...snapshot, difficulty: "expert" }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, resetEpoch: -1 }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, resetEpoch: 1.5 }), JSON.stringify(validate.errors)).toBe(false);
       expect(validate({ ...snapshot, stateVersion: -1 }), JSON.stringify(validate.errors)).toBe(false);
@@ -407,7 +464,13 @@ describe("MCP game arena server", () => {
     expect(repeatedEnd).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/^END_NOT_APPLIED game_finished:/) }] });
     const missing = await client.callTool({ name: "get_game_state", arguments: { gameId: "missing" } });
     expect(missing).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("not_found") }] });
-    const reset = await client.callTool({ name: "reset_game", arguments: { gameId: snapshot.gameId } });
+    const staleReset = await client.callTool({ name: "reset_game", arguments: {
+      gameId: snapshot.gameId, confirmed: true, expectedVersion: 1, expectedResetEpoch: 0,
+    } });
+    expect(staleReset).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/^RESET_NOT_APPLIED stale_version:/) }] });
+    const reset = await client.callTool({ name: "reset_game", arguments: {
+      gameId: snapshot.gameId, confirmed: true, expectedVersion: 2, expectedResetEpoch: 0,
+    } });
     expect(reset.structuredContent).toMatchObject({
       gameId: snapshot.gameId,
       difficulty: "medium",
@@ -415,6 +478,13 @@ describe("MCP game arena server", () => {
       resetEpoch: 1,
       moveHistory: [],
     });
+    expect(reset.content).toEqual([{ type: "text", text: `RESET_CONFIRMED ${JSON.stringify({
+      gameId: snapshot.gameId,
+      previousResetEpoch: 0,
+      resetEpoch: 1,
+      previousVersion: 2,
+      stateVersion: 0,
+    })}` }]);
     const omittedEpochAfterReset = await client.callTool({ name: "play_game_move", arguments: {
       gameId: snapshot.gameId, actor: "player", move: "e2e4", expectedVersion: 0,
     } });
@@ -427,7 +497,11 @@ describe("MCP game arena server", () => {
     const resource = await client.readResource({ uri: WIDGET_RESOURCE_URI });
     expect(resource.contents[0]).toMatchObject({ uri: WIDGET_RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: "<!doctype html><title>fixture</title>" });
     expect((resource.contents[0] as { _meta?: unknown })._meta).toEqual({
-      ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
+      ui: {
+        prefersBorder: true,
+        csp: { connectDomains: [], resourceDomains: [] },
+        domain: "https://games.example.com",
+      },
       "openai/widgetDescription": WIDGET_DESCRIPTION,
     });
     const legacyResource = await client.readResource({ uri: LEGACY_WIDGET_RESOURCE_URIS[0] });

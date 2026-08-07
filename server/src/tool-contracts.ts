@@ -47,19 +47,51 @@ const importGoPositionSchema = z.discriminatedUnion("boardSize", [
   }
 });
 
+const mcpColorSchema = z4.enum(["white", "black"]);
+const mcpMoveRecordSchema = z4.object({
+  actor: z4.enum(["player", "gpt"]),
+  color: mcpColorSchema,
+  notation: z4.string(),
+  ply: z4.number().int().nonnegative(),
+}).passthrough();
+
 /**
- * Keep the model-facing tool catalog compact. Tool results are still validated
- * against the complete strict union in success(), while this common summary
- * avoids repeating an 11KB board union on every registered tool.
+ * Keep the model-facing catalog compact while declaring every top-level key a
+ * successful snapshot can return. Engine-specific nested values stay generic
+ * here; success() still validates them against the complete strict game union.
  */
 export const mcpGameSnapshotSummarySchema = z4.object({
   gameId: z4.string(),
   kind: z4.enum(["chess", "go", "tic-tac-toe", "connect-four", "reversi", "pool", "basketball"]),
-  turn: z4.enum(["white", "black"]),
+  difficulty: z4.enum(["easy", "medium", "hard"]),
+  playerColor: mcpColorSchema,
+  turn: mcpColorSchema,
+  status: z4.enum(["active", "finished"]),
+  winner: z4.enum(["white", "black", "draw"]).optional(),
+  finishReason: z4.literal("ended").optional(),
   stateVersion: z4.number().int().nonnegative(),
-  resetEpoch: z4.number().int().nonnegative().optional(),
-  importReview: z4.enum(["pending", "confirmed"]).optional(),
+  resetEpoch: z4.number().int().nonnegative(),
+  message: z4.string(),
   legalMoves: z4.array(z4.string()),
+  moveHistory: z4.array(mcpMoveRecordSchema),
+  lastMove: mcpMoveRecordSchema.optional(),
+  board: z4.unknown().optional(),
+  boardSize: z4.union([z4.literal(9), z4.literal(13), z4.literal(19)]).optional(),
+  initialPosition: z4.unknown().optional(),
+  importReview: z4.enum(["pending", "confirmed"]).optional(),
+  captures: z4.unknown().optional(),
+  consecutivePasses: z4.number().int().nonnegative().optional(),
+  score: z4.unknown().optional(),
+  winningLine: z4.array(z4.string()).optional(),
+  cueBall: z4.unknown().optional(),
+  balls: z4.array(z4.unknown()).optional(),
+  energy: z4.unknown().optional(),
+  streak: z4.unknown().optional(),
+  attempts: z4.unknown().optional(),
+  phase: z4.enum(["regulation", "overtime"]).optional(),
+  round: z4.number().int().nonnegative().optional(),
+  shotOptions: z4.array(z4.unknown()).optional(),
+  shotResults: z4.array(z4.unknown()).optional(),
 }).passthrough();
 
 export const toolInputSchemas = {
@@ -89,7 +121,12 @@ export const toolInputSchemas = {
     expectedVersion: z.number().int().nonnegative(),
     expectedResetEpoch: z.number().int().nonnegative(),
   }).strict(),
-  reset_game: z.object({ gameId: boundedString }).strict(),
+  reset_game: z.object({
+    gameId: boundedString,
+    confirmed: z.literal(true),
+    expectedVersion: z.number().int().nonnegative(),
+    expectedResetEpoch: z.number().int().nonnegative(),
+  }).strict(),
   render_game: z.object({ gameId: boundedString }).strict(),
 } as const;
 
@@ -187,13 +224,23 @@ export function executeTool(service: ToolService, name: ToolName, input: unknown
         })}`);
       }
     case "reset_game":
-      return success(service.resetGame(toolInputSchemas.reset_game.parse(input)), "Reset game.");
+      {
+        const parsed = toolInputSchemas.reset_game.parse(input);
+        const snapshot = service.resetGame(parsed);
+        return success(snapshot, `RESET_CONFIRMED ${JSON.stringify({
+          gameId: snapshot.gameId,
+          previousResetEpoch: parsed.expectedResetEpoch,
+          resetEpoch: snapshot.resetEpoch ?? 0,
+          previousVersion: parsed.expectedVersion,
+          stateVersion: snapshot.stateVersion,
+        })}`);
+      }
     case "render_game":
       return success(service.getGameState(toolInputSchemas.render_game.parse(input)), "Rendered game.");
   }
 }
 
-export function toToolFailure(error: GameRuleError, attempt?: "move" | "end" | "import" | "import-review"): ToolFailure {
+export function toToolFailure(error: GameRuleError, attempt?: "move" | "end" | "reset" | "import" | "import-review"): ToolFailure {
   const messages: Record<GameRuleError["code"], string> = {
     not_found: "The game was not found.",
     save_incompatible: "This legacy Court Duel save is preserved but cannot be resumed because its private shot-outcome data is missing.",
@@ -210,6 +257,8 @@ export function toToolFailure(error: GameRuleError, attempt?: "move" | "end" | "
     ? "MOVE_NOT_APPLIED "
     : attempt === "end"
       ? "END_NOT_APPLIED "
+    : attempt === "reset"
+      ? "RESET_NOT_APPLIED "
       : attempt === "import"
         ? "IMPORT_NOT_APPLIED "
         : attempt === "import-review"

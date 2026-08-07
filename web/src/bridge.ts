@@ -28,7 +28,7 @@ export class GameBridge {
     if (!this.embedded || this.initialized) return;
     if (this.disposed) throw new Error("Bridge disposed.");
     this.ensureListening();
-    this.initPromise ??= this.request("ui/initialize", { protocolVersion: "2026-01-26", appInfo: { name: "gpt-game-arena", version: "0.1.0" }, appCapabilities: {} }).then((result) => {
+    this.initPromise ??= this.request("ui/initialize", { protocolVersion: "2026-01-26", appInfo: { name: "gpt-game-arena", version: "0.2.0" }, appCapabilities: {} }).then((result) => {
       const host = result as { hostCapabilities?: { serverTools?: unknown; message?: unknown }; hostContext?: unknown };
       this.capabilities = host?.hostCapabilities ?? {}; this.applyHostContext(host?.hostContext);
       this.initialized = true;

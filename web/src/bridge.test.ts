@@ -7,7 +7,7 @@ describe("GameBridge", () => {
   afterEach(() => { vi.useRealTimers(); Reflect.deleteProperty(window, "openai"); });
   it("initializes before sending a JSON-RPC tools/call envelope", async () => {
     const target = host(); const bridge = new GameBridge(target); const pending = bridge.callTool("get_game_state", { gameId: "g" });
-    expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ jsonrpc: "2.0", id: 1, method: "ui/initialize", params: expect.objectContaining({ protocolVersion: "2026-01-26" }) }), "*");
+    expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ jsonrpc: "2.0", id: 1, method: "ui/initialize", params: expect.objectContaining({ protocolVersion: "2026-01-26", appInfo: { name: "gpt-game-arena", version: "0.2.0" } }) }), "*");
     reply(target, 1, { hostCapabilities: { serverTools: {}, message: {} } }); await new Promise<void>(resolve => window.setTimeout(resolve, 0));
     expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ method: "ui/notifications/initialized" }), "*");
     expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "get_game_state", arguments: { gameId: "g" } } }), "*");

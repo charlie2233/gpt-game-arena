@@ -9,7 +9,7 @@ export class GameClient {
   state(gameId: string) { return this.call("get_game_state", { gameId }); }
   play(gameId: string, actor: "player" | "gpt", move: string, expectedVersion: number, expectedResetEpoch?: number) { return this.call("play_game_move", { gameId, actor, move, expectedVersion, ...(expectedResetEpoch === undefined ? {} : { expectedResetEpoch }) }); }
   end(gameId: string, expectedVersion: number, expectedResetEpoch: number) { return this.call("end_game", { gameId, confirmed: true, expectedVersion, expectedResetEpoch }); }
-  reset(gameId: string) { return this.call("reset_game", { gameId }); }
+  reset(gameId: string, expectedVersion: number, expectedResetEpoch: number) { return this.call("reset_game", { gameId, confirmed: true, expectedVersion, expectedResetEpoch }); }
   render(gameId: string) { return this.call("render_game", { gameId }); }
   private async call<N extends ToolName>(name: N, input: ToolInput[N]): Promise<GameSnapshot> {
     const output = await this.bridge.callTool(name, input);

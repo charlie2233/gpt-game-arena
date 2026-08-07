@@ -13,6 +13,7 @@
     "build": "npm run build --workspace web && npm run build --workspace server",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "start": "npm run start --workspace server",
     "dev": "npm run dev --workspace server",
     "dev:server": "npm run dev --workspace server",
     "dev:web": "npm run dev --workspace web",

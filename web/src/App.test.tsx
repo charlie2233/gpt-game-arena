@@ -222,16 +222,18 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Play at A9, empty, legal move" })).toBeEnabled();
 
     await user.click(screen.getByRole("button", { name: /reset/i }));
+    await user.click(within(screen.getByRole("alertdialog", { name: "Reset this game?" })).getByRole("button", { name: "Reset game" }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Looks right — continue" })).toBeEnabled());
     expect(screen.getByRole("button", { name: "Empty A9" })).toBeDisabled();
     expect(JSON.parse(window.render_game_to_text!()).importReview).toMatchObject({ pending: true, authoritativeStatus: "pending" });
+    expect(fetch).toHaveBeenCalledWith("/api/tools/reset_game", expect.objectContaining({ body: '{"gameId":"imported-go","confirmed":true,"expectedVersion":1,"expectedResetEpoch":0}' }));
   });
   it("shows safe accessible errors", async () => { vi.mocked(fetch).mockResolvedValue({ ok: false, json: async () => ({ error: { message: "Nope" } }) } as Response); render(<App />); expect(await screen.findByRole("alert")).toHaveTextContent("Nope"); });
   it("sends Go Pass with the authoritative version and accepts reset stateVersion zero", async () => {
-    const user = userEvent.setup(); const start = { ...go(9, "hard"), stateVersion: 5 }; const afterPass = { ...start, stateVersion: 6, turn: "white", legalMoves: ["B9"] }; const reset = { ...start, stateVersion: 0 };
+    const user = userEvent.setup(); const start = { ...go(9, "hard"), stateVersion: 5 }; const afterPass = { ...start, stateVersion: 6, turn: "white", legalMoves: ["B9"] }; const reset = { ...start, resetEpoch: 1, stateVersion: 0 };
     vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterPass }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: { ...afterPass, stateVersion: 7, turn: "black", legalMoves: ["A9"] } }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reset }) } as Response);
-    render(<App initialGame={start}/>); expect(screen.getByText("Hard difficulty")).toBeVisible(); await user.click(screen.getByRole("button", { name: /pass/i })); await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/tools/play_game_move", expect.objectContaining({ body: expect.stringContaining('"move":"pass"') }))); await user.click(screen.getByRole("button", { name: /reset/i })); await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Choose a piece")); expect(screen.getByText("Hard difficulty")).toBeVisible(); expect(fetch).toHaveBeenLastCalledWith("/api/tools/reset_game", expect.objectContaining({ body: '{"gameId":"go-9"}' }));
+    render(<App initialGame={start}/>); expect(screen.getByText("Hard difficulty")).toBeVisible(); await user.click(screen.getByRole("button", { name: /pass/i })); await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/tools/play_game_move", expect.objectContaining({ body: expect.stringContaining('"move":"pass"') }))); await user.click(screen.getByRole("button", { name: /reset/i })); await user.click(within(screen.getByRole("alertdialog", { name: "Reset this game?" })).getByRole("button", { name: "Reset game" })); await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Choose a piece")); expect(screen.getByText("Hard difficulty")).toBeVisible(); expect(fetch).toHaveBeenLastCalledWith("/api/tools/reset_game", expect.objectContaining({ body: '{"gameId":"go-9","confirmed":true,"expectedVersion":7,"expectedResetEpoch":0}' }));
   });
   it("waits for the embedded host result instead of creating a fallback chess game", async () => {
     const postMessage = vi.fn();
@@ -467,7 +469,32 @@ describe("App", () => {
   it("ignores a delayed notification for a different game", () => { const target = { postMessage: vi.fn() } as unknown as Window; const bridge = new GameBridge(target); render(<App bridge={bridge} initialGame={go()}/>); window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: chess(9) } } })); expect(screen.getByRole("group", { name: /go board/i })).toBeVisible(); bridge.dispose(); });
   it("keeps polling after an equal-version tool notification", async () => { vi.useFakeTimers(); const target = { postMessage: vi.fn() } as unknown as Window; const bridge = new GameBridge(target, 100_000); const start = chess(); const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move."); const newer = chessAdvance(after, "gpt", "a7a6", "white", ["e2e4"], "New move"); render(<App bridge={bridge} initialGame={start}/>); fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i })); fireEvent.click(screen.getByRole("button", { name: /empty e4/i })); const reply = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await vi.advanceTimersByTimeAsync(0); }; await reply(1, { hostCapabilities: { serverTools: {}, message: {} } }); await reply(2, { structuredContent: after }); await reply(3, {}); window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: after } } })); expect(screen.getByText("GPT thinking…")).toBeVisible(); expect(screen.getByRole("button", { name: /white pawn on e2/i })).toBeDisabled(); await vi.advanceTimersByTimeAsync(2_000); await reply(4, { structuredContent: newer }); expect(screen.getByText("New move")).toBeVisible(); bridge.dispose(); vi.useRealTimers(); });
   it("accepts a newer tool notification while iframe GPT polling is active", async () => { vi.useFakeTimers(); const target = { postMessage: vi.fn() } as unknown as Window; const bridge = new GameBridge(target, 100_000); const start = chess(); const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move."); const newer = chessAdvance(after, "gpt", "a7a6", "white", ["e2e4"], "Tool update"); render(<App bridge={bridge} initialGame={start}/>); fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i })); fireEvent.click(screen.getByRole("button", { name: /empty e4/i })); const reply = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await vi.advanceTimersByTimeAsync(0); }; await reply(1, { hostCapabilities: { serverTools: {}, message: {} } }); await reply(2, { structuredContent: after }); await reply(3, {}); await vi.advanceTimersByTimeAsync(2_000); expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 4, method: "tools/call" }), "*"); window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: newer } } })); await vi.advanceTimersByTimeAsync(0); expect(screen.getByText("Tool update")).toBeVisible(); expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeEnabled(); await vi.advanceTimersByTimeAsync(45_001); expect(screen.queryByRole("alert")).not.toBeInTheDocument(); bridge.dispose(); vi.useRealTimers(); });
-  it("holds a reset epoch barrier against delayed pre-reset notifications", async () => { const target = { postMessage: vi.fn() } as unknown as Window; const bridge = new GameBridge(target, 100_000); const start = chess(5); const reset = { ...chess(0), message: "Reset epoch" }; const old = { ...chess(6), message: "Old epoch" }; const fresh = { ...chess(1), message: "New epoch" }; render(<App bridge={bridge} initialGame={start}/>); const reply = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await new Promise<void>(resolve => window.setTimeout(resolve, 0)); }; fireEvent.click(screen.getByRole("button", { name: /reset/i })); await reply(1, { hostCapabilities: { serverTools: {}, message: {} } }); await reply(2, { structuredContent: reset }); expect(screen.getByText("Reset epoch")).toBeVisible(); window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: old } } })); expect(screen.queryByText("Old epoch")).not.toBeInTheDocument(); await waitFor(() => expect(screen.getByRole("button", { name: /refresh/i })).toBeEnabled()); fireEvent.click(screen.getByRole("button", { name: /refresh/i })); await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 3, method: "tools/call" }), "*")); await reply(3, { structuredContent: fresh }); expect(screen.getByText("New epoch")).toBeVisible(); window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: reset } } })); expect(screen.getByText("New epoch")).toBeVisible(); bridge.dispose(); });
+  it("holds a reset epoch barrier against delayed pre-reset notifications", async () => {
+    const target = { postMessage: vi.fn() } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const start = { ...chess(5), resetEpoch: 0 };
+    const reset = { ...chess(0), resetEpoch: 1, message: "Reset epoch" };
+    const old = { ...chess(6), resetEpoch: 0, message: "Old epoch" };
+    const fresh = { ...chess(1), resetEpoch: 1, message: "New epoch" };
+    const reply = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await new Promise<void>(resolve => window.setTimeout(resolve, 0)); };
+    render(<App bridge={bridge} initialGame={start}/>);
+    fireEvent.click(screen.getByRole("button", { name: /reset/i }));
+    fireEvent.click(within(screen.getByRole("alertdialog", { name: "Reset this game?" })).getByRole("button", { name: "Reset game" }));
+    await reply(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "reset_game", arguments: { gameId: "chess-1", confirmed: true, expectedVersion: 5, expectedResetEpoch: 0 } } }), "*"));
+    await reply(2, { structuredContent: reset });
+    expect(screen.getByText("Reset epoch")).toBeVisible();
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: old } } }));
+    expect(screen.queryByText("Old epoch")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: /refresh/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 3, method: "tools/call" }), "*"));
+    await reply(3, { structuredContent: fresh });
+    expect(screen.getByText("New epoch")).toBeVisible();
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: reset } } }));
+    expect(screen.getByText("New epoch")).toBeVisible();
+    bridge.dispose();
+  });
   it("accepts a legitimate repeated move sequence after an explicit reset epoch", async () => {
     const target = { postMessage: vi.fn() } as unknown as Window;
     const bridge = new GameBridge(target, 100_000);
@@ -484,7 +511,9 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
 
     fireEvent.click(screen.getByRole("button", { name: /reset/i }));
+    fireEvent.click(within(screen.getByRole("alertdialog", { name: "Reset this game?" })).getByRole("button", { name: "Reset game" }));
     await reply(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "reset_game", arguments: { gameId: "chess-1", confirmed: true, expectedVersion: 2, expectedResetEpoch: 0 } } }), "*"));
     await reply(2, { structuredContent: reset });
     window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: { ...start, stateVersion: 3, message: "Delayed old epoch" } } } }));
     expect(screen.queryByText("Delayed old epoch")).not.toBeInTheDocument();
@@ -641,7 +670,7 @@ describe("App", () => {
     render(<App initialGame={states}/>); await userEvent.setup().click(screen.getByRole("button", { name: "A1, empty, legal move" })); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
     expect(JSON.parse((vi.mocked(fetch).mock.calls[1][1] as RequestInit).body as string)).toEqual({ gameId: "rev", actor: "gpt", move: "A3", expectedVersion: 7, expectedResetEpoch: 0 });
     expect(JSON.parse((vi.mocked(fetch).mock.calls[2][1] as RequestInit).body as string)).toEqual({ gameId: "rev", actor: "gpt", move: secondMove, expectedVersion: 8, expectedResetEpoch: 0 });
-    expect(screen.getByRole("button", { name: /reset/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /reset/i })).toBeEnabled();
     resolveSecond({ ok: true, json: async () => ({ structuredContent: afterSecondGpt }) } as Response);
     await waitFor(() => expect(screen.getByRole("button", { name: /reset/i })).toBeEnabled());
   });
@@ -652,6 +681,119 @@ describe("App", () => {
     await respond(1, { hostCapabilities: { serverTools: {}, message: {} } }); await respond(2, { structuredContent: after }); await respond(3, {}); await vi.advanceTimersByTimeAsync(2_000); await respond(4, { structuredContent: skipped });
     await vi.advanceTimersByTimeAsync(0); const prompts = () => postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "ui/message"); expect(prompts()).toHaveLength(2); expect(prompts()[0][0]).toEqual(expect.objectContaining({ params: expect.objectContaining({ content: [expect.objectContaining({ text: expect.stringContaining('"gameId":"chess-1"') })] }) })); await respond(5, {}); await vi.advanceTimersByTimeAsync(2_000); await respond(6, { structuredContent: done }); await vi.advanceTimersByTimeAsync(0);
     expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeEnabled(); const directGptCalls = postMessage.mock.calls.filter(([request]) => { const value = request as { method?: string; params?: { arguments?: { actor?: string } } }; return value.method === "tools/call" && value.params?.arguments?.actor === "gpt"; }); expect(directGptCalls).toHaveLength(0); expect(prompts()).toHaveLength(2); bridge.dispose(); vi.useRealTimers();
+  });
+  it("opens and cancels the inline reset confirmation without calling the service", async () => {
+    const user = userEvent.setup();
+    render(<App initialGame={{ ...chess(4), resetEpoch: 2 }}/>);
+    const trigger = screen.getByRole("button", { name: /reset/i });
+
+    await user.click(trigger);
+
+    const dialog = screen.getByRole("alertdialog", { name: "Reset this game?" });
+    expect(dialog).toHaveTextContent("All current progress will be cleared. Your game settings will stay the same.");
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(within(dialog).getByRole("button", { name: "Keep playing" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeDisabled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(JSON.parse(window.render_game_to_text!()).resetGame).toMatchObject({ available: true, enabled: true, confirmation: { gameId: "chess-1", expectedVersion: 4, expectedResetEpoch: 2 } });
+
+    await user.click(within(dialog).getByRole("button", { name: "Keep playing" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reset/i })).toHaveFocus();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("resets a finished game only after a matching authoritative receipt", async () => {
+    const user = userEvent.setup();
+    const finished: ChessSnapshot = { ...chess(4), resetEpoch: 2, status: "finished", winner: "black", finishReason: "ended", legalMoves: [], message: "Game ended." };
+    const reset: ChessSnapshot = { ...chess(0), resetEpoch: 3, message: "White to move." };
+    let resolveReset!: (response: Response) => void;
+    vi.mocked(fetch).mockReturnValueOnce(new Promise<Response>(resolve => { resolveReset = resolve; }));
+    render(<App initialGame={finished}/>);
+
+    await user.click(screen.getByRole("button", { name: /reset/i }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Reset game" }));
+
+    expect(screen.getByRole("status")).toHaveTextContent("Game ended.");
+    expect(fetch).toHaveBeenCalledWith("/api/tools/reset_game", expect.objectContaining({ body: '{"gameId":"chess-1","confirmed":true,"expectedVersion":4,"expectedResetEpoch":2}' }));
+    resolveReset({ ok: true, json: async () => ({ structuredContent: reset }) } as Response);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Choose a piece to begin."));
+    expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ mode: "active", resetGame: { available: true, confirmation: null }, game: { resetEpoch: 3, stateVersion: 0 } });
+  });
+  it("does not reconcile a reset that is definitively rejected", async () => {
+    const user = userEvent.setup();
+    const start = { ...chess(3), resetEpoch: 1 };
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false, json: async () => ({ error: { code: "stale_version", message: "The requested reset was not applied." } }) } as Response);
+    render(<App initialGame={start}/>);
+
+    await user.click(screen.getByRole("button", { name: /reset/i }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Reset game" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("stale_version");
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(["/api/tools/reset_game"]);
+    expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ mode: "active", game: { resetEpoch: 1, stateVersion: 3 } });
+  });
+  it("reconciles an uncertain reset with one state read and never repeats the mutation", async () => {
+    const user = userEvent.setup();
+    const start = { ...chess(6), resetEpoch: 3 };
+    const reset = { ...chess(0), resetEpoch: 4, message: "White to move." };
+    vi.mocked(fetch)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reset }) } as Response);
+    render(<App initialGame={start}/>);
+
+    await user.click(screen.getByRole("button", { name: /reset/i }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Reset game" }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Choose a piece to begin."));
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(["/api/tools/reset_game", "/api/tools/get_game_state"]);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === "/api/tools/reset_game")).toHaveLength(1);
+  });
+  it("rejects an ambiguous reset read that changes imported Go configuration", async () => {
+    const user = userEvent.setup();
+    const start = { ...importedGo("white", "white", 2, "confirmed"), stateVersion: 5 };
+    const mismatched = importedGo("white", "white", 3, "pending");
+    mismatched.initialPosition = { ...mismatched.initialPosition!, blackStones: ["C3"] };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ isError: true, content: [{ type: "text", text: "RESET_CONFIRMATION_UNKNOWN: response lost" }] }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: mismatched }) } as Response);
+    render(<App initialGame={start}/>);
+
+    await user.click(screen.getByRole("button", { name: /reset/i }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Reset game" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("reset could not be confirmed");
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(["/api/tools/reset_game", "/api/tools/get_game_state"]);
+    expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ game: { gameId: "imported-go", resetEpoch: 2, stateVersion: 5 } });
+    expect(screen.getByText("✓ Verified")).toBeVisible();
+  });
+  it("lets reset safely interrupt an in-flight GPT turn", async () => {
+    vi.useFakeTimers();
+    const target = { postMessage: vi.fn() } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const start = { ...chess(0, "hard"), resetEpoch: 0 };
+    const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move.");
+    const reset = { ...chess(0, "hard"), resetEpoch: 1, message: "White to move." };
+    const reply = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await vi.advanceTimersByTimeAsync(0); };
+    render(<App bridge={bridge} initialGame={start}/>);
+    fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
+    fireEvent.click(screen.getByRole("button", { name: /empty e4/i }));
+    await reply(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await reply(2, { structuredContent: after });
+    await reply(3, {});
+    expect(screen.getByText("GPT thinking…")).toBeVisible();
+
+    const resetTrigger = screen.getByRole("button", { name: /reset/i });
+    expect(resetTrigger).toBeEnabled();
+    fireEvent.click(resetTrigger);
+    fireEvent.click(within(screen.getByRole("alertdialog", { name: "Reset this game?" })).getByRole("button", { name: "Reset game" }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 4, method: "tools/call", params: { name: "reset_game", arguments: { gameId: "chess-1", confirmed: true, expectedVersion: 1, expectedResetEpoch: 0 } } }), "*");
+    await reply(4, { structuredContent: reset });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Choose a piece to begin.");
+    expect(screen.queryByText("GPT move not confirmed")).not.toBeInTheDocument();
+    bridge.dispose();
+    await vi.advanceTimersByTimeAsync(0);
   });
   it("opens and cancels the inline end-game confirmation without calling the service", async () => {
     const user = userEvent.setup();

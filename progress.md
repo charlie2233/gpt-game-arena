@@ -291,3 +291,32 @@ Original prompt: also implement select difficuktuy
 - [x] A real browser reload restored the same standalone game ID/version with exactly one `get_game_state` request and zero `create_game` requests; the saved envelope reported format version 1.
 - [x] The required browser-game client produced `shot-0.png` plus authoritative `state-0.json`, with no error artifact. Visual inspection confirmed the full 1280×720 Chess board, selectors, End game/Reset/Refresh controls, and status remain visible.
 - [ ] Deploy v18 against approved persistent hosted storage and reconnect it in ChatGPT before calling saves durable across container replacement or available as a secure cross-chat library.
+
+## Submission and confirmation-safe resets
+
+### Original prompts
+
+- how can we publish this
+- make sure a game sa ve
+- let me play
+
+### Implemented
+
+- [x] Declared compact `outputSchema` metadata for all eight MCP tools and required the authoritative `resetEpoch` in every successful model-facing snapshot.
+- [x] Made state and render lookups genuinely read-only: they no longer refresh retention or rewrite the persisted event log.
+- [x] Added a production container baseline with non-root execution, an absolute persistent-volume path, startup writability probe, separate liveness/readiness checks, root `start`, and graceful termination.
+- [x] Validated the exact public HTTPS origin, advertised it as the widget domain, and added the OpenAI domain-verification challenge route.
+- [x] Made reset destructive only after explicit confirmation and an exact `(resetEpoch, stateVersion)` match, with `RESET_CONFIRMED`, `RESET_NOT_APPLIED`, and `RESET_CONFIRMATION_UNKNOWN` receipt semantics.
+- [x] Added `chatgpt-app-submission.json` covering all eight tools, exactly five positive cases, and exactly three negative cases without inventing publisher identity.
+- [x] Added public-repo CI for install, typecheck, all tests, both builds, container build, and a real container readiness smoke.
+- [x] Bumped the current widget resource to v19 while retaining v18 through v11 for historical chats.
+
+### Verification status
+
+- [x] Complete automated matrix passes: 191 server + 118 web = 309 tests, both workspace typechecks, both production builds, and `git diff --check`.
+- [x] The submission JSON parses and contains eight tool records, five positive tests, three negative tests, and a subtitle within the 30-character limit.
+- [x] The existing hosted v18 Tic-Tac-Toe card was refreshed from the authoritative save; its stale-version alert cleared and the current `C3 → B2` history is visible with Black to move.
+- [x] Frontend reset confirmation covers cancel/focus, exact payload, no optimistic reset, definite rejection, one-read ambiguity recovery, malformed reconciliation, imported roots, finished games, and GPT-turn interruption.
+- [x] Built-server production smoke passed fail-closed configuration, save-mount preflight, `/health`, `/ready`, exact domain challenge, graceful shutdown, eight-tool MCP discovery, v19 widget metadata, and persistence across restart. Docker is unavailable locally, so the new CI owns the executable image-build smoke.
+- [x] The required browser-game client opened the v19 Chess reset confirmation at 1280×720, produced matching authoritative `state-0.json` plus `shot-0.png`, kept the complete board and both confirmation actions visible, and emitted no `errors-*.json` artifact.
+- [ ] Deploy to a stable public HTTPS host with durable single-replica storage, verify the domain, run the live tool scan and reviewer cases, add publisher-matched website/support/privacy/terms/logo assets, and complete hosted ChatGPT acceptance before submission.

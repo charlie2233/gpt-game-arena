@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -212,6 +213,7 @@ export class GameStore {
     this.persistencePath = options.persistencePath;
     this.validateOptions();
     this.loadPersistedSessions();
+    this.assertPersistenceWritable();
   }
 
   put(session: GameSession): void {
@@ -229,18 +231,16 @@ export class GameStore {
   }
 
   get(gameId: string): GameSession {
-    this.pruneExpired();
+    const now = this.now();
     const stored = this.sessions.get(gameId);
-    if (!stored) {
-      const unavailable = this.unavailableSessions.get(gameId);
-      if (unavailable) {
-        this.mutateAndPersist(() => this.storeUnavailable({ ...unavailable, lastAccessedAt: this.now() }));
-        throw new GameRuleError("save_incompatible", "This legacy Court Duel save is missing its private outcome seed.");
-      }
-      throw new GameRuleError("not_found", `Game ${gameId} was not found.`);
+    if (stored && now - stored.lastAccessedAt < this.ttlMs) {
+      return stored.session;
     }
-    this.mutateAndPersist(() => this.store(gameId, stored.session));
-    return stored.session;
+    const unavailable = this.unavailableSessions.get(gameId);
+    if (unavailable && now - unavailable.lastAccessedAt < this.ttlMs) {
+      throw new GameRuleError("save_incompatible", "This legacy Court Duel save is missing its private outcome seed.");
+    }
+    throw new GameRuleError("not_found", `Game ${gameId} was not found.`);
   }
 
   replace(session: GameSession): void {
@@ -379,6 +379,24 @@ export class GameStore {
       this.sessions.clear();
       this.unavailableSessions.clear();
       throw new Error(`Persisted game store could not be validated: ${this.persistencePath}`, { cause: error });
+    }
+  }
+
+  private assertPersistenceWritable(): void {
+    if (this.persistencePath === undefined) return;
+    const directory = dirname(this.persistencePath);
+    mkdirSync(directory, { recursive: true });
+    const probePath = join(directory, `.${basename(this.persistencePath)}.${process.pid}.${randomUUID()}.probe`);
+    try {
+      writeFileSync(probePath, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
+      unlinkSync(probePath);
+    } catch (error) {
+      try {
+        unlinkSync(probePath);
+      } catch {
+        // The write probe may not have been created.
+      }
+      throw new Error(`Persisted game store is not writable: ${this.persistencePath}`, { cause: error });
     }
   }
 

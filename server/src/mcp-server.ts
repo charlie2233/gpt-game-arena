@@ -14,13 +14,14 @@ import {
 } from "./tool-contracts.js";
 import { ToolService } from "./tool-service.js";
 
-export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v18/widget.html";
-export const LEGACY_WIDGET_RESOURCE_URIS = ["ui://gpt-game-arena/v17/widget.html", "ui://gpt-game-arena/v16/widget.html", "ui://gpt-game-arena/v15/widget.html", "ui://gpt-game-arena/v14/widget.html", "ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"] as const;
+export const WIDGET_RESOURCE_URI = "ui://gpt-game-arena/v19/widget.html";
+export const LEGACY_WIDGET_RESOURCE_URIS = ["ui://gpt-game-arena/v18/widget.html", "ui://gpt-game-arena/v17/widget.html", "ui://gpt-game-arena/v16/widget.html", "ui://gpt-game-arena/v15/widget.html", "ui://gpt-game-arena/v14/widget.html", "ui://gpt-game-arena/v13/widget.html", "ui://gpt-game-arena/v12/widget.html", "ui://gpt-game-arena/v11/widget.html"] as const;
 export const WIDGET_DESCRIPTION = "An interactive Mini 8-Ball, Court Duel basketball, chess, Reversi, Tic-Tac-Toe, Connect Four, or 9x9, 13x13, or 19x19 Go game, including Go positions transcribed from an attached photo.";
 export type WidgetLoader = () => string | undefined | Promise<string | undefined>;
 
 export interface McpServerOptions {
   loadWidgetHtml?: WidgetLoader;
+  widgetDomain?: string;
 }
 
 export function createMcpServer(service: ToolService, options: McpServerOptions = {}): McpServer {
@@ -28,7 +29,7 @@ export function createMcpServer(service: ToolService, options: McpServerOptions 
   const loadWidgetHtml = options.loadWidgetHtml ?? defaultWidgetLoader;
 
   for (const resourceUri of [WIDGET_RESOURCE_URI, ...LEGACY_WIDGET_RESOURCE_URIS]) {
-    registerWidgetResource(server, resourceUri, loadWidgetHtml);
+    registerWidgetResource(server, resourceUri, loadWidgetHtml, options.widgetDomain);
   }
 
   registerTool(server, service, "create_game", "Create game", "Use this when starting Mini 8-Ball Pool, Court Duel basketball, chess, Reversi, Tic-Tac-Toe, Connect Four, or Go. Set difficulty to easy, medium, or hard; an omitted difficulty defaults to medium. For Go, set boardSize to 9, 13, or 19; an omitted boardSize defaults to 9. Pool and basketball use their finite legal move strings exactly as returned by the snapshot.", {
@@ -42,7 +43,7 @@ export function createMcpServer(service: ToolService, options: McpServerOptions 
   });
   registerTool(server, service, "confirm_imported_go_position", "Confirm imported Go position", "Use this when the user clicks the widget confirmation after checking an imported Go board. Success returns IMPORT_REVIEW_CONFIRMED; never retry IMPORT_REVIEW_CONFIRMATION_UNKNOWN.", {
     readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false,
-  }, { ui: { visibility: ["app"] } }, false);
+  }, { ui: { visibility: ["app"] } });
   registerTool(server, service, "get_game_state", "Get game state", "Use this when you need the authoritative current game state.", {
     readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true,
   }, { ui: { visibility: ["model", "app"] } });
@@ -52,7 +53,7 @@ export function createMcpServer(service: ToolService, options: McpServerOptions 
   registerTool(server, service, "end_game", "End game", "Use this when, and only when, the player explicitly confirms ending the active game. Supply confirmed true and the authoritative expectedResetEpoch and expectedVersion; only claim that it ended after a matching END_CONFIRMED receipt. END_NOT_APPLIED is definite; END_CONFIRMATION_UNKNOWN requires a read-only state check and must never trigger a repeated mutation.", {
     readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false,
   }, { ui: { visibility: ["model", "app"] } });
-  registerTool(server, service, "reset_game", "Reset game", "Use this when current game progress should be erased and reset.", {
+  registerTool(server, service, "reset_game", "Reset game", "Use this when, and only when, the player explicitly confirms erasing the current game progress. Supply confirmed true and the authoritative expectedResetEpoch and expectedVersion; only claim that it reset after a matching RESET_CONFIRMED receipt. RESET_NOT_APPLIED is definite; RESET_CONFIRMATION_UNKNOWN requires one read-only state check and must never trigger a repeated mutation.", {
     readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false,
   }, { ui: { visibility: ["model", "app"] } });
   registerTool(server, service, "render_game", "Render game", "Use this when you need to display the current game board.", {
@@ -65,14 +66,23 @@ export function createMcpServer(service: ToolService, options: McpServerOptions 
   return server;
 }
 
-function registerWidgetResource(server: McpServer, resourceUri: string, loadWidgetHtml: WidgetLoader): void {
+function registerWidgetResource(
+  server: McpServer,
+  resourceUri: string,
+  loadWidgetHtml: WidgetLoader,
+  widgetDomain: string | undefined,
+): void {
   registerAppResource(server, "GPT Game Arena", resourceUri, { mimeType: RESOURCE_MIME_TYPE }, async () => ({
     contents: [{
       uri: resourceUri,
       mimeType: RESOURCE_MIME_TYPE,
       text: await loadWidgetHtmlSafely(loadWidgetHtml),
       _meta: {
-        ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
+        ui: {
+          prefersBorder: true,
+          csp: { connectDomains: [], resourceDomains: [] },
+          ...(widgetDomain === undefined ? {} : { domain: widgetDomain }),
+        },
         "openai/widgetDescription": WIDGET_DESCRIPTION,
       },
     }],
@@ -87,13 +97,12 @@ function registerTool(
   description: string,
   annotations: { readOnlyHint: boolean; destructiveHint: boolean; openWorldHint: boolean; idempotentHint: boolean },
   meta: Record<string, unknown>,
-  includeOutputSchema = true,
 ): void {
   registerAppTool(server, name, {
     title,
     description,
     inputSchema: mcpToolInputSchemas[name] as unknown as AnySchema,
-    ...(includeOutputSchema ? { outputSchema: mcpGameSnapshotSummarySchema as unknown as AnySchema } : {}),
+    outputSchema: mcpGameSnapshotSummarySchema as unknown as AnySchema,
     annotations,
     _meta: {
       ...meta,
@@ -108,21 +117,25 @@ function registerTool(
         ? "move"
         : name === "end_game"
           ? "end"
-          : name === "import_go_position"
-            ? "import"
-            : name === "confirm_imported_go_position"
-              ? "import-review"
-              : undefined;
+          : name === "reset_game"
+            ? "reset"
+            : name === "import_go_position"
+              ? "import"
+              : name === "confirm_imported_go_position"
+                ? "import-review"
+                : undefined;
       if (isGameRuleError(error)) return toToolFailure(error, mutation);
       const prefix = mutation === "move"
         ? "MOVE_CONFIRMATION_UNKNOWN "
         : mutation === "end"
           ? "END_CONFIRMATION_UNKNOWN "
-          : mutation === "import"
-            ? "IMPORT_CONFIRMATION_UNKNOWN "
-            : mutation === "import-review"
-              ? "IMPORT_REVIEW_CONFIRMATION_UNKNOWN "
-              : "";
+          : mutation === "reset"
+            ? "RESET_CONFIRMATION_UNKNOWN "
+            : mutation === "import"
+              ? "IMPORT_CONFIRMATION_UNKNOWN "
+              : mutation === "import-review"
+                ? "IMPORT_REVIEW_CONFIRMATION_UNKNOWN "
+                : "";
       return { isError: true, content: [{ type: "text" as const, text: `${prefix}internal_error: Internal server error.` }] };
     }
   });

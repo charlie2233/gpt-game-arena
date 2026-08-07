@@ -5,7 +5,10 @@ import {
   DEFAULT_GAME_STORE_TTL_MS,
   MAX_GAME_STORE_SESSIONS,
 } from "../src/game-store.js";
-import { gameStoreRuntimeOptionsFromEnvironment } from "../src/runtime-config.js";
+import {
+  gameStoreRuntimeOptionsFromEnvironment,
+  publicAppRuntimeOptionsFromEnvironment,
+} from "../src/runtime-config.js";
 
 describe("game store runtime configuration", () => {
   it("uses the documented safe defaults when variables are absent", () => {
@@ -35,6 +38,68 @@ describe("game store runtime configuration", () => {
     (value) => {
       expect(() => gameStoreRuntimeOptionsFromEnvironment({ GAME_STORE_MAX_SESSIONS: value }))
         .toThrow(/GAME_STORE_MAX_SESSIONS/);
+    },
+  );
+});
+
+describe("public app runtime configuration", () => {
+  it("keeps submission metadata disabled when variables are absent", () => {
+    expect(publicAppRuntimeOptionsFromEnvironment({})).toEqual({
+      widgetDomain: undefined,
+      openAiAppsChallengeToken: undefined,
+    });
+  });
+
+  it("accepts an exact HTTPS widget origin and single-line challenge token", () => {
+    expect(publicAppRuntimeOptionsFromEnvironment({
+      PUBLIC_BASE_URL: "https://games.example.com/",
+      OPENAI_APPS_CHALLENGE_TOKEN: "challenge_token-123",
+    })).toEqual({
+      widgetDomain: "https://games.example.com",
+      openAiAppsChallengeToken: "challenge_token-123",
+    });
+  });
+
+  it.each([
+    "",
+    "http://games.example.com",
+    "https://user@games.example.com",
+    "https://games.example.com/path",
+    "https://games.example.com/?query=1",
+    "https://games.example.com/#fragment",
+    "not a url",
+  ])("rejects invalid PUBLIC_BASE_URL value %j", (value) => {
+    expect(() => publicAppRuntimeOptionsFromEnvironment({ PUBLIC_BASE_URL: value }))
+      .toThrow(/PUBLIC_BASE_URL/);
+  });
+
+  it("requires an HTTPS public origin and explicit store path in production", () => {
+    expect(() => publicAppRuntimeOptionsFromEnvironment({ NODE_ENV: "production" }))
+      .toThrow(/PUBLIC_BASE_URL/);
+    expect(() => publicAppRuntimeOptionsFromEnvironment({
+      NODE_ENV: "production",
+      PUBLIC_BASE_URL: "https://games.example.com",
+    })).toThrow(/GAME_STORE_PATH/);
+    expect(() => publicAppRuntimeOptionsFromEnvironment({
+      NODE_ENV: "production",
+      PUBLIC_BASE_URL: "https://games.example.com",
+      GAME_STORE_PATH: ".data/game-sessions.json",
+    })).toThrow(/absolute path/);
+    expect(publicAppRuntimeOptionsFromEnvironment({
+      NODE_ENV: "production",
+      PUBLIC_BASE_URL: "https://games.example.com",
+      GAME_STORE_PATH: "/data/game-sessions.json",
+    })).toEqual({
+      widgetDomain: "https://games.example.com",
+      openAiAppsChallengeToken: undefined,
+    });
+  });
+
+  it.each(["", " padded", "padded ", "line\nbreak", "line\rbreak", "x".repeat(2_049)])(
+    "rejects invalid OPENAI_APPS_CHALLENGE_TOKEN value",
+    (value) => {
+      expect(() => publicAppRuntimeOptionsFromEnvironment({ OPENAI_APPS_CHALLENGE_TOKEN: value }))
+        .toThrow(/OPENAI_APPS_CHALLENGE_TOKEN/);
     },
   );
 });

@@ -134,6 +134,24 @@ describe("GameClient end_game", () => {
   });
 });
 
+describe("GameClient reset_game", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends an explicit confirmation with the captured version and reset epoch", async () => {
+    const reset = { ...chess, resetEpoch: 3, stateVersion: 0, message: "White to move." };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ structuredContent: reset }) } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GameClient(new GameBridge(window));
+
+    await expect(client.reset("g", 4, 2)).resolves.toMatchObject({ resetEpoch: 3, stateVersion: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/tools/reset_game", expect.objectContaining({
+      method: "POST",
+      body: '{"gameId":"g","confirmed":true,"expectedVersion":4,"expectedResetEpoch":2}',
+    }));
+  });
+});
+
 describe("GameClient imported-position confirmation", () => {
   afterEach(() => vi.unstubAllGlobals());
 

@@ -105,9 +105,17 @@ export class ToolService {
     return snapshot;
   }
 
-  resetGame(input: { gameId: string }): GameSnapshot {
+  resetGame(input: {
+    gameId: string;
+    confirmed: true;
+    expectedVersion: number;
+    expectedResetEpoch: number;
+  }): GameSnapshot {
     const currentSession = this.store.get(input.gameId);
     const current = currentSession.snapshot();
+    if ((current.resetEpoch ?? 0) !== input.expectedResetEpoch || current.stateVersion !== input.expectedVersion) {
+      throw new GameRuleError("stale_version", "The game changed before the reset could be applied.");
+    }
     const currentDescriptor = descriptorFromSession(currentSession);
     const replacement = createGameSession({
       gameId: current.gameId,

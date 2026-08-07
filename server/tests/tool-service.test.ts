@@ -46,6 +46,16 @@ function expectRuleError(action: () => unknown, code: GameRuleError["code"]): vo
   expect((error as GameRuleError).code).toBe(code);
 }
 
+function resetCurrent(service: ToolService, gameId: string) {
+  const current = service.getGameState({ gameId });
+  return service.resetGame({
+    gameId,
+    confirmed: true,
+    expectedVersion: current.stateVersion,
+    expectedResetEpoch: current.resetEpoch ?? 0,
+  });
+}
+
 describe("ToolService", () => {
   it("reports a full save store without leaking internal error details", () => {
     const failure = toToolFailure(new GameRuleError("store_full", "SECRET_STORE_DETAIL"));
@@ -215,7 +225,7 @@ describe("ToolService", () => {
     expect(moved).toMatchObject({ stateVersion: 2, importReview: "confirmed" });
     expect(moved.initialPosition).toEqual(imported.structuredContent.initialPosition);
 
-    const reset = service.resetGame({ gameId: moved.gameId });
+    const reset = resetCurrent(service, moved.gameId);
     expect(reset).toMatchObject({
       gameId: moved.gameId,
       stateVersion: 0,
@@ -358,6 +368,18 @@ describe("ToolService", () => {
     const service = new ToolService(new GameStore());
     const created = service.createGame({ game: "go", playerColor: "black", boardSize: 13 });
 
+    expectRuleError(() => service.resetGame({
+      gameId: created.gameId,
+      confirmed: true,
+      expectedVersion: 1,
+      expectedResetEpoch: 0,
+    }), "stale_version");
+    expectRuleError(() => service.resetGame({
+      gameId: created.gameId,
+      confirmed: true,
+      expectedVersion: 0,
+      expectedResetEpoch: 1,
+    }), "stale_version");
     expectRuleError(() => service.endGame({
       gameId: created.gameId,
       confirmed: true,
@@ -393,7 +415,13 @@ describe("ToolService", () => {
     }), "game_finished");
     expect(service.getGameState({ gameId: created.gameId })).toEqual(ended);
 
-    const reset = service.resetGame({ gameId: created.gameId });
+    const resetResult = executeTool(service, "reset_game", {
+      gameId: created.gameId,
+      confirmed: true,
+      expectedVersion: ended.stateVersion,
+      expectedResetEpoch: ended.resetEpoch ?? 0,
+    });
+    const reset = resetResult.structuredContent;
     expect(reset).toMatchObject({
       gameId: created.gameId,
       kind: "go",
@@ -404,13 +432,21 @@ describe("ToolService", () => {
       moveHistory: [],
     });
     expect(reset).not.toHaveProperty("finishReason");
+    expect(resetResult.content).toEqual([{ type: "text", text: `RESET_CONFIRMED ${JSON.stringify({
+      gameId: created.gameId,
+      previousResetEpoch: 0,
+      resetEpoch: 1,
+      previousVersion: ended.stateVersion,
+      stateVersion: 0,
+    })}` }]);
+    expect(toToolFailure(new GameRuleError("stale_version", "SECRET"), "reset").content[0].text).toMatch(/^RESET_NOT_APPLIED stale_version:/);
   });
 
   it("rejects a delayed pre-reset move even when stateVersion returns to zero", () => {
     const service = new ToolService(new GameStore());
     const created = service.createGame({ game: "tic-tac-toe", playerColor: "white" });
     expect(created).toMatchObject({ resetEpoch: 0, stateVersion: 0, turn: "black" });
-    const reset = service.resetGame({ gameId: created.gameId });
+    const reset = resetCurrent(service, created.gameId);
     expect(reset).toMatchObject({ resetEpoch: 1, stateVersion: 0, moveHistory: [] });
     expectRuleError(() => service.playGameMove({
       gameId: created.gameId,
@@ -433,7 +469,7 @@ describe("ToolService", () => {
     const created = service.createGame({ game: "go", playerColor: "black", boardSize: 19, difficulty: "hard" });
     service.playGameMove({ gameId: created.gameId, actor: "player", move: "A1", expectedVersion: 0 });
 
-    const reset = service.resetGame({ gameId: created.gameId });
+    const reset = resetCurrent(service, created.gameId);
     expect(reset.gameId).toBe(created.gameId);
     expect(reset.kind).toBe("go");
     if (reset.kind !== "go") throw new Error("Expected a Go snapshot.");
@@ -457,7 +493,7 @@ describe("ToolService", () => {
     });
 
     expect(created.resetEpoch).toBe(0);
-    const firstReset = service.resetGame({ gameId: created.gameId });
+    const firstReset = resetCurrent(service, created.gameId);
     expect(firstReset).toMatchObject({
       gameId: created.gameId,
       kind: "go",
@@ -477,7 +513,7 @@ describe("ToolService", () => {
     });
     expect(moved.resetEpoch).toBe(1);
 
-    const secondReset = service.resetGame({ gameId: created.gameId });
+    const secondReset = resetCurrent(service, created.gameId);
     expect(secondReset).toMatchObject({
       gameId: created.gameId,
       kind: "go",
@@ -495,7 +531,7 @@ describe("ToolService", () => {
     const moved = service.playGameMove({ gameId: created.gameId, actor: "player", move: "B2", expectedVersion: 0 });
     expect(moved).toMatchObject({ kind: "tic-tac-toe", stateVersion: 1 });
 
-    const reset = service.resetGame({ gameId: created.gameId });
+    const reset = resetCurrent(service, created.gameId);
     expect(reset).toMatchObject({ gameId: created.gameId, kind: "tic-tac-toe", playerColor: "black", difficulty: "hard", stateVersion: 0 });
     expect(reset.legalMoves).toHaveLength(9);
   });
@@ -506,7 +542,7 @@ describe("ToolService", () => {
     const moved = service.playGameMove({ gameId: created.gameId, actor: "player", move: "A", expectedVersion: 0 });
     expect(moved).toMatchObject({ kind: "connect-four", stateVersion: 1, difficulty: "hard" });
 
-    const reset = service.resetGame({ gameId: created.gameId });
+    const reset = resetCurrent(service, created.gameId);
     expect(reset).toMatchObject({ gameId: created.gameId, kind: "connect-four", playerColor: "black", difficulty: "hard", stateVersion: 0 });
     expect(reset.legalMoves).toEqual(["A", "B", "C", "D", "E", "F", "G"]);
   });
@@ -516,7 +552,7 @@ describe("ToolService", () => {
     const created = service.createGame({ game: "reversi", playerColor: "black", difficulty: "hard" });
     const moved = service.playGameMove({ gameId: created.gameId, actor: "player", move: "C4", expectedVersion: 0 });
     expect(moved).toMatchObject({ kind: "reversi", stateVersion: 1, difficulty: "hard", score: { black: 4, white: 1 } });
-    const reset = service.resetGame({ gameId: created.gameId });
+    const reset = resetCurrent(service, created.gameId);
     expect(reset).toMatchObject({ gameId: created.gameId, kind: "reversi", playerColor: "black", difficulty: "hard", stateVersion: 0 });
     if (reset.kind !== "reversi") throw new Error("Expected a Reversi snapshot.");
     expect(reset.legalMoves).toEqual(["C4", "D3", "E6", "F5"]);
@@ -527,7 +563,7 @@ describe("ToolService", () => {
     const created = service.createGame({ game: "pool", playerColor: "black", difficulty: "hard" });
     const moved = service.playGameMove({ gameId: created.gameId, actor: "player", move: "POT:1:TM", expectedVersion: 0, expectedResetEpoch: 0 });
     expect(moved).toMatchObject({ kind: "pool", stateVersion: 1, difficulty: "hard", turn: "black", cueBall: { x: 32, y: 9 } });
-    const reset = service.resetGame({ gameId: created.gameId });
+    const reset = resetCurrent(service, created.gameId);
     expect(reset).toMatchObject({ gameId: created.gameId, kind: "pool", playerColor: "black", difficulty: "hard", stateVersion: 0, resetEpoch: 1, cueBall: { x: 12, y: 25 } });
   });
 
@@ -536,7 +572,7 @@ describe("ToolService", () => {
     const created = service.createGame({ game: "basketball", playerColor: "black", difficulty: "hard" });
     const moved = service.playGameMove({ gameId: created.gameId, actor: "player", move: "drive", expectedVersion: 0, expectedResetEpoch: 0 });
     expect(moved).toMatchObject({ kind: "basketball", stateVersion: 1, difficulty: "hard", turn: "white", attempts: { black: 1, white: 0 }, energy: { black: 2, white: 4 } });
-    const reset = service.resetGame({ gameId: created.gameId });
+    const reset = resetCurrent(service, created.gameId);
     expect(reset).toMatchObject({ gameId: created.gameId, kind: "basketball", playerColor: "black", difficulty: "hard", stateVersion: 0, resetEpoch: 1, score: { black: 0, white: 0 }, energy: { black: 4, white: 4 } });
   });
 
@@ -550,7 +586,7 @@ describe("ToolService", () => {
     expectRuleError(() => service.endGame({
       gameId: "missing", confirmed: true, expectedVersion: 0, expectedResetEpoch: 0,
     }), "not_found");
-    expectRuleError(() => service.resetGame({ gameId: "missing" }), "not_found");
+    expectRuleError(() => service.resetGame({ gameId: "missing", confirmed: true, expectedVersion: 0, expectedResetEpoch: 0 }), "not_found");
   });
 
   it("replays moves, manual ends, and resets for all seven game kinds after process restarts", () => {
@@ -598,7 +634,7 @@ describe("ToolService", () => {
       expect(snapshot).toMatchObject({ status: "finished", finishReason: "ended" });
     }
 
-    const reset = ended.map((snapshot) => restartedAfterEnds.resetGame({ gameId: snapshot.gameId }));
+    const reset = ended.map((snapshot) => resetCurrent(restartedAfterEnds, snapshot.gameId));
     const restartedAfterResets = new ToolService(new GameStore({ persistencePath }));
     for (const snapshot of reset) {
       expect(restartedAfterResets.getGameState({ gameId: snapshot.gameId })).toEqual(snapshot);
@@ -667,8 +703,8 @@ describe("ToolService", () => {
     expect(replayEnded).toEqual(primaryEnded);
     expect(persistedBasketballSeed(primaryPath, created.gameId)).toBe(seed);
 
-    const primaryReset = primary.resetGame({ gameId: created.gameId });
-    const replayReset = replay.resetGame({ gameId: created.gameId });
+    const primaryReset = resetCurrent(primary, created.gameId);
+    const replayReset = resetCurrent(replay, created.gameId);
     expect(replayReset).toEqual(primaryReset);
     expect(primaryReset).toMatchObject({ resetEpoch: 1, stateVersion: 0, shotResults: [] });
     expect(persistedBasketballSeed(primaryPath, created.gameId)).toBe(seed);
@@ -734,7 +770,7 @@ describe("ToolService", () => {
     const restarted = new ToolService(new GameStore({ persistencePath }));
     expect(restarted.getGameState({ gameId: imported.gameId })).toEqual(moved);
 
-    const reset = restarted.resetGame({ gameId: imported.gameId });
+    const reset = resetCurrent(restarted, imported.gameId);
     expect(reset).toMatchObject({ importReview: "pending", stateVersion: 0, resetEpoch: 1, moveHistory: [] });
     const resetRestart = new ToolService(new GameStore({ persistencePath }));
     expect(resetRestart.getGameState({ gameId: imported.gameId })).toEqual(reset);
@@ -747,7 +783,7 @@ describe("ToolService", () => {
     }), "import_review_required");
   });
 
-  it("persists a read-based TTL refresh across a process restart", () => {
+  it("does not extend persisted TTL from a read-only state lookup", () => {
     const persistencePath = temporaryStorePath();
     let time = 0;
     const service = new ToolService(new GameStore({ persistencePath, ttlMs: 1_000, now: () => time }));
@@ -758,7 +794,7 @@ describe("ToolService", () => {
     time = 1_500;
 
     const restarted = new ToolService(new GameStore({ persistencePath, ttlMs: 1_000, now: () => time }));
-    expect(restarted.getGameState({ gameId: created.gameId })).toEqual(created);
+    expectRuleError(() => restarted.getGameState({ gameId: created.gameId }), "not_found");
   });
 
   it("ignores expired move histories before replaying active sessions", () => {
@@ -808,7 +844,7 @@ describe("ToolService", () => {
       difficulty: "hard",
     });
     service.playGameMove({ gameId: created.gameId, actor: "player", move: "D4", expectedVersion: 0 });
-    const reset = service.resetGame({ gameId: created.gameId });
+    const reset = resetCurrent(service, created.gameId);
 
     const restarted = new ToolService(new GameStore({ persistencePath }));
     expect(restarted.getGameState({ gameId: created.gameId })).toEqual(reset);
@@ -890,7 +926,7 @@ describe("ToolService", () => {
       sessions: Array<{ resetEpoch?: number }>;
     };
     expect(persisted.sessions[0].resetEpoch).toBe(0);
-    expect(service.resetGame({ gameId: "legacy-game" }).resetEpoch).toBe(1);
+    expect(resetCurrent(service, "legacy-game").resetEpoch).toBe(1);
   });
 
   it("migrates empty legacy Court Duel saves and preserves played seedless saves as explicitly unavailable", () => {

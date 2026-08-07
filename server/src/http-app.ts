@@ -14,6 +14,8 @@ interface RateLimitOptions {
 
 export interface HttpAppOptions {
   loadWidgetHtml?: WidgetLoader;
+  widgetDomain?: string;
+  openAiAppsChallengeToken?: string;
   now?: () => number;
   apiToolsRateLimit?: RateLimitOptions;
   mcpRateLimit?: RateLimitOptions;
@@ -87,6 +89,23 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
   app.use(express.json({ limit: "32kb" }));
 
   app.get("/health", (_, response) => response.status(200).json({ ok: true }));
+  app.get("/ready", async (_, response) => {
+    try {
+      const html = await loadWidgetHtml();
+      if (html === undefined) throw new Error("Widget build unavailable.");
+      response.status(200).json({ ready: true });
+    } catch {
+      response.status(503).json({ ready: false });
+    }
+  });
+  app.get("/.well-known/openai-apps-challenge", (_, response) => {
+    if (options.openAiAppsChallengeToken === undefined) {
+      response.status(404).type("text/plain").send("Not found.");
+      return;
+    }
+    response.setHeader("Cache-Control", "no-store");
+    response.status(200).type("text/plain").send(options.openAiAppsChallengeToken);
+  });
   app.get("/preview", async (_, response) => {
     let html: string | undefined;
     try {
@@ -128,7 +147,7 @@ export function createHttpApp(service: ToolService, options: HttpAppOptions = {}
   });
 
   app.all("/mcp", async (request, response) => {
-    const server = createMcpServer(service, { loadWidgetHtml });
+    const server = createMcpServer(service, { loadWidgetHtml, widgetDomain: options.widgetDomain });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     let cleanupPromise: Promise<void> | undefined;
     const close = (): Promise<void> => cleanupPromise ??= Promise.allSettled([transport.close(), server.close()]).then(() => undefined);

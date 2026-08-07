@@ -33,9 +33,28 @@ describe("HTTP game arena app", () => {
     expect(health.headers["x-content-type-options"]).toBe("nosniff");
     expect(health.headers["referrer-policy"]).toBe("no-referrer");
     expect(health.headers["content-security-policy"]).toContain("default-src 'none'");
+    const ready = await request(app).get("/ready");
+    expect(ready.status).toBe(200);
+    expect(ready.body).toEqual({ ready: true });
     const preview = await request(app).get("/preview");
     expect(preview.status).toBe(200);
     expect(preview.text).toContain("fixture");
+  });
+
+  it("serves the exact OpenAI app domain challenge only when configured", async () => {
+    const disabled = createHttpApp(new ToolService(new GameStore()));
+    const missing = await request(disabled).get("/.well-known/openai-apps-challenge");
+    expect(missing.status).toBe(404);
+    expect(missing.text).toBe("Not found.");
+
+    const enabled = createHttpApp(new ToolService(new GameStore()), {
+      openAiAppsChallengeToken: "challenge_token-123",
+    });
+    const challenge = await request(enabled).get("/.well-known/openai-apps-challenge");
+    expect(challenge.status).toBe(200);
+    expect(challenge.type).toBe("text/plain");
+    expect(challenge.headers["cache-control"]).toBe("no-store");
+    expect(challenge.text).toBe("challenge_token-123");
   });
 
   it("returns a clear preview build error and dispatches the standalone game flow", async () => {
@@ -45,6 +64,9 @@ describe("HTTP game arena app", () => {
     expect(unavailable.status).toBe(503);
     expect(unavailable.text).toContain("npm run build --workspace web");
     expect(unavailable.text).not.toContain("/Users/");
+    const notReady = await request(app).get("/ready");
+    expect(notReady.status).toBe(503);
+    expect(notReady.body).toEqual({ ready: false });
 
     const created = await request(app).post("/api/tools/create_game").send({ game: "chess", playerColor: "white" });
     expect(created.status).toBe(200);
@@ -73,7 +95,10 @@ describe("HTTP game arena app", () => {
     expect(ended.body.structuredContent).toMatchObject({
       gameId, status: "finished", finishReason: "ended", stateVersion: 2, legalMoves: [], message: "Game ended.",
     });
-    const reset = await request(app).post("/api/tools/reset_game").send({ gameId });
+    const reset = await request(app).post("/api/tools/reset_game").send({
+      gameId, confirmed: true, expectedVersion: 2, expectedResetEpoch: 0,
+    });
+    expect(reset.body.content[0].text).toMatch(/^RESET_CONFIRMED /);
     expect(reset.body.structuredContent).toMatchObject({ gameId, difficulty: "medium", stateVersion: 0, moveHistory: [] });
   });
 
@@ -238,7 +263,7 @@ describe("HTTP game arena app", () => {
       get_game_state: { gameId: "game" },
       play_game_move: { gameId: "game", actor: "player", move: "e2e4", expectedVersion: 0 },
       end_game: { gameId: "game", confirmed: true, expectedVersion: 0, expectedResetEpoch: 0 },
-      reset_game: { gameId: "game" },
+      reset_game: { gameId: "game", confirmed: true, expectedVersion: 0, expectedResetEpoch: 0 },
       render_game: { gameId: "game" },
     } as const;
     for (const [name, schema] of Object.entries(toolInputSchemas)) {

@@ -45,7 +45,7 @@ export type ToolInput = {
   get_game_state: { gameId: string };
   play_game_move: { gameId: string; actor: "player" | "gpt"; move: string; expectedVersion: number; expectedResetEpoch?: number };
   end_game: { gameId: string; confirmed: true; expectedVersion: number; expectedResetEpoch: number };
-  reset_game: { gameId: string };
+  reset_game: { gameId: string; confirmed: true; expectedVersion: number; expectedResetEpoch: number };
   render_game: { gameId: string };
 };
 
