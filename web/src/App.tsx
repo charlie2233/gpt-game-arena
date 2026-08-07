@@ -103,7 +103,14 @@ function isConfirmedGptAdvance(previous: GameSnapshot, next: GameSnapshot, expec
   if (next.stateVersion !== previous.stateVersion + 1 || next.moveHistory.length !== previous.moveHistory.length + 1) return false;
   if (!historyStartsWith(next.moveHistory, previous.moveHistory)) return false;
   const appended = next.moveHistory[previous.moveHistory.length];
-  return appended?.actor === "gpt" && appended.color === previous.turn && appended.notation === expectedMove;
+  return appended?.actor === "gpt"
+    && appended.color === previous.turn
+    && appended.notation === expectedMove
+    && appended.ply === previous.moveHistory.length + 1
+    && next.lastMove?.actor === appended.actor
+    && next.lastMove.color === appended.color
+    && next.lastMove.notation === appended.notation
+    && next.lastMove.ply === appended.ply;
 }
 
 function isNotFoundError(reason: unknown): boolean {

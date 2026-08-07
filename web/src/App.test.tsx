@@ -404,6 +404,71 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeEnabled();
     bridge.dispose();
   });
+  it.each([
+    ["an appended GPT record with ply 99", (exact: ChessSnapshot) => ({ ...exact, moveHistory: [...exact.moveHistory.slice(0, -1), { ...exact.moveHistory.at(-1)!, ply: 99 }] })],
+    ["a missing lastMove", (exact: ChessSnapshot) => { const { lastMove: _lastMove, ...withoutLastMove } = exact; return withoutLastMove; }],
+    ["a mismatched lastMove", (exact: ChessSnapshot) => ({ ...exact, lastMove: { ...exact.lastMove!, notation: exact.lastMove!.notation === "a7a6" ? "b7b6" : "a7a6" } })],
+  ])("reconciles %s only with one exact authoritative GPT state", async (_description, malformed: (exact: ChessSnapshot) => unknown) => {
+    const postMessage = vi.fn();
+    const target = { postMessage } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const start = chess(0, "hard");
+    const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move.");
+    const gptMove = chooseStandaloneMove(after)!;
+    const exact = chessAdvance(after, "gpt", gptMove, "white", ["e2e4"], "Corrected exact GPT state.");
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    const calls = (name: string) => postMessage.mock.calls.map(([request]) => request as { method?: string; params?: { name?: string } }).filter(request => request.method === "tools/call" && request.params?.name === name);
+
+    render(<App bridge={bridge} initialGame={start}/>);
+    fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
+    fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
+    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
+    await respond(2, { structuredContent: after });
+    await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
+    await respond(3, { structuredContent: malformed(exact) });
+
+    await waitFor(() => expect(calls("get_game_state")).toHaveLength(1));
+    expect(screen.queryByText("Corrected exact GPT state.")).not.toBeInTheDocument();
+    await respond(4, { structuredContent: exact });
+
+    await waitFor(() => expect(screen.getByText("Corrected exact GPT state.")).toBeVisible());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(calls("play_game_move")).toHaveLength(2);
+    expect(calls("get_game_state")).toHaveLength(1);
+    bridge.dispose();
+  });
+  it("shows the safe Refresh error when malformed direct GPT recovery remains malformed", async () => {
+    const postMessage = vi.fn();
+    const target = { postMessage } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const start = chess(0, "hard");
+    const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move.");
+    const gptMove = chooseStandaloneMove(after)!;
+    const exact = chessAdvance(after, "gpt", gptMove, "white", ["e2e4"], "Malformed GPT state.");
+    const malformed = { ...exact, lastMove: { ...exact.lastMove!, ply: 99 } };
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    const calls = (name: string) => postMessage.mock.calls.map(([request]) => request as { method?: string; params?: { name?: string } }).filter(request => request.method === "tools/call" && request.params?.name === name);
+
+    render(<App bridge={bridge} initialGame={start}/>);
+    fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
+    fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
+    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
+    await respond(2, { structuredContent: after });
+    await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
+    await respond(3, { structuredContent: malformed });
+
+    await waitFor(() => expect(calls("get_game_state")).toHaveLength(1));
+    await respond(4, { structuredContent: malformed });
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("GPT move was not confirmed. Use Refresh to continue."));
+    expect(screen.getByText("Black to move.")).toBeVisible();
+    expect(screen.queryByText("Malformed GPT state.")).not.toBeInTheDocument();
+    expect(calls("play_game_move")).toHaveLength(2);
+    expect(calls("get_game_state")).toHaveLength(1);
+    bridge.dispose();
+  });
   it("reads state exactly once after an ambiguous embedded GPT result and accepts only the matching advance", async () => {
     const postMessage = vi.fn();
     const target = { postMessage } as unknown as Window;
