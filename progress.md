@@ -8,11 +8,12 @@ Original prompt: also implement select difficuktuy
 - [x] Declared `render_game` as the non-mutating UI step for an existing normal game and kept imported Go on its direct `import_go_position` widget path.
 - [x] Updated all four positive create workflows in the reviewer manifest to run `create_game, render_game` in order, while retaining the import-only workflow without a redundant render.
 - [x] Added descriptor, manifest, and static-validator regression checks for this dependency.
+- [x] Extracted one shared strict workflow validator for production and tests; creation workflows must start with adjacent `create_game, render_game`, including rejection coverage for known-tool prefixes.
 
 ### Exact validation
 
-- [x] Focused `server/tests/mcp-server.test.ts`: 20/20 tests pass, including strict malformed-workflow fixtures.
-- [x] Full server suite: 13/13 files and 237/237 tests pass.
+- [x] Focused `server/tests/mcp-server.test.ts`: 22/22 tests pass, including strict malformed-workflow fixtures.
+- [x] Full server suite: 13/13 files and 239/239 tests pass.
 - [x] Server typecheck (`tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json`) passes.
 - [x] Root static-site validator (`npm run test:site`) passes.
 

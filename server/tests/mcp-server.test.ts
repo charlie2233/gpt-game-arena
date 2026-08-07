@@ -7,82 +7,24 @@ import { describe, expect, it, vi } from "vitest";
 
 import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 
+import {
+  validateNegativeWorkflows,
+  validatePositiveWorkflows,
+  type SubmissionWorkflowCase,
+} from "../../scripts/submission-workflow-validation.mjs";
+
 import { createMcpServer, LEGACY_WIDGET_RESOURCE_URIS, WIDGET_DESCRIPTION, WIDGET_RESOURCE_URI } from "../src/mcp-server.js";
 import { gameSnapshotSchema, toolInputSchemas } from "../src/tool-contracts.js";
 import { GameStore } from "../src/game-store.js";
 import type { OperationalEvent } from "../src/telemetry.js";
 import { ToolService } from "../src/tool-service.js";
 
-type SubmissionCase = { tools_triggered?: unknown; expected_output?: unknown };
-
-function validatePositiveWorkflows(testCases: SubmissionCase[], knownTools: Set<string>): string[] {
-  const errors: string[] = [];
-  let createWorkflowCount = 0;
-  let importWorkflowCount = 0;
-
-  if (testCases.length !== 5) errors.push("submission must contain exactly five positive cases");
-
-  for (const [index, testCase] of testCases.entries()) {
-    const label = `positive case ${index + 1}`;
-    if (typeof testCase.tools_triggered !== "string" || testCase.tools_triggered.trim().length === 0) {
-      errors.push(`${label}: tools_triggered must be a nonempty string`);
-      continue;
-    }
-
-    const rawSegments = testCase.tools_triggered.split(",");
-    if (rawSegments.some(segment => segment.trim().length === 0)) {
-      errors.push(`${label}: tools_triggered contains a blank tool segment`);
-      continue;
-    }
-    const workflow = rawSegments.map(segment => segment.trim());
-
-    for (const tool of workflow) {
-      if (!knownTools.has(tool)) errors.push(`${label}: unknown tool token ${tool}`);
-    }
-    const seen = new Set<string>();
-    for (const tool of workflow) {
-      if (seen.has(tool)) errors.push(`${label}: duplicate tool token ${tool}`);
-      seen.add(tool);
-    }
-
-    const createCount = workflow.filter(tool => tool === "create_game").length;
-    const renderCount = workflow.filter(tool => tool === "render_game").length;
-    const hasCreate = createCount > 0;
-    const hasImport = workflow.includes("import_go_position");
-    if (!hasCreate && !hasImport) errors.push(`${label}: workflow must start from create_game or import_go_position`);
-
-    if (hasCreate) {
-      createWorkflowCount += 1;
-      if (createCount !== 1) errors.push(`${label}: create_game must appear exactly once`);
-      if (renderCount !== 1) errors.push(`${label}: render_game must appear exactly once`);
-      if (workflow.indexOf("render_game") !== workflow.indexOf("create_game") + 1) {
-        errors.push(`${label}: render_game must appear immediately after create_game`);
-      }
-      if (typeof testCase.expected_output !== "string" || !testCase.expected_output.includes("interactive board renders from the same gameId")) {
-        errors.push(`${label}: expected output must confirm the interactive board uses the same gameId`);
-      }
-    }
-
-    if (hasImport) {
-      importWorkflowCount += 1;
-      if (renderCount !== 0) errors.push(`${label}: import_go_position must not include render_game`);
-      if (workflow.length !== 1 || workflow[0] !== "import_go_position") {
-        errors.push(`${label}: import workflow must contain only import_go_position`);
-      }
-    }
-  }
-
-  if (createWorkflowCount !== 4) errors.push("submission must contain exactly four create_game workflows");
-  if (importWorkflowCount !== 1) errors.push("submission must contain exactly one import_go_position workflow");
-  return errors;
-}
-
 describe("MCP game arena server", () => {
   it("keeps the reviewer submission manifest complete and bounded", async () => {
     const manifest = JSON.parse(await readFile(new URL("../../chatgpt-app-submission.json", import.meta.url), "utf8")) as {
       app_info?: { display_name?: string; subtitle?: string };
       tools?: Record<string, { annotations?: Record<string, boolean> }>;
-      test_cases?: SubmissionCase[];
+      test_cases?: SubmissionWorkflowCase[];
       negative_test_cases?: Array<{ tools_triggered?: unknown }>;
     };
     expect(Object.keys(manifest.tools ?? {}).sort()).toEqual([
@@ -91,10 +33,9 @@ describe("MCP game arena server", () => {
     expect(manifest.app_info?.subtitle?.length).toBeLessThanOrEqual(30);
     expect(manifest.app_info?.display_name).toBe("Turnplay Arena");
     expect(manifest.test_cases).toHaveLength(5);
-    expect(manifest.negative_test_cases).toHaveLength(3);
     const positiveCases = manifest.test_cases ?? [];
     expect(validatePositiveWorkflows(positiveCases, new Set(Object.keys(manifest.tools ?? {})))).toEqual([]);
-    for (const negativeCase of manifest.negative_test_cases ?? []) expect(negativeCase.tools_triggered).toBeNull();
+    expect(validateNegativeWorkflows(manifest.negative_test_cases ?? [])).toEqual([]);
     for (const tool of Object.values(manifest.tools ?? {})) {
       expect(Object.keys(tool.annotations ?? {}).sort()).toEqual(["destructiveHint", "openWorldHint", "readOnlyHint"]);
     }
@@ -106,13 +47,15 @@ describe("MCP game arena server", () => {
     ["duplicate create", 0, "create_game, create_game, render_game", "duplicate tool token create_game"],
     ["duplicate render", 0, "create_game, render_game, render_game", "duplicate tool token render_game"],
     ["intervening tool", 0, "create_game, get_game_state, render_game", "render_game must appear immediately after create_game"],
+    ["state prefix", 0, "get_game_state, create_game, render_game", "create_game must be the first tool"],
+    ["move prefix", 0, "play_game_move, create_game, render_game", "create_game must be the first tool"],
     ["render-only positive", 0, "render_game", "workflow must start from create_game or import_go_position"],
     ["null positive", 0, null, "tools_triggered must be a nonempty string"],
     ["mixed import/create/render", 1, "import_go_position, create_game, render_game", "import workflow must contain only import_go_position"],
   ] as const)("rejects a %s reviewer workflow", async (_label, caseIndex, toolsTriggered, expectedError) => {
     const manifest = JSON.parse(await readFile(new URL("../../chatgpt-app-submission.json", import.meta.url), "utf8")) as {
       tools?: Record<string, unknown>;
-      test_cases?: SubmissionCase[];
+      test_cases?: SubmissionWorkflowCase[];
     };
     const fixture = (manifest.test_cases ?? []).map(testCase => ({ ...testCase }));
     fixture[caseIndex] = { ...fixture[caseIndex], tools_triggered: toolsTriggered };
