@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { loadStandaloneGame, saveStandaloneGame, STANDALONE_GAME_SAVE_KEY } from "./game-save";
+import { resumeStateFromSnapshot } from "./widget-state";
 import type { ChessSnapshot, ChessSquare } from "./types";
 
 function chess(): ChessSnapshot {
@@ -28,23 +29,41 @@ describe("standalone game save", () => {
     window.localStorage.clear();
   });
 
-  it("round-trips a strict versioned game snapshot", () => {
-    const game = chess();
+  it("round-trips only a strict v2 pointer and draft", () => {
+    const save = resumeStateFromSnapshot(chess(), { game: "go-19", difficulty: "easy", side: "black" });
 
-    saveStandaloneGame(game);
+    saveStandaloneGame(save);
 
     expect(JSON.parse(window.localStorage.getItem(STANDALONE_GAME_SAVE_KEY)!)).toEqual({
-      formatVersion: 1,
-      game,
+      formatVersion: 2,
+      activeGameId: "saved-chess",
+      draft: { game: "go-19", difficulty: "easy", side: "black" },
     });
-    expect(loadStandaloneGame()).toEqual(game);
+    expect(loadStandaloneGame()).toEqual(save);
+    expect(window.localStorage.getItem(STANDALONE_GAME_SAVE_KEY)).not.toMatch(/board|legalMoves|stateVersion|message/);
+  });
+
+  it("migrates a valid legacy v1 snapshot to v2 without returning or retaining the board", () => {
+    window.localStorage.setItem(STANDALONE_GAME_SAVE_KEY, JSON.stringify({ formatVersion: 1, game: chess() }));
+
+    expect(loadStandaloneGame()).toEqual({
+      formatVersion: 2,
+      activeGameId: "saved-chess",
+      draft: { game: "chess", difficulty: "hard", side: "white" },
+    });
+    expect(JSON.parse(window.localStorage.getItem(STANDALONE_GAME_SAVE_KEY)!)).toEqual({
+      formatVersion: 2,
+      activeGameId: "saved-chess",
+      draft: { game: "chess", difficulty: "hard", side: "white" },
+    });
   });
 
   it.each([
     "not json",
-    JSON.stringify({ formatVersion: 2, game: chess() }),
+    JSON.stringify({ formatVersion: 3, activeGameId: null, draft: { game: "chess", difficulty: "medium", side: "white" } }),
     JSON.stringify({ formatVersion: 1, game: { ...chess(), gameId: "" } }),
     JSON.stringify({ formatVersion: 1, game: chess(), extra: true }),
+    JSON.stringify({ formatVersion: 2, activeGameId: "saved-chess", draft: { game: "chess", difficulty: "medium", side: "white" }, board: [] }),
   ])("ignores and removes malformed or unsupported saves", (serialized) => {
     window.localStorage.setItem(STANDALONE_GAME_SAVE_KEY, serialized);
 
@@ -54,7 +73,7 @@ describe("standalone game save", () => {
 
   it("swallows unavailable storage reads, writes, and cleanup", () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("full"); });
-    expect(() => saveStandaloneGame(chess())).not.toThrow();
+    expect(() => saveStandaloneGame(resumeStateFromSnapshot(chess()))).not.toThrow();
     expect(setItem).toHaveBeenCalled();
     setItem.mockRestore();
 

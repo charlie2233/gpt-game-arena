@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { GameBridge } from "./bridge";
 import { isSnapshot } from "./game-client";
-import { loadStandaloneGame, saveStandaloneGame } from "./game-save";
+import { loadStandaloneGame, saveStandaloneGame, STANDALONE_GAME_SAVE_KEY } from "./game-save";
 import { chooseStandaloneMove } from "./move-strategy";
+import { createWidgetResumeState, resumeStateFromSnapshot } from "./widget-state";
 import type { BasketballSnapshot, Board, ChessSnapshot, GameDifficulty, GoBoardSize, GoSnapshot, ChessSquare, TicTacToeSnapshot, ConnectFourSnapshot, PoolSnapshot, ReversiCoordinate, ReversiSnapshot } from "./types";
 const chess = (version = 0, difficulty: GameDifficulty = "medium"): ChessSnapshot => ({ gameId: "chess-1", kind: "chess", difficulty, playerColor: "white", turn: "white", status: "active", legalMoves: ["e2e4"], moveHistory: [], stateVersion: version, message: "White to move.", board: Array.from({ length: 8 }, (_, r) => Array.from({ length: 8 }, (_, c) => ({ square: `${"abcdefgh"[c]}${8-r}` as ChessSquare, ...(r === 6 && c === 4 ? { color: "white" as const, piece: "p" as const } : {}) }))).flat() as ChessSnapshot["board"] });
 function canonicalChessReset(resetEpoch: number, difficulty: GameDifficulty = "medium"): ChessSnapshot {
@@ -48,6 +49,7 @@ const four = (): ConnectFourSnapshot => ({ gameId: "four", kind: "connect-four",
 const reversi = (): ReversiSnapshot => ({ gameId: "rev", kind: "reversi", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["C4", "D3", "E6", "F5"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: [[null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, "black", "white", null, null, null], [null, null, null, "white", "black", null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null]], score: { black: 2, white: 2 } });
 const pool = (): PoolSnapshot => ({ gameId: "pool", kind: "pool", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["POT:1:TM", "POT:1:TR", "POT:2:TM", "POT:2:BM", "POT:3:BM", "POT:3:BR", "SAFE:L", "SAFE:C", "SAFE:R", "SAFE:T", "SAFE:B"], moveHistory: [], stateVersion: 0, message: "Black (solids) to shoot.", cueBall: { x: 12, y: 25 }, balls: [{ id: 1, group: "solids", x: 32, y: 9 }, { id: 2, group: "solids", x: 36, y: 20 }, { id: 3, group: "solids", x: 34, y: 34 }, { id: 9, group: "stripes", x: 53, y: 13 }, { id: 10, group: "stripes", x: 54, y: 29 }, { id: 11, group: "stripes", x: 72, y: 18 }, { id: 8, group: "eight", x: 76, y: 35 }] });
 const basketball = (): BasketballSnapshot => ({ gameId: "court", kind: "basketball", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["drive", "pull-up", "three"], moveHistory: [], stateVersion: 0, message: "Black to shoot in round 1. Score 0-0.", score: { black: 0, white: 0 }, energy: { black: 4, white: 4 }, streak: { black: 0, white: 0 }, attempts: { black: 0, white: 0 }, phase: "regulation", round: 1, shotOptions: [{ move: "drive", points: 2, energyCost: 2, accuracy: 82 }, { move: "pull-up", points: 2, energyCost: 1, accuracy: 66 }, { move: "three", points: 3, energyCost: 0, accuracy: 48 }], shotResults: [] });
+const validInit = (hostContext: Record<string, unknown> = {}) => ({ protocolVersion: "2026-01-26", hostInfo: { name: "test-host", version: "1.0.0" }, hostCapabilities: { serverTools: {}, message: {} }, hostContext });
 const reversiDirections = [-1, 0, 1].flatMap(row => [-1, 0, 1].map(column => [row, column] as const)).filter(([row, column]) => row || column);
 function reversiFixturePlay(game: ReversiSnapshot, move: ReversiCoordinate): ReversiSnapshot {
   const board = game.board.map(row => [...row]) as Board<8, 8>; const row = 8 - Number(move[1]); const column = move.charCodeAt(0) - 65; const opponent = game.turn === "black" ? "white" : "black";
@@ -73,7 +75,7 @@ describe("App", () => {
     render(<App />); await screen.findByRole("button", { name: /white pawn on e2, movable source/i }); const user = userEvent.setup(); await user.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i })); await user.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3)); expect(fetch).toHaveBeenLastCalledWith("/api/tools/play_game_move", expect.objectContaining({ body: expect.stringContaining(gptMove as string) }));
   });
-  it("saves each authoritative standalone update and restores the exact game before creating a fallback", async () => {
+  it("saves only a standalone pointer and restores exactly one authoritative state without showing cached business state", async () => {
     const start = { ...chess(), gameId: "standalone-saved" };
     const afterPlayer = chessAdvance(start, "player", "e2e4", "black", ["a7a5", "a7a6"], "Black to move.");
     const gptMove = chooseStandaloneMove(afterPlayer)!;
@@ -87,20 +89,25 @@ describe("App", () => {
     const firstMount = render(<App />);
     const pawn = await screen.findByRole("button", { name: /white pawn on e2, movable source/i });
     await waitFor(() => expect(pawn).toBeEnabled());
-    await waitFor(() => expect(loadStandaloneGame()).toEqual(start));
+    await waitFor(() => expect(loadStandaloneGame()).toEqual(resumeStateFromSnapshot(start)));
     const user = userEvent.setup();
     await user.click(pawn);
     await user.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await waitFor(() => expect(loadStandaloneGame()).toEqual(afterGpt));
+    await waitFor(() => expect(loadStandaloneGame()).toEqual(resumeStateFromSnapshot(afterGpt)));
     firstMount.unmount();
 
-    fetchMock.mockReset().mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterGpt }) } as Response);
+    let resolveRestore!: (response: Response) => void;
+    fetchMock.mockReset().mockImplementationOnce(() => new Promise<Response>(resolve => { resolveRestore = resolve; }));
     render(<App />);
 
-    expect(screen.getByText("Saved GPT reply.")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Restoring saved game…");
+    expect(screen.queryByText("Saved GPT reply.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Chess board" })).not.toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(fetchMock).toHaveBeenCalledWith("/api/tools/get_game_state", expect.objectContaining({ body: '{"gameId":"standalone-saved"}' }));
     expect(fetchMock.mock.calls.some(([url]) => url === "/api/tools/create_game")).toBe(false);
+    resolveRestore({ ok: true, json: async () => ({ structuredContent: afterGpt }) } as Response);
+    expect(await screen.findByText("Saved GPT reply.")).toBeVisible();
     await waitFor(() => expect(screen.getByRole("button", { name: /refresh/i })).toBeEnabled());
     expect(JSON.parse(window.render_game_to_text!()).game).toMatchObject({ gameId: "standalone-saved", stateVersion: 2 });
   });
@@ -123,6 +130,24 @@ describe("App", () => {
     expect(await screen.findByText("Storage-independent reply.")).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(fetch).toHaveBeenCalledTimes(3);
+  });
+  it("migrates a legacy standalone snapshot but renders only its one authoritative restore", async () => {
+    const cached = { ...chess(4, "hard"), gameId: "legacy-local", message: "LOCAL CACHED MESSAGE" };
+    const authoritative = { ...cached, stateVersion: 5, message: "Authoritative local restore." };
+    window.localStorage.setItem(STANDALONE_GAME_SAVE_KEY, JSON.stringify({ formatVersion: 1, game: cached }));
+    let resolveRestore!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>(resolve => { resolveRestore = resolve; }));
+
+    render(<StrictMode><App/></StrictMode>);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Restoring saved game…");
+    expect(screen.queryByText("LOCAL CACHED MESSAGE")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Chess board" })).not.toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(STANDALONE_GAME_SAVE_KEY)!)).toEqual({ formatVersion: 2, activeGameId: "legacy-local", draft: { game: "chess", difficulty: "hard", side: "white" } });
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    resolveRestore({ ok: true, json: async () => ({ structuredContent: authoritative }) } as Response);
+    expect(await screen.findByText("Authoritative local restore.")).toBeVisible();
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
   it("renders Go legal coordinates and Pass", async () => { vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: chess() }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: go() }) } as Response); render(<App />); const user = userEvent.setup(); const picker = await screen.findByRole("combobox", { name: "NEW GAME" }); await user.selectOptions(picker, "go-9"); await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "black"); await user.click(screen.getByRole("button", { name: "Start game" })); expect(await screen.findByRole("button", { name: /Play at A9, empty, legal move/i })).toBeEnabled(); expect(fetch).toHaveBeenLastCalledWith("/api/tools/create_game", expect.objectContaining({ body: '{"game":"go","playerColor":"black","difficulty":"medium"}' })); expect(screen.getByRole("button", { name: /pass/i })).toBeEnabled(); });
   it("starts standard 19x19 Go from the game chooser", async () => {
@@ -280,7 +305,7 @@ describe("App", () => {
     expect(screen.getByText("You: White · Next: Black (GPT)")).toBeVisible();
     expect(sendFollowUpMessage).not.toHaveBeenCalled();
     await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 1, method: "ui/initialize" }), "*"));
-    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: { hostCapabilities: { serverTools: {}, message: {} } } } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
     await user.click(screen.getByRole("button", { name: "Looks right — continue" }));
 
     await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "confirm_imported_go_position", arguments: { gameId: "imported-go", expectedVersion: 0, expectedResetEpoch: 0 } } }), "*"));
@@ -288,8 +313,8 @@ describe("App", () => {
 
     await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 3, method: "tools/call", params: { name: "play_game_move", arguments: { gameId: "imported-go", actor: "gpt", move: chooseStandaloneMove({ ...importedGo("white", "black", 0, "confirmed"), stateVersion: 1 }), expectedVersion: 1, expectedResetEpoch: 0 } } }), "*"));
     expect(sendFollowUpMessage).not.toHaveBeenCalled();
-    await waitFor(() => expect(setWidgetState).toHaveBeenCalledWith(expect.objectContaining({ game: expect.objectContaining({ importReview: "confirmed", stateVersion: 1 }) })));
-    expect(setWidgetState).not.toHaveBeenCalledWith(expect.objectContaining({ reviewedImportKey: expect.anything() }));
+    await waitFor(() => expect(setWidgetState).toHaveBeenCalledWith({ formatVersion: 2, activeGameId: "imported-go", draft: { game: "go-9", difficulty: "hard", side: "white" } }));
+    expect(setWidgetState.mock.calls.some(([state]) => /importReview|stateVersion|board|legalMoves/.test(JSON.stringify(state)))).toBe(false);
     bridge.dispose();
   });
   it("does not let Refresh bypass a pending imported-position review", async () => {
@@ -335,14 +360,14 @@ describe("App", () => {
     vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterPass }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: { ...afterPass, stateVersion: 7, turn: "black", legalMoves: ["A9"] } }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reset }) } as Response);
     render(<App initialGame={start}/>); expect(screen.getByText("Hard difficulty")).toBeVisible(); await user.click(screen.getByRole("button", { name: /pass/i })); await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/tools/play_game_move", expect.objectContaining({ body: expect.stringContaining('"move":"pass"') }))); await user.click(screen.getByRole("button", { name: /reset/i })); await user.click(within(screen.getByRole("alertdialog", { name: "Reset this game?" })).getByRole("button", { name: "Reset game" })); await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Choose a piece")); expect(screen.getByText("Hard difficulty")).toBeVisible(); expect(fetch).toHaveBeenLastCalledWith("/api/tools/reset_game", expect.objectContaining({ body: '{"gameId":"go-9","confirmed":true,"expectedVersion":7,"expectedResetEpoch":0}' }));
   });
-  it("waits for the embedded host result instead of creating a fallback chess game", async () => {
+  it("stays neutral and actionable after embedded initialization without lifecycle data", async () => {
     const postMessage = vi.fn();
     const target = { postMessage } as unknown as Window;
     const bridge = new GameBridge(target, 100_000);
     render(<App bridge={bridge}/>);
 
-    expect(screen.getByRole("status")).toHaveTextContent("Loading game…");
-    expect(screen.queryByRole("combobox", { name: "NEW GAME" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for game result…");
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toBeVisible();
     await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ method: "ui/initialize" }), "*"));
     const createCalls = () => postMessage.mock.calls.filter(([request]) => {
       const value = request as { method?: string; params?: { name?: string } };
@@ -350,40 +375,42 @@ describe("App", () => {
     });
     expect(createCalls()).toHaveLength(0);
 
-    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: { hostCapabilities: { serverTools: {}, message: {} } } } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
+    await Promise.resolve();
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for game result…");
+    expect(createCalls()).toHaveLength(0);
     window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { result: { structuredContent: go(9, "hard") } } } }));
 
     expect(await screen.findByRole("group", { name: "9 by 9 Go board" })).toBeVisible();
     expect(screen.getByText("Hard difficulty")).toBeVisible();
     expect(screen.getByRole("combobox", { name: "NEW GAME" })).toHaveValue("go-9");
     expect(screen.getByRole("combobox", { name: "DIFFICULTY" })).toHaveValue("hard");
-    expect(screen.queryByText("Loading game…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Waiting for game result…")).not.toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Chess board" })).not.toBeInTheDocument();
     expect(createCalls()).toHaveLength(0);
     bridge.dispose();
   });
-  it("restores an embedded game from ChatGPT widget state after reload", async () => {
+  it("prefers an initial authoritative tool output over a stale restore pointer with zero state reads", async () => {
     const setWidgetState = vi.fn();
-    saveStandaloneGame(basketball());
-    Object.defineProperty(window, "openai", { configurable: true, value: { toolOutput: chess(), widgetState: { game: go(9, "hard") }, setWidgetState } });
+    saveStandaloneGame(resumeStateFromSnapshot(basketball()));
+    Object.defineProperty(window, "openai", { configurable: true, value: { toolOutput: { structuredContent: chess() }, widgetState: resumeStateFromSnapshot(go(9, "hard")), setWidgetState } });
     const postMessage = vi.fn();
     const target = { postMessage } as unknown as Window;
     const bridge = new GameBridge(target, 100_000);
 
     render(<App bridge={bridge}/>);
 
-    expect(screen.getByRole("group", { name: "9 by 9 Go board" })).toBeVisible();
-    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toHaveValue("go-9");
-    expect(screen.getByRole("combobox", { name: "DIFFICULTY" })).toHaveValue("hard");
-    expect(screen.queryByText("Loading game…")).not.toBeInTheDocument();
-    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: { hostCapabilities: { serverTools: {}, message: {} } } } }));
-    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "get_game_state", arguments: { gameId: "go-9" } } }), "*"));
-    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 2, result: { structuredContent: go(9, "hard") } } }));
-    await waitFor(() => expect(setWidgetState).toHaveBeenCalledWith({ game: go(9, "hard") }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /refresh/i })).toBeEnabled());
+    expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toHaveValue("chess");
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
+    await waitFor(() => expect(setWidgetState).toHaveBeenCalled());
+    const state = setWidgetState.mock.calls.at(-1)?.[0];
+    expect(state).toEqual({ formatVersion: 2, activeGameId: "chess-1", draft: { game: "chess", difficulty: "medium", side: "white" } });
+    expect(JSON.stringify(state)).not.toMatch(/board|legalMoves|stateVersion|message/);
+    expect(postMessage.mock.calls.filter(([request]) => (request as { params?: { name?: string } }).params?.name === "get_game_state")).toHaveLength(0);
     bridge.dispose();
   });
-  it("reconciles a reloaded GPT turn once under StrictMode, then makes exactly one GPT move", async () => {
+  it("restores a legacy embedded pointer once under StrictMode without rendering its cached board, then continues one GPT turn", async () => {
     const saved = chessAdvance(chess(0, "hard"), "player", "e2e4", "black", ["a7a6"], "Black to move.");
     const newer = chessAdvance(saved, "gpt", "a7a6", "white", ["e2e4"], "Recovered GPT move.");
     Object.defineProperty(window, "openai", { configurable: true, value: { widgetState: { game: saved }, setWidgetState: vi.fn() } });
@@ -393,7 +420,10 @@ describe("App", () => {
     const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
 
     render(<StrictMode><App bridge={bridge}/></StrictMode>);
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    expect(screen.getByRole("status")).toHaveTextContent("Restoring saved game…");
+    expect(screen.queryByText("Black to move.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Chess board" })).not.toBeInTheDocument();
+    await respond(1, validInit());
     await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: expect.objectContaining({ name: "get_game_state" }) }), "*"));
     await respond(2, { structuredContent: saved });
     const reconciliationCalls = () => postMessage.mock.calls.filter(([request]) => { const value = request as { method?: string; params?: { name?: string } }; return value.method === "tools/call" && value.params?.name === "get_game_state"; });
@@ -405,7 +435,23 @@ describe("App", () => {
     expect(gptCalls()).toHaveLength(1);
     bridge.dispose();
   });
-  it("uses a newer authoritative player-turn snapshot on reload without prompting GPT", async () => {
+  it("keeps a successful authoritative restore when its one GPT continuation is refused", async () => {
+    const restored = chessAdvance(chess(0, "hard"), "player", "e2e4", "black", ["a7a6"], "Authoritative restored GPT turn.");
+    Object.defineProperty(window, "openai", { configurable: true, value: { widgetState: resumeStateFromSnapshot(restored), setWidgetState: vi.fn() } });
+    const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    render(<App bridge={bridge}/>);
+    await respond(1, validInit());
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "get_game_state", arguments: { gameId: "chess-1" } } }), "*"));
+    await respond(2, { structuredContent: restored });
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 3, method: "tools/call", params: expect.objectContaining({ name: "play_game_move" }) }), "*"));
+    await respond(3, { isError: true, content: [{ type: "text", text: "MOVE_NOT_APPLIED invalid_move: refused" }] });
+    expect(await screen.findByRole("alert")).toHaveTextContent("MOVE_NOT_APPLIED");
+    expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible();
+    expect(screen.getByText("Authoritative restored GPT turn.")).toBeVisible();
+    bridge.dispose();
+  });
+  it("uses only the authoritative player-turn restore without prompting GPT", async () => {
     const saved = { ...chess(1, "hard"), turn: "black" as const, legalMoves: ["a7a6"], message: "Saved GPT turn." };
     const newer = { ...chess(2, "hard"), turn: "white" as const, legalMoves: ["e2e4"], message: "GPT already moved." };
     Object.defineProperty(window, "openai", { configurable: true, value: { widgetState: { game: saved }, setWidgetState: vi.fn() } });
@@ -414,7 +460,7 @@ describe("App", () => {
     const bridge = new GameBridge(target, 100_000);
 
     render(<App bridge={bridge}/>);
-    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: { hostCapabilities: { serverTools: {}, message: {} } } } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
     await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call" }), "*"));
     window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 2, result: { structuredContent: newer } } }));
 
@@ -423,22 +469,130 @@ describe("App", () => {
     expect(postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "ui/message")).toHaveLength(0);
     bridge.dispose();
   });
-  it("keeps the saved board visible when the server reports an expired session", async () => {
+  it("clears the board and pointer when an embedded restore has expired", async () => {
     const saved = { ...chess(7, "hard"), turn: "black" as const, legalMoves: ["a7a6"], message: "Saved board." };
-    Object.defineProperty(window, "openai", { configurable: true, value: { widgetState: { game: saved }, setWidgetState: vi.fn() } });
+    const setWidgetState = vi.fn();
+    Object.defineProperty(window, "openai", { configurable: true, value: { widgetState: { game: saved }, setWidgetState } });
     const postMessage = vi.fn();
     const target = { postMessage } as unknown as Window;
     const bridge = new GameBridge(target, 100_000);
 
     render(<App bridge={bridge}/>);
-    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: { hostCapabilities: { serverTools: {}, message: {} } } } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
     await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call" }), "*"));
     window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 2, result: { isError: true, content: [{ type: "text", text: "not_found: The game was not found." }] } } }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("This saved game session has expired. Start a new game to continue.");
-    expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible();
-    expect(screen.getByText("Saved board.")).toBeVisible();
+    expect(screen.queryByRole("group", { name: "Chess board" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Saved board.")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toBeVisible();
+    await waitFor(() => expect(setWidgetState.mock.calls.at(-1)?.[0]).toEqual({ formatVersion: 2, activeGameId: null, draft: { game: "chess", difficulty: "hard", side: "white" } }));
     expect(postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "ui/message")).toHaveLength(0);
+    bridge.dispose();
+  });
+  it("clears a failed restore and exposes recoverable New Game controls without mutation", async () => {
+    const setWidgetState = vi.fn();
+    Object.defineProperty(window, "openai", { configurable: true, value: { widgetState: createWidgetResumeState("missing-game", { game: "go-13", difficulty: "easy", side: "black" }), setWidgetState } });
+    const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    render(<App bridge={bridge}/>);
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "get_game_state", arguments: { gameId: "missing-game" } } }), "*"));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 2, error: { message: "temporary host failure" } } }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reconnect to this saved game. Start a new game to continue.");
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toHaveValue("go-13");
+    await waitFor(() => expect(setWidgetState.mock.calls.at(-1)?.[0]).toEqual({ formatVersion: 2, activeGameId: null, draft: { game: "go-13", difficulty: "easy", side: "black" } }));
+    expect(postMessage.mock.calls.filter(([request]) => (request as { params?: { name?: string } }).params?.name !== "get_game_state" && (request as { method?: string }).method === "tools/call")).toHaveLength(0);
+    bridge.dispose();
+  });
+  it("handles tool input, cancellation, invalid results, and a later valid recovery without lifecycle mutations", async () => {
+    const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    render(<App bridge={bridge}/>);
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: { game: "go" } } } }));
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for game result…");
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-cancelled", params: { reason: "user action" } } }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Game loading was cancelled");
+    expect(screen.queryByText("Waiting for game result…")).not.toBeInTheDocument();
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { result: {} } } }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The game result could not be loaded");
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { result: { structuredContent: go(9, "hard") } } } }));
+    expect(await screen.findByRole("group", { name: "9 by 9 Go board" })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "tools/call")).toHaveLength(0);
+    bridge.dispose();
+  });
+  it("ignores tool input and cancellation after an authoritative board is ready", async () => {
+    const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    render(<App bridge={bridge} initialGame={chess()}/>);
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: { game: "go" } } } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-cancelled", params: { reason: "late lifecycle chatter" } } }));
+    expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible();
+    expect(screen.getByText("White to move.")).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("Waiting for game result…")).not.toBeInTheDocument();
+    expect(postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "tools/call")).toHaveLength(0);
+    bridge.dispose();
+  });
+  it("lets an explicit Start Game beat a late bootstrap result", async () => {
+    const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    render(<App bridge={bridge}/>);
+    await respond(1, validInit());
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole("combobox", { name: "NEW GAME" }), "go-13");
+    await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "black");
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "create_game", arguments: { game: "go", playerColor: "black", difficulty: "medium", boardSize: 13 } } }), "*"));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { result: { structuredContent: chess(9) } } } }));
+    expect(screen.queryByRole("group", { name: "Chess board" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Starting…" })).toBeDisabled();
+    await respond(2, { structuredContent: go(13) });
+    expect(await screen.findByRole("group", { name: "13 by 13 Go board" })).toBeVisible();
+    expect(postMessage.mock.calls.filter(([request]) => (request as { method?: string; params?: { name?: string } }).method === "tools/call" && (request as { params?: { name?: string } }).params?.name !== "create_game")).toHaveLength(0);
+    bridge.dispose();
+  });
+  it.each([
+    ["an error result", { isError: true, content: [{ type: "text", text: "host failed" }] }],
+    ["an empty result", {}],
+    ["a malformed result", { structuredContent: { kind: "chess" } }],
+  ])("exits waiting accessibly for %s without invoking a game tool", async (_label, result) => {
+    const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    render(<App bridge={bridge}/>);
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { result } } }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The game result could not be loaded");
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toBeVisible();
+    expect(screen.queryByText("Waiting for game result…")).not.toBeInTheDocument();
+    expect(postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "tools/call")).toHaveLength(0);
+    bridge.dispose();
+  });
+  it.each([
+    ["an initial error", { isError: true, content: [{ type: "text", text: "host failed" }] }],
+    ["an initial empty object", {}],
+    ["an initial malformed object", { structuredContent: { kind: "go" } }],
+  ])("rejects %s while preserving actionable recovery", (_label, toolOutput) => {
+    Object.defineProperty(window, "openai", { configurable: true, value: { toolOutput } });
+    const target = { postMessage: vi.fn() } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    render(<App bridge={bridge}/>);
+    expect(screen.getByRole("alert")).toHaveTextContent("The game result could not be loaded");
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toBeVisible();
+    expect(screen.queryByRole("group")).not.toBeInTheDocument();
+    bridge.dispose();
+  });
+  it.each([
+    ["null tool output", { toolOutput: null }],
+    ["null initial state", { initialState: null }],
+  ])("treats %s as delayed lifecycle data and stays neutral", async (_label, hostState) => {
+    Object.defineProperty(window, "openai", { configurable: true, value: hostState });
+    const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000);
+    render(<App bridge={bridge}/>);
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for game result…");
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
+    await Promise.resolve();
+    expect(postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "tools/call")).toHaveLength(0);
     bridge.dispose();
   });
   it("replaces embedded loading with an initialization error", async () => {
@@ -447,9 +601,10 @@ describe("App", () => {
 
     render(<App bridge={bridge}/>);
 
-    expect(screen.getByText("Loading game…")).toBeVisible();
+    expect(screen.getByText("Waiting for game result…")).toBeVisible();
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not initialize the game host.");
-    expect(screen.queryByText("Loading game…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Waiting for game result…")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toBeVisible();
     bridge.dispose();
   });
   it("uses exactly one direct, deterministic embedded GPT move and only unlocks after its matching receipt", async () => {
@@ -466,7 +621,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
 
@@ -500,7 +655,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -531,7 +686,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -561,7 +716,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -587,7 +742,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -614,7 +769,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -643,7 +798,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -673,7 +828,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -708,7 +863,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -738,7 +893,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "player" }) } }), "*"));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(gptCalls()).toHaveLength(1));
@@ -767,7 +922,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
 
     window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: reset } } }));
@@ -801,7 +956,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
 
     window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: after } } }));
@@ -832,7 +987,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -864,7 +1019,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -935,7 +1090,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -960,7 +1115,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(calls("play_game_move")).toHaveLength(2));
@@ -978,7 +1133,7 @@ describe("App", () => {
     const target = { postMessage: vi.fn() } as unknown as Window;
     const bridge = new GameBridge(target, 100_000);
     render(<App bridge={bridge} initialGame={chess()}/>);
-    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: { hostCapabilities: { serverTools: {}, message: {} }, hostContext: { maxHeight: 640 } } } }));
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit({ maxHeight: 640 }) } }));
     await waitFor(() => expect(document.querySelector("main.arena")).toHaveStyle("--host-max-height: 640px"));
     window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { maxHeight: 520 } } }));
     await waitFor(() => expect(document.querySelector("main.arena")).toHaveStyle("--host-max-height: 520px"));
@@ -1027,7 +1182,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /reset/i }));
     fireEvent.click(within(screen.getByRole("alertdialog", { name: "Reset this game?" })).getByRole("button", { name: "Reset game" }));
-    await reply(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await reply(1, validInit());
     await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "reset_game", arguments: { gameId: "chess-1", confirmed: true, expectedVersion: 5, expectedResetEpoch: 0 } } }), "*"));
     await reply(2, { structuredContent: reset });
     expect(screen.getByText("Reset epoch")).toBeVisible();
@@ -1059,7 +1214,7 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /reset/i }));
     fireEvent.click(within(screen.getByRole("alertdialog", { name: "Reset this game?" })).getByRole("button", { name: "Reset game" }));
-    await reply(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await reply(1, validInit());
     await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "reset_game", arguments: { gameId: "chess-1", confirmed: true, expectedVersion: 2, expectedResetEpoch: 0 } } }), "*"));
     await reply(2, { structuredContent: reset });
     window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: { ...start, stateVersion: 3, message: "Delayed old epoch" } } } }));
@@ -1102,7 +1257,7 @@ describe("App", () => {
     }));
     window.dispatchEvent(new MessageEvent("message", {
       source: target,
-      data: { jsonrpc: "2.0", id: 1, result: { hostCapabilities: { serverTools: {}, message: {} } } },
+      data: { jsonrpc: "2.0", id: 1, result: validInit() },
     }));
 
     await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "gpt", expectedVersion: 2 }) } }), "*"));
@@ -1125,7 +1280,7 @@ describe("App", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "black");
     await user.click(screen.getByRole("button", { name: "Start game" }));
     await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 1, method: "ui/initialize" }), "*"));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(calls("create_game")).toHaveLength(1));
     expect(calls("create_game")[0]?.params?.arguments).toEqual({ game: "chess", playerColor: "black", difficulty: "easy" });
     await respond(2, { structuredContent: created });
@@ -1144,7 +1299,7 @@ describe("App", () => {
     const newer = { ...chess(1), message: "Newer authoritative game state." };
     const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
     render(<App bridge={bridge} initialGame={chess()}/>);
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     const user = userEvent.setup();
     await user.selectOptions(screen.getByRole("combobox", { name: "NEW GAME" }), "go-9");
     await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "black");
@@ -1329,7 +1484,7 @@ describe("App", () => {
     const postMessage = vi.fn(); const target = { postMessage } as unknown as Window; const bridge = new GameBridge(target, 100_000); const start = chess(0, "hard"); const after = chessAdvance(start, "player", "e2e4", "black", ["a7a6"], "Black to move."); const skipped = chessAdvance(after, "gpt", "a7a6", "black", ["b7b6"], "Black moves again."); const done = chessAdvance(skipped, "gpt", "b7b6", "white", ["e2e4"], "White to move.");
     render(<App bridge={bridge} initialGame={start}/>); fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i })); fireEvent.click(screen.getByRole("button", { name: /empty e4/i }));
     const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } }); await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "player" }) } }), "*")); await respond(2, { structuredContent: after }); await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 3, method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "gpt" }) } }), "*")); await respond(3, { structuredContent: skipped });
+    await respond(1, validInit()); await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "player" }) } }), "*")); await respond(2, { structuredContent: after }); await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 3, method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "gpt" }) } }), "*")); await respond(3, { structuredContent: skipped });
     const directGptCalls = () => postMessage.mock.calls.filter(([request]) => { const value = request as { method?: string; params?: { arguments?: { actor?: string } } }; return value.method === "tools/call" && value.params?.arguments?.actor === "gpt"; }); await waitFor(() => expect(directGptCalls()).toHaveLength(2)); await respond(4, { structuredContent: done });
     await waitFor(() => expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeEnabled()); expect(directGptCalls()).toHaveLength(2); expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ method: "ui/message" }), "*"); bridge.dispose();
   });
@@ -1487,7 +1642,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4/i }));
-    await reply(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await reply(1, validInit());
     await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "player" }) } }), "*"));
     await reply(2, { structuredContent: after });
     await waitFor(() => expect(target.postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 3, method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "gpt" }) } }), "*"));
@@ -1520,7 +1675,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4, legal destination/i }));
-    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await respond(1, validInit());
     await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "player" }) } }), "*"));
     await respond(2, { structuredContent: after });
     await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 3, method: "tools/call", params: { name: "play_game_move", arguments: expect.objectContaining({ actor: "gpt" }) } }), "*"));
@@ -1661,7 +1816,7 @@ describe("App", () => {
     render(<App bridge={bridge} initialGame={start}/>);
     fireEvent.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
     fireEvent.click(screen.getByRole("button", { name: /empty e4/i }));
-    await reply(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await reply(1, validInit());
     await reply(2, { structuredContent: after });
     await reply(3, {});
 

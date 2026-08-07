@@ -9,9 +9,9 @@ import { ConnectFourBoard, ReversiBoard, TicTacToeBoard } from "./components/Sma
 import { BasketballBoard, PoolBoard } from "./components/SportsBoards";
 import { chooseStandaloneMove } from "./move-strategy";
 import { isConfirmedReset } from "./reset-validation";
+import { createWidgetResumeState, DEFAULT_GAME_DRAFT, draftFromSnapshot, parseWidgetState, type GameDraft, type GamePreset, type WidgetResumeState } from "./widget-state";
 import type { Color, GameDifficulty, GameSnapshot, GoBoardSize } from "./types";
 
-type GamePreset = "chess" | "tic-tac-toe" | "connect-four" | "reversi" | "pool" | "basketball" | `go-${GoBoardSize}`;
 const gamePresets: ReadonlyArray<{ value: GamePreset; label: string }> = [
   { value: "chess", label: "Chess" },
   { value: "pool", label: "Mini 8-Ball" },
@@ -58,14 +58,33 @@ function maxHeightFrom(value: unknown): number | undefined {
 function snapshotFromHost(candidate: unknown): GameSnapshot | undefined {
   if (isSnapshot(candidate)) return candidate;
   if (!candidate || typeof candidate !== "object") return;
-  const value = candidate as { structuredContent?: unknown; game?: unknown };
+  const value = candidate as { structuredContent?: unknown; isError?: unknown };
+  if (value.isError === true) return;
   if (isSnapshot(value.structuredContent)) return value.structuredContent;
-  if (isSnapshot(value.game)) return value.game;
 }
 
-function initialHostState(): GameSnapshot | undefined {
-  const state = chatGptHost();
-  return snapshotFromHost(state?.widgetState) ?? snapshotFromHost(state?.toolOutput) ?? snapshotFromHost(state?.initialState);
+type EmptyMode = "waiting" | "restoring" | "idle";
+type InitialAppState = { game?: GameSnapshot; resume?: WidgetResumeState; draft: GameDraft; emptyMode: EmptyMode; error?: string; autoStartStandalone: boolean };
+
+function initialAppState(bridge: GameBridge, initialGame: GameSnapshot | undefined): InitialAppState {
+  if (isSnapshot(initialGame)) return { game: initialGame, draft: draftFromSnapshot(initialGame), emptyMode: "idle", autoStartStandalone: false };
+  const host = chatGptHost();
+  const lifecycleCandidates = [host?.toolOutput, host?.initialState];
+  const authoritative = lifecycleCandidates.map(snapshotFromHost).find((candidate): candidate is GameSnapshot => candidate !== undefined);
+  if (authoritative) return { game: authoritative, draft: draftFromSnapshot(authoritative), emptyMode: "idle", autoStartStandalone: false };
+  if (!bridge.embedded) {
+    const resume = loadStandaloneGame();
+    return resume?.activeGameId
+      ? { resume, draft: resume.draft, emptyMode: "restoring", autoStartStandalone: false }
+      : { draft: resume?.draft ?? DEFAULT_GAME_DRAFT, emptyMode: "idle", autoStartStandalone: true };
+  }
+  if (lifecycleCandidates.some(candidate => candidate !== undefined && candidate !== null)) {
+    return { draft: parseWidgetState(host?.widgetState)?.draft ?? DEFAULT_GAME_DRAFT, emptyMode: "idle", error: "The game result could not be loaded. Start a new game to continue.", autoStartStandalone: false };
+  }
+  const resume = parseWidgetState(host?.widgetState);
+  return resume?.activeGameId
+    ? { resume, draft: resume.draft, emptyMode: "restoring", autoStartStandalone: false }
+    : { draft: resume?.draft ?? DEFAULT_GAME_DRAFT, emptyMode: "waiting", autoStartStandalone: false };
 }
 
 const expiredSessionMessage = "This saved game session has expired. Start a new game to continue.";
@@ -98,10 +117,6 @@ function requiresImportReview(snapshot: GameSnapshot | undefined): boolean {
     && snapshot.initialPosition !== undefined
     && snapshot.status === "active"
     && snapshot.importReview === "pending";
-}
-
-function compareSnapshotPosition(left: GameSnapshot, right: GameSnapshot): number {
-  return resetEpochOf(left) - resetEpochOf(right) || left.stateVersion - right.stateVersion;
 }
 
 function isConfirmedGptAdvance(previous: GameSnapshot, next: GameSnapshot, expectedMove: string): boolean {
@@ -175,24 +190,26 @@ function isConfirmedGptRecovery(previous: GameSnapshot, next: GameSnapshot, expe
 export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBridge; initialGame?: GameSnapshot } = {}) {
   const [bridge] = useState(() => suppliedBridge ?? new GameBridge());
   const [client] = useState(() => new GameClient(bridge));
-  const [recoverySeed] = useState<GameSnapshot | undefined>(() => initialGame === undefined
-    ? initialHostState() ?? (bridge.embedded ? undefined : loadStandaloneGame())
-    : undefined);
-  const initialSnapshot = initialGame ?? recoverySeed;
+  const [initial] = useState<InitialAppState>(() => initialAppState(bridge, initialGame));
+  const initialSnapshot = initial.game;
   const [game, setGame] = useState<GameSnapshot | undefined>(() => initialSnapshot);
+  const [activeGameId, setActiveGameId] = useState<string | null>(() => initialSnapshot?.gameId ?? initial.resume?.activeGameId ?? null);
+  const [restoreGameId] = useState<string | undefined>(() => initial.resume?.activeGameId ?? undefined);
+  const [emptyMode, setEmptyMode] = useState<EmptyMode>(() => initial.emptyMode);
   const [selected, setSelected] = useState<string>();
-  const [gamePreset, setGamePreset] = useState<GamePreset>(() => presetFor(initialSnapshot));
-  const [difficultyPreset, setDifficultyPreset] = useState<GameDifficulty>(() => initialSnapshot?.difficulty ?? "medium");
-  const [sidePreset, setSidePreset] = useState<Color>(() => initialSnapshot?.playerColor ?? "white");
+  const [gamePreset, setGamePreset] = useState<GamePreset>(() => initial.draft.game);
+  const [difficultyPreset, setDifficultyPreset] = useState<GameDifficulty>(() => initial.draft.difficulty);
+  const [sidePreset, setSidePreset] = useState<Color>(() => initial.draft.side);
   const [hostMaxHeight, setHostMaxHeight] = useState<number | undefined>(() => maxHeightFrom(chatGptHost()));
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<string | undefined>(() => initial.error);
   const [endConfirmation, setEndConfirmation] = useState<EndConfirmation>();
   const [resetConfirmation, setResetConfirmation] = useState<ResetConfirmation>();
-  const epoch = useRef(0); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const pendingGptReceipt = useRef<PendingGptReceipt>(); const resetBarrier = useRef<ResetBarrier>(); const resetPending = useRef<string>(); const recoveryStarted = useRef(false); const lifecycleTimer = useRef<number>(); const endGameTrigger = useRef<HTMLButtonElement>(null); const resetGameTrigger = useRef<HTMLButtonElement>(null); const restoreConfirmationFocus = useRef<"end" | "reset">();
+  const epoch = useRef(0); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const startingRef = useRef(starting); const pendingGptReceipt = useRef<PendingGptReceipt>(); const resetBarrier = useRef<ResetBarrier>(); const resetPending = useRef<string>(); const recoveryStarted = useRef(false); const fallbackStarted = useRef(false); const lifecycleTimer = useRef<number>(); const endGameTrigger = useRef<HTMLButtonElement>(null); const resetGameTrigger = useRef<HTMLButtonElement>(null); const restoreConfirmationFocus = useRef<"end" | "reset">();
   const stop = useCallback(() => { epoch.current += 1; pendingGptReceipt.current = undefined; }, []);
   const commitBusy = useCallback((next: boolean) => { busyRef.current = next; setBusy(next); }, []);
+  const commitStarting = useCallback((next: boolean) => { startingRef.current = next; setStarting(next); }, []);
   const apply = useCallback((next: GameSnapshot, version: number) => {
     if (version !== epoch.current) return;
     const prior = gameRef.current;
@@ -203,12 +220,24 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
     setEndConfirmation(undefined);
     setResetConfirmation(undefined);
     gameRef.current = next;
+    setActiveGameId(next.gameId);
+    setEmptyMode("idle");
     setGame(next);
   }, []);
+  const discardGame = useCallback(() => {
+    gameRef.current = undefined;
+    setGame(undefined);
+    setActiveGameId(null);
+    setSelected(undefined);
+    setEndConfirmation(undefined);
+    setResetConfirmation(undefined);
+    resetBarrier.current = undefined;
+    resetPending.current = undefined;
+  }, []);
   const action = useCallback(async (run: () => Promise<GameSnapshot>, after?: (next: GameSnapshot, version: number) => Promise<void>, startsGame = false, resetGameId?: string) => {
-    stop(); const version = epoch.current; resetPending.current = resetGameId; commitBusy(true); setStarting(startsGame); setError(undefined); setSelected(undefined); setEndConfirmation(undefined); setResetConfirmation(undefined);
-    try { const next = await run(); if (version !== epoch.current) return; apply(next, version); if (version !== epoch.current) return; await after?.(next, version); } catch (reason) { if (version === epoch.current) setError(requestErrorMessage(reason)); } finally { if (version === epoch.current) { if (resetPending.current === resetGameId) resetPending.current = undefined; commitBusy(false); setStarting(false); } }
-  }, [apply, commitBusy, stop]);
+    stop(); const version = epoch.current; resetPending.current = resetGameId; commitBusy(true); commitStarting(startsGame); setError(undefined); setSelected(undefined); setEndConfirmation(undefined); setResetConfirmation(undefined);
+    try { const next = await run(); if (version !== epoch.current) return; apply(next, version); if (version !== epoch.current) return; await after?.(next, version); } catch (reason) { if (version === epoch.current) setError(requestErrorMessage(reason)); } finally { if (version === epoch.current) { if (resetPending.current === resetGameId) resetPending.current = undefined; commitBusy(false); commitStarting(false); } }
+  }, [apply, commitBusy, commitStarting, stop]);
   const gptTurn = useCallback(async (next: GameSnapshot, version: number) => {
     if (requiresImportReview(next)) return;
     let current = next;
@@ -249,11 +278,32 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
     let alive = true;
     const initEpoch = epoch.current;
     const unsubscribe = bridge.onToolResult(result => {
-      const next = result.structuredContent;
+      const validEnvelope = result !== null && typeof result === "object";
+      const next = validEnvelope ? result.structuredContent : undefined;
       const current = gameRef.current;
-      if (!isSnapshot(next)) return;
+      if (!current && startingRef.current) return;
+      if (!validEnvelope || result.isError || !isSnapshot(next)) {
+        if (!current) {
+          stop();
+          discardGame();
+          commitBusy(false);
+          commitStarting(false);
+          setEmptyMode("idle");
+          setError("The game result could not be loaded. Start a new game to continue.");
+        }
+        return;
+      }
       if (!current) {
-        stop(); commitBusy(false); setStarting(false); setError(undefined); setGamePreset(presetFor(next)); setDifficultyPreset(next.difficulty); setSidePreset(next.playerColor); gameRef.current = next; setGame(next); return;
+        stop();
+        commitBusy(false);
+        commitStarting(false);
+        setError(undefined);
+        setGamePreset(presetFor(next));
+        setDifficultyPreset(next.difficulty);
+        setSidePreset(next.playerColor);
+        apply(next, epoch.current);
+        if (next.status === "active" && next.turn !== next.playerColor && !requiresImportReview(next)) void action(() => Promise.resolve(next), gptTurn);
+        return;
       }
       if (next.gameId !== current.gameId) return;
       const pending = pendingGptReceipt.current;
@@ -285,7 +335,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
         stop();
         resetPending.current = undefined;
         commitBusy(false);
-        setStarting(false);
+        commitStarting(false);
       }
       apply(next, epoch.current);
       setSelected(undefined);
@@ -294,76 +344,84 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
         void action(() => Promise.resolve(next), gptTurn);
       }
     });
+    const input = bridge.onToolInput(() => {
+      if (gameRef.current || startingRef.current) return;
+      stop();
+      discardGame();
+      commitBusy(false);
+      commitStarting(false);
+      setError(undefined);
+      setEmptyMode("waiting");
+    });
+    const cancelled = bridge.onToolCancelled(() => {
+      if (gameRef.current || startingRef.current) return;
+      stop();
+      discardGame();
+      commitBusy(false);
+      commitStarting(false);
+      setEmptyMode("idle");
+      setError("Game loading was cancelled. Start a new game to continue.");
+    });
     const context = bridge.onHostContext(value => setHostMaxHeight(maxHeightFrom(value) ?? maxHeightFrom(chatGptHost())));
-    if (bridge.embedded) void bridge.initialize().catch(() => { if (alive && epoch.current === initEpoch) setError("Could not initialize the game host."); });
+    if (bridge.embedded) void bridge.initialize().catch(() => { if (alive && epoch.current === initEpoch) { if (!gameRef.current) setEmptyMode("idle"); setError("Could not initialize the game host. Start a new game to continue."); } });
     return () => {
       alive = false;
       unsubscribe();
+      input();
+      cancelled();
       context();
       lifecycleTimer.current = window.setTimeout(() => { stop(); bridge.dispose(); lifecycleTimer.current = undefined; }, 0);
     };
-  }, [action, apply, bridge, commitBusy, gptTurn, stop]);
+  }, [action, apply, bridge, commitBusy, commitStarting, discardGame, gptTurn, stop]);
   useEffect(() => {
-    if (!recoverySeed || recoveryStarted.current) return;
+    if (!restoreGameId || recoveryStarted.current) return;
     recoveryStarted.current = true;
     const version = epoch.current;
     commitBusy(true);
     setError(undefined);
+    setEmptyMode("restoring");
     void (async () => {
       try {
-        let reconciled: GameSnapshot | undefined;
+        let authoritative: GameSnapshot;
         try {
-          const authoritative = await client.state(recoverySeed.gameId);
+          authoritative = await client.state(restoreGameId);
           if (version !== epoch.current) return;
-          const current = gameRef.current;
-          if (!current || current.gameId !== recoverySeed.gameId) return;
-          reconciled = current;
-          if (authoritative.gameId !== recoverySeed.gameId) throw new Error("The game service returned the wrong saved game.");
-          if (compareSnapshotPosition(authoritative, current) >= 0) {
-            apply(authoritative, version);
-            reconciled = authoritative;
-          } else if (compareSnapshotPosition(current, recoverySeed) === 0) {
-            setError("The saved board is newer than the server session. Use Refresh to try again.");
-            return;
-          }
+          if (authoritative.gameId !== restoreGameId) throw new Error("The game service returned the wrong saved game.");
         } catch (reason) {
           if (version !== epoch.current) return;
-          if (isNotFoundError(reason)) {
-            if (!bridge.embedded) clearStandaloneGame();
-            setError(expiredSessionMessage);
-            return;
-          }
-          const current = gameRef.current;
-          if (!current || current.gameId !== recoverySeed.gameId || compareSnapshotPosition(current, recoverySeed) <= 0) {
-            setError("Could not reconnect to this saved game. Use Refresh to try again.");
-            return;
-          }
-          reconciled = current;
+          discardGame();
+          setEmptyMode("idle");
+          if (!bridge.embedded) clearStandaloneGame();
+          setError(isNotFoundError(reason) ? expiredSessionMessage : "Could not reconnect to this saved game. Start a new game to continue.");
+          return;
         }
+        apply(authoritative, version);
         setError(undefined);
-        if (reconciled?.status === "active" && reconciled.turn !== reconciled.playerColor && !requiresImportReview(reconciled)) await gptTurn(reconciled, version);
-      } catch (reason) {
-        if (version !== epoch.current) return;
-        const message = requestErrorMessage(reason);
-        setError(isNotFoundError(reason) ? message : `${message} Use Refresh to try again.`);
+        try {
+          if (authoritative.status === "active" && authoritative.turn !== authoritative.playerColor && !requiresImportReview(authoritative)) await gptTurn(authoritative, version);
+        } catch (reason) {
+          if (version === epoch.current) setError(requestErrorMessage(reason));
+        }
       } finally {
         if (version === epoch.current) commitBusy(false);
       }
     })();
-  }, [apply, bridge.embedded, client, commitBusy, gptTurn, recoverySeed]);
-  useEffect(() => { if (!game && !bridge.embedded) void action(() => client.create({ game: "chess", playerColor: "white", difficulty: "medium" }), undefined, true); }, [action, bridge.embedded, client, game]);
+  }, [apply, bridge.embedded, client, commitBusy, discardGame, gptTurn, restoreGameId]);
   useEffect(() => {
-    if (!game) return;
+    if (!initial.autoStartStandalone || fallbackStarted.current) return;
+    fallbackStarted.current = true;
+    void action(() => client.create({ game: "chess", playerColor: "white", difficulty: "medium" }), undefined, true);
+  }, [action, client, initial.autoStartStandalone]);
+  useEffect(() => {
+    const resume = createWidgetResumeState(activeGameId, { game: gamePreset, difficulty: difficultyPreset, side: sidePreset });
     if (!bridge.embedded) {
-      saveStandaloneGame(game);
+      saveStandaloneGame(resume);
       return;
     }
     const host = chatGptHost();
     if (!host?.setWidgetState) return;
-    void Promise.resolve(host.setWidgetState({ game })).catch(() => undefined);
-  }, [bridge.embedded, game]);
-  const currentPreset = presetFor(game);
-  useEffect(() => { if (game) { setGamePreset(currentPreset); setDifficultyPreset(game.difficulty); setSidePreset(game.playerColor); } }, [currentPreset, game?.gameId]);
+    try { host.setWidgetState(resume); } catch { /* Host persistence is optional and must never block gameplay. */ }
+  }, [activeGameId, bridge.embedded, difficultyPreset, gamePreset, sidePreset]);
   useEffect(() => {
     setEndConfirmation(current => current && game && current.gameId === game.gameId && current.expectedVersion === game.stateVersion && current.expectedResetEpoch === resetEpochOf(game) ? current : undefined);
     setResetConfirmation(current => current && game && current.gameId === game.gameId && current.expectedVersion === game.stateVersion && current.expectedResetEpoch === resetEpochOf(game) ? current : undefined);
@@ -457,7 +515,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   };
   const importReviewPending = requiresImportReview(game);
   useEffect(() => {
-    const render = () => JSON.stringify(gameTextState(game, gamePreset, difficultyPreset, sidePreset, busy, starting, selected, error, endConfirmation, resetConfirmation, importReviewPending));
+    const render = () => JSON.stringify(gameTextState(game, gamePreset, difficultyPreset, sidePreset, busy, starting, selected, error, emptyMode, endConfirmation, resetConfirmation, importReviewPending));
     const advance = (_milliseconds: number) => { /* This turn-based DOM game has no animation clock. */ };
     window.render_game_to_text = render;
     window.advanceTime = advance;
@@ -465,7 +523,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       if (window.render_game_to_text === render) Reflect.deleteProperty(window, "render_game_to_text");
       if (window.advanceTime === advance) Reflect.deleteProperty(window, "advanceTime");
     };
-  }, [busy, difficultyPreset, endConfirmation, error, game, gamePreset, importReviewPending, resetConfirmation, selected, sidePreset, starting]);
+  }, [busy, difficultyPreset, emptyMode, endConfirmation, error, game, gamePreset, importReviewPending, resetConfirmation, selected, sidePreset, starting]);
   const confirmationOpen = Boolean(endConfirmation || resetConfirmation);
   const disabled = busy || confirmationOpen || importReviewPending || game?.status === "finished" || game?.turn !== game?.playerColor;
   const canInterruptBusyGpt = Boolean(busy && game?.status === "active" && game.turn !== game.playerColor);
@@ -475,19 +533,19 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const confirmationLabel = endConfirmation ? "End game" : confirmingTryAgain ? "Try again" : "Reset game";
   const cancelConfirmation = endConfirmation ? cancelEndConfirmation : cancelResetConfirmation;
   const confirmAction = endConfirmation ? confirmEndGame : confirmResetGame;
-  const hostHydrating = bridge.embedded && !game && !error;
+  const emptyStatus = !game && !error ? emptyMode === "restoring" ? "Restoring saved game…" : emptyMode === "waiting" ? "Waiting for game result…" : undefined : undefined;
   const arenaStyle = hostMaxHeight ? { "--host-max-height": `${hostMaxHeight}px` } as CSSProperties : undefined;
   return <main className={confirmationOpen ? "arena action-confirming" : "arena"} style={arenaStyle}>
     <header>
       <h1 aria-label="Turnplay Arena"><span>TURN</span>PLAY <em>ARENA</em></h1>
-      {!hostHydrating && <form className="new-game-picker" aria-busy={starting} onSubmit={event => { event.preventDefault(); void startGame(); }}>
+      <form className="new-game-picker" aria-busy={starting} onSubmit={event => { event.preventDefault(); void startGame(); }}>
         <label className="picker-field" htmlFor="game-preset"><span>NEW GAME</span><select id="game-preset" value={gamePreset} disabled={starting || confirmationOpen} onChange={event => setGamePreset(event.target.value as GamePreset)}>{gamePresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label>
         <label className="picker-field" htmlFor="difficulty-preset"><span>DIFFICULTY</span><select id="difficulty-preset" value={difficultyPreset} disabled={starting || confirmationOpen} onChange={event => setDifficultyPreset(event.target.value as GameDifficulty)}>{difficultyPresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label>
         <label className="picker-field" htmlFor="side-preset"><span>SIDE</span><select id="side-preset" value={sidePreset} disabled={starting || confirmationOpen} onChange={event => setSidePreset(event.target.value as Color)}>{sidePresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label>
         <button className="primary" type="submit" disabled={starting || confirmationOpen}>{starting ? "Starting…" : "Start game"}</button>
-      </form>}
+      </form>
     </header>
-    {hostHydrating && <p className="game-status" role="status">Loading game…</p>}
+    {emptyStatus && <p className="game-status" role="status">{emptyStatus}</p>}
     {error && <p className="error" role="alert">{error}</p>}
     {game && <section className={`table table-${game.kind}`}>
       <GameChrome game={game} thinking={busy && game.turn !== game.playerColor} unconfirmed={Boolean(error) && !busy && game.turn !== game.playerColor}/>
@@ -516,8 +574,8 @@ function gameStatusText(game: GameSnapshot, importReviewPending: boolean): strin
   return game.lastMove ? `Last move: ${game.lastMove.notation}` : game.kind === "pool" ? "Choose a ball or a safety shot." : game.kind === "basketball" ? "Choose a shot." : "Choose a piece to begin.";
 }
 
-function gameTextState(game: GameSnapshot | undefined, gamePreset: GamePreset, difficultyPreset: GameDifficulty, sidePreset: Color, busy: boolean, starting: boolean, selected: string | undefined, error: string | undefined, endConfirmation: EndConfirmation | undefined, resetConfirmation: ResetConfirmation | undefined, importReviewPending: boolean) {
-  if (!game) return { mode: "loading", draft: { game: gamePreset, difficulty: difficultyPreset, side: sidePreset }, busy, starting, error, endGame: { available: false, confirmation: null }, resetGame: { available: false, label: null, prompt: null, confirmation: null } };
+function gameTextState(game: GameSnapshot | undefined, gamePreset: GamePreset, difficultyPreset: GameDifficulty, sidePreset: Color, busy: boolean, starting: boolean, selected: string | undefined, error: string | undefined, emptyMode: EmptyMode, endConfirmation: EndConfirmation | undefined, resetConfirmation: ResetConfirmation | undefined, importReviewPending: boolean) {
+  if (!game) return { mode: error ? "error" : emptyMode === "restoring" ? "restoring" : "waiting", status: error ?? (emptyMode === "restoring" ? "Restoring saved game…" : emptyMode === "waiting" ? "Waiting for game result…" : undefined), draft: { game: gamePreset, difficulty: difficultyPreset, side: sidePreset }, busy, starting, error, endGame: { available: false, confirmation: null }, resetGame: { available: false, label: null, prompt: null, confirmation: null } };
   const coordinateSystem = game.kind === "chess" ? "Chess files a-h run left-to-right; ranks 1-8 run White-to-Black." : game.kind === "go" ? `Go columns ${"ABCDEFGHJKLMNOPQRST".slice(0, game.boardSize)} run left-to-right, I is skipped, and ranks ${game.boardSize}-1 run top-to-bottom.` : game.kind === "tic-tac-toe" ? "Tic-Tac-Toe columns A-C run left-to-right and ranks 3-1 run top-to-bottom." : game.kind === "connect-four" ? "Connect Four columns A-G run left-to-right and ranks 6-1 run top-to-bottom." : game.kind === "reversi" ? "Reversi columns A-H run left-to-right and ranks 8-1 run top-to-bottom." : game.kind === "pool" ? "Pool uses integer x=0-100 left-to-right and y=0-50 top-to-bottom; pockets are TL, TM, TR, BL, BM, and BR." : "Court Duel has three exact shot choices: drive, pull-up, and three.";
   const board = game.kind === "chess"
     ? Array.from({ length: 8 }, (_, row) => game.board.slice(row * 8, row * 8 + 8).map((cell) => cell.piece ? (cell.color === "white" ? cell.piece.toUpperCase() : cell.piece) : ".").join(""))

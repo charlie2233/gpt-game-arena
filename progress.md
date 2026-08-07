@@ -424,3 +424,18 @@ Original prompt: also implement select difficuktuy
 - [x] The required web-game client produced a clean 1280×720 screenshot plus authoritative text-state with no error artifact. The real DOM/browser matrix passes at 320×568, 390×844, 416×360, 700×844, 800×520, and 1280×720 with square boards, no picker overlap or horizontal overflow, all 64 Chess center hit-tests correct, and every essential board/control/status region visible.
 - [x] A real Hard Tic-Tac-Toe White start sent exactly `create_game` then one versioned GPT `B2` move. End plus Try again preserved the same game/settings, incremented `resetEpoch`, sent exactly `reset_game` then one versioned GPT `B2` move, retained the divergent draft, restored Reset, preserved focus, kept `scrollY` at zero in the 416×360 dialog layout, and emitted no console or page errors.
 - [ ] Stable hosted ChatGPT acceptance remains separate; the live Node server on port 8000 and Cloudflare tunnel were not stopped, restarted, or modified.
+
+## Pointer-only restore and MCP Apps lifecycle
+
+### Implemented
+
+- [x] Replaced ChatGPT widget state and standalone local storage snapshots with a strict v2 `activeGameId` plus draft game/difficulty/side schema; valid legacy saves contribute only that pointer and those safe preferences.
+- [x] Restore renders no cached board and performs exactly one authoritative `get_game_state` read, including under React StrictMode; failed or expired pointers clear to an accessible New Game recovery state.
+- [x] Added parent-only tool-input and tool-cancelled bridge notifications with unsubscribe/disposal cleanup, and require a valid negotiated MCP Apps `2026-01-26` initialize result before announcing initialized.
+- [x] Added neutral embedded waiting, cancellation/error recovery, authoritative initial-result precedence, late-result recovery, and synchronous pointer-only widget persistence without lifecycle-triggered mutations.
+
+### Verification status
+
+- [x] Focused App/schema/storage/bridge coverage passes 135/135, including strict v2, legacy migration, storage failures, lifecycle races, notification origin/unsubscribe/disposal, initialize validation, and existing gameplay paths.
+- [x] The complete web suite passes 212/212 across 11 files; web typecheck and the production single-file build pass, and `git diff --check` is clean.
+- [ ] Stable hosted ChatGPT acceptance remains a separate production-endpoint gate; this increment did not stop, restart, or modify the live server on port 8000 or its Cloudflare tunnel.
