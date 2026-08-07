@@ -417,5 +417,6 @@ Original prompt: also implement select difficuktuy
 - [x] Focused late-opening/reset race: 1/1 passed.
 - [x] Web TypeScript check and production build passed; `git diff --check` passed.
 - [x] Responsive browser guard at 416×360 passed with all chooser controls, the full Chess board, controls, and status visible and all 64 square center hit-tests correct.
+- [x] Closed the 681–700px header boundary by keeping the non-shrinking title hidden through 760px; the focused CSS regression guard passes at both widths, and web typecheck plus the production build pass.
 - [ ] The canonical parallel web run reached 166/171 but the shared machine was CPU-starved: unrelated pre-existing App, GoBoard, and move-strategy tests exceeded their 5-second limits, and the existing Hard-Chess 2-second budget measured 5.3 seconds. A fresh sequential/canonical rerun and the final 390×844 browser guard remain the handoff gates.
 - [ ] Stable hosted ChatGPT acceptance remains separate; the live Node server on port 8000 and Cloudflare tunnel were not stopped, restarted, or modified.
