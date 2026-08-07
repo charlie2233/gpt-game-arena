@@ -18,7 +18,7 @@ describe("MCP game arena server", () => {
     const manifest = JSON.parse(await readFile(new URL("../../chatgpt-app-submission.json", import.meta.url), "utf8")) as {
       app_info?: { display_name?: string; subtitle?: string };
       tools?: Record<string, { annotations?: Record<string, boolean> }>;
-      test_cases?: unknown[];
+      test_cases?: Array<{ tools_triggered?: string | null; expected_output?: string }>;
       negative_test_cases?: unknown[];
     };
     expect(Object.keys(manifest.tools ?? {}).sort()).toEqual([
@@ -28,6 +28,15 @@ describe("MCP game arena server", () => {
     expect(manifest.app_info?.display_name).toBe("Turnplay Arena");
     expect(manifest.test_cases).toHaveLength(5);
     expect(manifest.negative_test_cases).toHaveLength(3);
+    const positiveCases = manifest.test_cases ?? [];
+    for (const testCase of positiveCases.filter(({ tools_triggered }) => tools_triggered?.includes("create_game"))) {
+      const workflow = testCase.tools_triggered?.split(", ") ?? [];
+      expect(workflow).toContain("render_game");
+      expect(workflow.indexOf("create_game")).toBeLessThan(workflow.indexOf("render_game"));
+      expect(testCase.expected_output).toContain("interactive board renders from the same gameId");
+    }
+    const importCase = positiveCases.find(({ tools_triggered }) => tools_triggered === "import_go_position");
+    expect(importCase?.tools_triggered).toBe("import_go_position");
     for (const tool of Object.values(manifest.tools ?? {})) {
       expect(Object.keys(tool.annotations ?? {}).sort()).toEqual(["destructiveHint", "openWorldHint", "readOnlyHint"]);
     }
@@ -109,6 +118,13 @@ describe("MCP game arena server", () => {
     expect(tools.tools.find((tool) => tool.name === "reset_game")?.description).toContain("RESET_CONFIRMED");
     expect(tools.tools.find((tool) => tool.name === "reset_game")?.description).toContain("RESET_CONFIRMATION_UNKNOWN");
     const createTool = tools.tools.find((tool) => tool.name === "create_game");
+    expect(createTool?.description).toContain("After a successful confirmed create, call render_game exactly once with the returned gameId to show the interactive board.");
+    expect(createTool?._meta).not.toHaveProperty("ui.resourceUri");
+    expect(createTool?._meta).not.toHaveProperty("openai/outputTemplate");
+    expect(rendered?.description).toContain("Use this when performing the UI render step for an existing normal game, especially immediately after create_game.");
+    expect(rendered?.description).toContain("Use the exact gameId returned by create_game and call it once.");
+    expect(rendered?.description).toContain("This tool does not create or mutate a game.");
+    expect(rendered?.description).toContain("Do not call it after import_go_position because that tool owns the widget render.");
     for (const game of ["Mini 8-Ball", "Court Duel", "chess", "Reversi", "Tic-Tac-Toe", "Connect Four", "Go"]) {
       expect(createTool?.description).toContain(game);
     }

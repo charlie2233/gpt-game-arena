@@ -110,8 +110,8 @@
       "description": "Create a new Hard 9x9 Go game with the player assigned Black.",
       "user_prompt": "Start a Hard 9x9 Go game. I will play Black.",
       "file_attachment_urls": null,
-      "tools_triggered": "create_game",
-      "expected_output": "Creates a new Go session with difficulty hard, playerColor black, boardSize 9, resetEpoch 0, stateVersion 0, and an authoritative list of legal moves.",
+      "tools_triggered": "create_game, render_game",
+      "expected_output": "Creates a new Go session with difficulty hard, playerColor black, boardSize 9, resetEpoch 0, stateVersion 0, and an authoritative list of legal moves; the interactive board renders from the same gameId.",
       "expected_output_url": null
     },
     {
@@ -126,24 +126,24 @@
       "description": "Create Hard Tic-Tac-Toe with the player as White, then apply the assistant's exact B2 move using the returned identifiers.",
       "user_prompt": "Start Hard Tic-Tac-Toe with me as White. When it is your turn, play B2 using the game ID, reset epoch, and version returned by the new game.",
       "file_attachment_urls": null,
-      "tools_triggered": "create_game, play_game_move",
-      "expected_output": "Creates the requested fixture, then appends B2 exactly once as the assistant move, returns stateVersion 1 with the updated board, and includes a matching MOVE_CONFIRMED receipt.",
+      "tools_triggered": "create_game, render_game, play_game_move",
+      "expected_output": "Creates the requested fixture, the interactive board renders from the same gameId, then appends B2 exactly once as the assistant move, returns stateVersion 1 with the updated board, and includes a matching MOVE_CONFIRMED receipt.",
       "expected_output_url": null
     },
     {
       "description": "Create Medium Chess as White, apply e2e4, then reset it with explicit confirmation and the returned identifiers.",
       "user_prompt": "Start Medium Chess with me as White, play my e2e4 move, then reset that game now while keeping the same color and difficulty.",
       "file_attachment_urls": null,
-      "tools_triggered": "create_game, play_game_move, reset_game",
-      "expected_output": "Returns the same game ID, kind, player color, and difficulty with an empty move history, stateVersion 0, resetEpoch incremented by one, and a matching RESET_CONFIRMED receipt.",
+      "tools_triggered": "create_game, render_game, play_game_move, reset_game",
+      "expected_output": "The interactive board renders from the same gameId, then returns the same game ID, kind, player color, and difficulty with an empty move history, stateVersion 0, resetEpoch incremented by one, and a matching RESET_CONFIRMED receipt.",
       "expected_output_url": null
     },
     {
       "description": "Create Connect Four, then end that same active game after explicit confirmation using its returned identifiers.",
       "user_prompt": "Start a Medium Connect Four game with me as Black, then yes, end that newly created game now.",
       "file_attachment_urls": null,
-      "tools_triggered": "create_game, end_game",
-      "expected_output": "Preserves the board and move history, changes status to finished with finishReason ended, advances the state version once, and includes a matching END_CONFIRMED receipt.",
+      "tools_triggered": "create_game, render_game, end_game",
+      "expected_output": "The interactive board renders from the same gameId, preserves the board and move history, changes status to finished with finishReason ended, advances the state version once, and includes a matching END_CONFIRMED receipt.",
       "expected_output_url": null
     }
   ],

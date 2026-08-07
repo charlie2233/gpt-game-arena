@@ -67,6 +67,14 @@ if (submission.$schema !== "https://developers.openai.com/plugins/schemas/chatgp
 if (submission.app_info?.display_name !== "Turnplay Arena") fail("submission display name is not Turnplay Arena");
 if (submission.test_cases?.length !== 5) fail("submission must contain exactly five positive cases");
 if (submission.negative_test_cases?.length !== 3) fail("submission must contain exactly three negative cases");
+for (const [index, testCase] of (submission.test_cases ?? []).entries()) {
+  const workflow = typeof testCase.tools_triggered === "string" ? testCase.tools_triggered.split(", ") : [];
+  if (workflow.includes("create_game")) {
+    if (workflow.indexOf("create_game") > workflow.indexOf("render_game")) fail(`submission positive case ${index + 1}: render_game must follow create_game`);
+    if (!testCase.expected_output?.includes("interactive board renders from the same gameId")) fail(`submission positive case ${index + 1}: expected output must confirm the interactive board uses the same gameId`);
+  }
+  if (workflow.includes("import_go_position") && workflow.includes("render_game")) fail(`submission positive case ${index + 1}: import_go_position renders directly and must not trigger render_game`);
+}
 
 if (failures.length > 0) {
   console.error(failures.map(message => `- ${message}`).join("\n"));

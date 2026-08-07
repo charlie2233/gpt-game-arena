@@ -1,5 +1,21 @@
 Original prompt: also implement select difficuktuy
 
+## MCP create-to-render contract increment
+
+### Completed
+
+- [x] Made normal-game creation explicitly data-only and require one immediate `render_game` call with the exact returned `gameId` to mount the interactive board.
+- [x] Declared `render_game` as the non-mutating UI step for an existing normal game and kept imported Go on its direct `import_go_position` widget path.
+- [x] Updated all four positive create workflows in the reviewer manifest to run `create_game, render_game` in order, while retaining the import-only workflow without a redundant render.
+- [x] Added descriptor, manifest, and static-validator regression checks for this dependency.
+
+### Exact validation
+
+- [x] Focused `server/tests/mcp-server.test.ts`: 12/12 tests pass.
+- [x] Full server suite: 13/13 files and 229/229 tests pass.
+- [x] Server typecheck (`tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json`) passes.
+- [x] Root static-site validator (`npm run test:site`) passes.
+
 ## Goal (prior difficulty work; historical)
 
 - Add Easy, Medium, and Hard difficulty selection to game creation.
