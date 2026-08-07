@@ -28,6 +28,10 @@ const difficultyPresets: ReadonlyArray<{ value: GameDifficulty; label: string }>
   { value: "medium", label: "Medium" },
   { value: "hard", label: "Hard" },
 ];
+const sidePresets: ReadonlyArray<{ value: Color; label: string }> = [
+  { value: "black", label: "Black" },
+  { value: "white", label: "White" },
+];
 
 function presetFor(game?: GameSnapshot): GamePreset {
   return game?.kind === "go" ? `go-${game.boardSize}` : game?.kind ?? "chess";
@@ -69,6 +73,8 @@ const endGameDescription = "The board will be frozen. Reset or start a New Game 
 const endGamePrompt = `End this game? ${endGameDescription}`;
 const resetGameDescription = "All current progress will be cleared. Your game settings will stay the same.";
 const resetGamePrompt = `Reset this game? ${resetGameDescription}`;
+const tryAgainDescription = "This restarts the same game while keeping its settings.";
+const tryAgainPrompt = `Try again? ${tryAgainDescription}`;
 
 type SnapshotMove = { actor: "player" | "gpt"; color: Color; notation: string; ply: number };
 type ResetBarrier = { gameId: string; staleHistory: SnapshotMove[]; legacyCeiling: number };
@@ -177,6 +183,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const [selected, setSelected] = useState<string>();
   const [gamePreset, setGamePreset] = useState<GamePreset>(() => presetFor(initialSnapshot));
   const [difficultyPreset, setDifficultyPreset] = useState<GameDifficulty>(() => initialSnapshot?.difficulty ?? "medium");
+  const [sidePreset, setSidePreset] = useState<Color>(() => initialSnapshot?.playerColor ?? "white");
   const [hostMaxHeight, setHostMaxHeight] = useState<number | undefined>(() => maxHeightFrom(chatGptHost()));
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -246,7 +253,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       const current = gameRef.current;
       if (!isSnapshot(next)) return;
       if (!current) {
-        stop(); commitBusy(false); setStarting(false); setError(undefined); setGamePreset(presetFor(next)); setDifficultyPreset(next.difficulty); gameRef.current = next; setGame(next); return;
+        stop(); commitBusy(false); setStarting(false); setError(undefined); setGamePreset(presetFor(next)); setDifficultyPreset(next.difficulty); setSidePreset(next.playerColor); gameRef.current = next; setGame(next); return;
       }
       if (next.gameId !== current.gameId) return;
       const pending = pendingGptReceipt.current;
@@ -356,7 +363,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
     void Promise.resolve(host.setWidgetState({ game })).catch(() => undefined);
   }, [bridge.embedded, game]);
   const currentPreset = presetFor(game);
-  useEffect(() => { if (game) { setGamePreset(currentPreset); setDifficultyPreset(game.difficulty); } }, [currentPreset, game?.gameId]);
+  useEffect(() => { if (game) { setGamePreset(currentPreset); setDifficultyPreset(game.difficulty); setSidePreset(game.playerColor); } }, [currentPreset, game?.gameId]);
   useEffect(() => {
     setEndConfirmation(current => current && game && current.gameId === game.gameId && current.expectedVersion === game.stateVersion && current.expectedResetEpoch === resetEpochOf(game) ? current : undefined);
     setResetConfirmation(current => current && game && current.gameId === game.gameId && current.expectedVersion === game.stateVersion && current.expectedResetEpoch === resetEpochOf(game) ? current : undefined);
@@ -371,10 +378,10 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const humanMove = (move: string) => game && action(() => client.play(game.gameId, "player", move, game.stateVersion, resetEpochOf(game)), gptTurn);
   const chessSquare = (square: string) => { if (!game || game.kind !== "chess") return; if (!selected) { setSelected(square); return; } const legal = game.legalMoves.filter(move => move.startsWith(selected) && move.slice(2, 4) === square).sort(); const move = legal.find(m => m.endsWith("q")) ?? legal[0]; if (move) humanMove(move); else setSelected(undefined); };
   const startGame = () => {
-    if (gamePreset === "chess") return action(() => client.create({ game: "chess", playerColor: "white", difficulty: difficultyPreset }), undefined, true);
-    if (gamePreset === "tic-tac-toe" || gamePreset === "connect-four" || gamePreset === "reversi" || gamePreset === "pool" || gamePreset === "basketball") return action(() => client.create({ game: gamePreset, playerColor: "black", difficulty: difficultyPreset }), undefined, true);
+    if (gamePreset === "chess") return action(() => client.create({ game: "chess", playerColor: sidePreset, difficulty: difficultyPreset }), gptTurn, true);
+    if (gamePreset === "tic-tac-toe" || gamePreset === "connect-four" || gamePreset === "reversi" || gamePreset === "pool" || gamePreset === "basketball") return action(() => client.create({ game: gamePreset, playerColor: sidePreset, difficulty: difficultyPreset }), gptTurn, true);
     const boardSize = Number(gamePreset.slice(3)) as GoBoardSize;
-    return action(() => client.create({ game: "go", playerColor: "black", difficulty: difficultyPreset, ...(boardSize === 9 ? {} : { boardSize }) }), undefined, true);
+    return action(() => client.create({ game: "go", playerColor: sidePreset, difficulty: difficultyPreset, ...(boardSize === 9 ? {} : { boardSize }) }), gptTurn, true);
   };
   const openEndConfirmation = () => {
     const current = gameRef.current;
@@ -450,7 +457,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   };
   const importReviewPending = requiresImportReview(game);
   useEffect(() => {
-    const render = () => JSON.stringify(gameTextState(game, gamePreset, difficultyPreset, busy, starting, selected, error, endConfirmation, resetConfirmation, importReviewPending));
+    const render = () => JSON.stringify(gameTextState(game, gamePreset, difficultyPreset, sidePreset, busy, starting, selected, error, endConfirmation, resetConfirmation, importReviewPending));
     const advance = (_milliseconds: number) => { /* This turn-based DOM game has no animation clock. */ };
     window.render_game_to_text = render;
     window.advanceTime = advance;
@@ -458,13 +465,14 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       if (window.render_game_to_text === render) Reflect.deleteProperty(window, "render_game_to_text");
       if (window.advanceTime === advance) Reflect.deleteProperty(window, "advanceTime");
     };
-  }, [busy, difficultyPreset, endConfirmation, error, game, gamePreset, importReviewPending, resetConfirmation, selected, starting]);
+  }, [busy, difficultyPreset, endConfirmation, error, game, gamePreset, importReviewPending, resetConfirmation, selected, sidePreset, starting]);
   const confirmationOpen = Boolean(endConfirmation || resetConfirmation);
   const disabled = busy || confirmationOpen || importReviewPending || game?.status === "finished" || game?.turn !== game?.playerColor;
   const canInterruptBusyGpt = Boolean(busy && game?.status === "active" && game.turn !== game.playerColor);
-  const confirmationTitle = endConfirmation ? "End this game?" : "Reset this game?";
-  const confirmationDescription = endConfirmation ? endGameDescription : resetGameDescription;
-  const confirmationLabel = endConfirmation ? "End game" : "Reset game";
+  const confirmingTryAgain = resetConfirmation?.baseline.status === "finished";
+  const confirmationTitle = endConfirmation ? "End this game?" : confirmingTryAgain ? "Try again?" : "Reset this game?";
+  const confirmationDescription = endConfirmation ? endGameDescription : confirmingTryAgain ? tryAgainDescription : resetGameDescription;
+  const confirmationLabel = endConfirmation ? "End game" : confirmingTryAgain ? "Try again" : "Reset game";
   const cancelConfirmation = endConfirmation ? cancelEndConfirmation : cancelResetConfirmation;
   const confirmAction = endConfirmation ? confirmEndGame : confirmResetGame;
   const hostHydrating = bridge.embedded && !game && !error;
@@ -475,6 +483,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       {!hostHydrating && <form className="new-game-picker" aria-busy={starting} onSubmit={event => { event.preventDefault(); void startGame(); }}>
         <label className="picker-field" htmlFor="game-preset"><span>NEW GAME</span><select id="game-preset" value={gamePreset} disabled={starting || confirmationOpen} onChange={event => setGamePreset(event.target.value as GamePreset)}>{gamePresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label>
         <label className="picker-field" htmlFor="difficulty-preset"><span>DIFFICULTY</span><select id="difficulty-preset" value={difficultyPreset} disabled={starting || confirmationOpen} onChange={event => setDifficultyPreset(event.target.value as GameDifficulty)}>{difficultyPresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label>
+        <label className="picker-field" htmlFor="side-preset"><span>SIDE</span><select id="side-preset" value={sidePreset} disabled={starting || confirmationOpen} onChange={event => setSidePreset(event.target.value as Color)}>{sidePresets.map(preset => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label>
         <button className="primary" type="submit" disabled={starting || confirmationOpen}>{starting ? "Starting…" : "Start game"}</button>
       </form>}
     </header>
@@ -489,7 +498,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
           {importReviewPending && <small>Check the stones first. If one is wrong, tell GPT the correction before continuing.</small>}
         </section>}
         {game.kind === "chess" ? <ChessBoard game={game} selected={selected} onSquare={chessSquare} disabled={disabled}/> : game.kind === "go" ? <GoBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "tic-tac-toe" ? <TicTacToeBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "reversi" ? <ReversiBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "connect-four" ? <ConnectFourBoard game={game} onMove={humanMove} disabled={disabled}/> : game.kind === "pool" ? <PoolBoard game={game} onMove={humanMove} disabled={disabled}/> : <BasketballBoard game={game} onMove={humanMove} disabled={disabled}/>}
-        {confirmationOpen ? <div className="end-confirmation" role="alertdialog" aria-modal="true" aria-labelledby="game-action-title" aria-describedby="game-action-description" onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); cancelConfirmation(); return; } if (event.key !== "Tab") return; const focusable = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")]; if (focusable.length === 0) return; const first = focusable[0]; const last = focusable[focusable.length - 1]; if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } }}><strong id="game-action-title">{confirmationTitle}</strong><p id="game-action-description">{confirmationDescription}</p><div className="end-confirmation-actions"><button type="button" autoFocus disabled={busy && !canInterruptBusyGpt} onClick={cancelConfirmation}>Keep playing</button><button className="danger" type="button" disabled={busy && !canInterruptBusyGpt} onClick={confirmAction}>{confirmationLabel}</button></div></div> : <div className={`controls controls-${game.kind} controls-${game.status}`}>{game.kind === "go" && <button type="button" disabled={disabled} onClick={() => humanMove("pass")}>⊘ Pass</button>}{game.status === "active" && <button ref={endGameTrigger} className="danger" type="button" disabled={busy && !canInterruptBusyGpt} onClick={openEndConfirmation}>End game</button>}<button ref={resetGameTrigger} className="primary" type="button" disabled={busy && !canInterruptBusyGpt} onClick={openResetConfirmation}>⟳ Reset</button><button type="button" disabled={busy} onClick={() => void action(() => client.state(game.gameId), async (next, version) => { if (!requiresImportReview(next)) await gptTurn(next, version); })}>⟳ Refresh</button></div>}
+        {confirmationOpen ? <div className="end-confirmation" role="alertdialog" aria-modal="true" aria-labelledby="game-action-title" aria-describedby="game-action-description" onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); cancelConfirmation(); return; } if (event.key !== "Tab") return; const focusable = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")]; if (focusable.length === 0) return; const first = focusable[0]; const last = focusable[focusable.length - 1]; if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } }}><strong id="game-action-title">{confirmationTitle}</strong><p id="game-action-description">{confirmationDescription}</p><div className="end-confirmation-actions"><button type="button" autoFocus disabled={busy && !canInterruptBusyGpt} onClick={cancelConfirmation}>Keep playing</button><button className="danger" type="button" disabled={busy && !canInterruptBusyGpt} onClick={confirmAction}>{confirmationLabel}</button></div></div> : <div className={`controls controls-${game.kind} controls-${game.status}`}>{game.kind === "go" && <button type="button" disabled={disabled} onClick={() => humanMove("pass")}>⊘ Pass</button>}{game.status === "active" && <button ref={endGameTrigger} className="danger" type="button" disabled={busy && !canInterruptBusyGpt} onClick={openEndConfirmation}>End game</button>}<button ref={resetGameTrigger} className="primary" type="button" disabled={busy && !canInterruptBusyGpt} onClick={openResetConfirmation}>{game.status === "finished" ? "⟳ Try again" : "⟳ Reset"}</button><button type="button" disabled={busy} onClick={() => void action(() => client.state(game.gameId), async (next, version) => { if (!requiresImportReview(next)) await gptTurn(next, version); })}>⟳ Refresh</button></div>}
         {game.kind === "go" && <p className="captures">Captures — Black: {game.captures.black}, White: {game.captures.white}</p>}
         {game.kind === "reversi" && <p className="captures">Disks — Black: {game.score.black}, White: {game.score.white}</p>}
         {game.kind === "pool" && <p className="captures">Black shoots solids · White shoots stripes · Clear your group, then pocket the 8</p>}
@@ -507,8 +516,8 @@ function gameStatusText(game: GameSnapshot, importReviewPending: boolean): strin
   return game.lastMove ? `Last move: ${game.lastMove.notation}` : game.kind === "pool" ? "Choose a ball or a safety shot." : game.kind === "basketball" ? "Choose a shot." : "Choose a piece to begin.";
 }
 
-function gameTextState(game: GameSnapshot | undefined, gamePreset: GamePreset, difficultyPreset: GameDifficulty, busy: boolean, starting: boolean, selected: string | undefined, error: string | undefined, endConfirmation: EndConfirmation | undefined, resetConfirmation: ResetConfirmation | undefined, importReviewPending: boolean) {
-  if (!game) return { mode: "loading", draft: { game: gamePreset, difficulty: difficultyPreset }, busy, starting, error, endGame: { available: false, confirmation: null }, resetGame: { available: false, confirmation: null } };
+function gameTextState(game: GameSnapshot | undefined, gamePreset: GamePreset, difficultyPreset: GameDifficulty, sidePreset: Color, busy: boolean, starting: boolean, selected: string | undefined, error: string | undefined, endConfirmation: EndConfirmation | undefined, resetConfirmation: ResetConfirmation | undefined, importReviewPending: boolean) {
+  if (!game) return { mode: "loading", draft: { game: gamePreset, difficulty: difficultyPreset, side: sidePreset }, busy, starting, error, endGame: { available: false, confirmation: null }, resetGame: { available: false, label: null, prompt: null, confirmation: null } };
   const coordinateSystem = game.kind === "chess" ? "Chess files a-h run left-to-right; ranks 1-8 run White-to-Black." : game.kind === "go" ? `Go columns ${"ABCDEFGHJKLMNOPQRST".slice(0, game.boardSize)} run left-to-right, I is skipped, and ranks ${game.boardSize}-1 run top-to-bottom.` : game.kind === "tic-tac-toe" ? "Tic-Tac-Toe columns A-C run left-to-right and ranks 3-1 run top-to-bottom." : game.kind === "connect-four" ? "Connect Four columns A-G run left-to-right and ranks 6-1 run top-to-bottom." : game.kind === "reversi" ? "Reversi columns A-H run left-to-right and ranks 8-1 run top-to-bottom." : game.kind === "pool" ? "Pool uses integer x=0-100 left-to-right and y=0-50 top-to-bottom; pockets are TL, TM, TR, BL, BM, and BR." : "Court Duel has three exact shot choices: drive, pull-up, and three.";
   const board = game.kind === "chess"
     ? Array.from({ length: 8 }, (_, row) => game.board.slice(row * 8, row * 8 + 8).map((cell) => cell.piece ? (cell.color === "white" ? cell.piece.toUpperCase() : cell.piece) : ".").join(""))
@@ -517,7 +526,10 @@ function gameTextState(game: GameSnapshot | undefined, gamePreset: GamePreset, d
       : game.kind === "basketball"
         ? { score: game.score, energy: game.energy, attempts: game.attempts, phase: game.phase, round: game.round }
         : game.board.map((row) => row.map((stone) => stone === "black" ? "B" : stone === "white" ? "W" : ".").join(""));
-  return { mode: game.status, draft: { game: gamePreset, difficulty: difficultyPreset }, busy, starting, error, selected, coordinateSystem, importReview: game.kind === "go" && game.initialPosition ? { required: importReviewPending, pending: importReviewPending, authoritativeStatus: game.importReview, source: game.initialPosition.source, blackStones: game.initialPosition.blackStones.length, whiteStones: game.initialPosition.whiteStones.length, initialTurn: game.initialPosition.turn } : null, endGame: { available: game.status === "active", enabled: game.status === "active" && (!busy || game.turn !== game.playerColor), confirmation: endConfirmation ? { ...endConfirmation, prompt: endGamePrompt } : null }, resetGame: { available: true, enabled: !busy || game.status === "active" && game.turn !== game.playerColor, confirmation: resetConfirmation ? { gameId: resetConfirmation.gameId, expectedVersion: resetConfirmation.expectedVersion, expectedResetEpoch: resetConfirmation.expectedResetEpoch, prompt: resetGamePrompt } : null }, game: { gameId: game.gameId, resetEpoch: resetEpochOf(game), kind: game.kind, difficulty: game.difficulty, playerColor: game.playerColor, turn: game.turn, status: game.status, winner: game.winner, finishReason: game.finishReason, stateVersion: game.stateVersion, message: game.message, lastMove: game.lastMove, legalMoves: game.legalMoves, board, ...(game.kind === "reversi" ? { score: game.score } : {}), ...(game.kind === "pool" ? { cueBall: game.cueBall, balls: game.balls } : {}), ...(game.kind === "basketball" ? { score: game.score, energy: game.energy, streak: game.streak, attempts: game.attempts, phase: game.phase, round: game.round, shotOptions: game.shotOptions, shotResults: game.shotResults } : {}), ...(game.kind === "tic-tac-toe" || game.kind === "connect-four" ? { winningLine: game.winningLine } : {}) } };
+  const retryFinishedGame = game.status === "finished";
+  const resetLabel = retryFinishedGame ? "Try again" : "Reset";
+  const resetPrompt = retryFinishedGame ? tryAgainPrompt : resetGamePrompt;
+  return { mode: game.status, draft: { game: gamePreset, difficulty: difficultyPreset, side: sidePreset }, busy, starting, error, selected, coordinateSystem, importReview: game.kind === "go" && game.initialPosition ? { required: importReviewPending, pending: importReviewPending, authoritativeStatus: game.importReview, source: game.initialPosition.source, blackStones: game.initialPosition.blackStones.length, whiteStones: game.initialPosition.whiteStones.length, initialTurn: game.initialPosition.turn } : null, endGame: { available: game.status === "active", enabled: game.status === "active" && (!busy || game.turn !== game.playerColor), confirmation: endConfirmation ? { ...endConfirmation, prompt: endGamePrompt } : null }, resetGame: { available: true, enabled: !busy || game.status === "active" && game.turn !== game.playerColor, label: resetLabel, prompt: resetPrompt, confirmation: resetConfirmation ? { gameId: resetConfirmation.gameId, expectedVersion: resetConfirmation.expectedVersion, expectedResetEpoch: resetConfirmation.expectedResetEpoch, prompt: resetPrompt } : null }, game: { gameId: game.gameId, resetEpoch: resetEpochOf(game), kind: game.kind, difficulty: game.difficulty, playerColor: game.playerColor, turn: game.turn, status: game.status, winner: game.winner, finishReason: game.finishReason, stateVersion: game.stateVersion, message: game.message, lastMove: game.lastMove, legalMoves: game.legalMoves, board, ...(game.kind === "reversi" ? { score: game.score } : {}), ...(game.kind === "pool" ? { cueBall: game.cueBall, balls: game.balls } : {}), ...(game.kind === "basketball" ? { score: game.score, energy: game.energy, streak: game.streak, attempts: game.attempts, phase: game.phase, round: game.round, shotOptions: game.shotOptions, shotResults: game.shotResults } : {}), ...(game.kind === "tic-tac-toe" || game.kind === "connect-four" ? { winningLine: game.winningLine } : {}) } };
 }
 
 function titleColor(color: "white" | "black"): string {

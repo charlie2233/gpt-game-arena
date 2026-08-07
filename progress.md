@@ -397,3 +397,25 @@ Original prompt: also implement select difficuktuy
 - [x] Full web suite: 163 passing tests across 9 files.
 - [x] Web TypeScript check: `tsc -p tsconfig.json --noEmit` passes.
 - [ ] Hosted ChatGPT acceptance remains a separate stable-endpoint gate; the live server and temporary tunnel were not stopped, restarted, or modified during this increment.
+
+## Player-side starts and terminal Try again
+
+### Implemented
+
+- [x] Added an accessible `SIDE` draft selector with exact Black/White choices. Draft game, difficulty, and side remain independent from the authoritative game until Start, then resynchronize only when a new authoritative game is accepted.
+- [x] Send the selected `playerColor` for all nine game presets. `boardSize` remains omitted for every non-Go game and Quick Go 9×9, and is sent only for Go 13×13 and 19×19.
+- [x] Continue Start and reset receipts through the existing direct, versioned GPT-turn path when the selected player does not own the opening turn; no `get_game_state`, follow-up message, or optimistic move is added on confirmed success.
+- [x] Guard Start/opening races so late create or opening receipts cannot replace a newer authoritative notification or a newer reset epoch.
+- [x] Keep active games' existing Reset flow and present finished games as `Try again` with the exact confirmation copy, while continuing to use the same authoritative `reset_game` contract and preserving game, difficulty, board size, and player side.
+- [x] Exposed `draft.side` and the context-sensitive Reset/Try-again label and prompt through `window.render_game_to_text`.
+- [x] Extended the chooser to four responsive controls without changing board-sizing rules; the narrow-phone layout uses a second-row Start action and hides only the decorative title below 401px.
+
+### TDD and validation status
+
+- [x] Expected-red focused App run: 74/84 passed, with 10 intended failures for the absent side selector, direct opening continuation, and terminal Try-again behavior.
+- [x] Focused `web/src/App.test.tsx`: 85/85 passed after implementation, including standalone and embedded starts, exact payload/version/epoch assertions, draft isolation, late-receipt races, all presets, active Reset, terminal Try again, focus restoration, and retry-side opening continuation.
+- [x] Focused late-opening/reset race: 1/1 passed.
+- [x] Web TypeScript check and production build passed; `git diff --check` passed.
+- [x] Responsive browser guard at 416×360 passed with all chooser controls, the full Chess board, controls, and status visible and all 64 square center hit-tests correct.
+- [ ] The canonical parallel web run reached 166/171 but the shared machine was CPU-starved: unrelated pre-existing App, GoBoard, and move-strategy tests exceeded their 5-second limits, and the existing Hard-Chess 2-second budget measured 5.3 seconds. A fresh sequential/canonical rerun and the final 390×844 browser guard remain the handoff gates.
+- [ ] Stable hosted ChatGPT acceptance remains separate; the live Node server on port 8000 and Cloudflare tunnel were not stopped, restarted, or modified.

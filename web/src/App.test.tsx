@@ -38,6 +38,12 @@ const importedGo = (playerColor: "white" | "black" = "white", turn: "white" | "b
   return snapshot;
 };
 const tic = (): TicTacToeSnapshot => ({ gameId: "tic", kind: "tic-tac-toe", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["A1", "A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: Array.from({ length: 3 }, () => Array<"white" | "black" | null>(3).fill(null)) as Board<3, 3> });
+function ticGptAdvance(previous: TicTacToeSnapshot, notation: TicTacToeSnapshot["legalMoves"][number]): TicTacToeSnapshot {
+  const board = previous.board.map(row => [...row]) as Board<3, 3>;
+  board[3 - Number(notation[1])][notation.charCodeAt(0) - 65] = previous.turn;
+  const move = { actor: "gpt" as const, color: previous.turn, notation, ply: previous.moveHistory.length + 1 };
+  return { ...previous, board, turn: previous.turn === "black" ? "white" : "black", legalMoves: previous.legalMoves.filter(candidate => candidate !== notation), moveHistory: [...previous.moveHistory, move], lastMove: move, stateVersion: previous.stateVersion + 1, message: "White to move after GPT's opening." };
+}
 const four = (): ConnectFourSnapshot => ({ gameId: "four", kind: "connect-four", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["A", "B", "C", "D", "E", "F", "G"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: Array.from({ length: 6 }, () => Array<"white" | "black" | null>(7).fill(null)) as Board<6, 7> });
 const reversi = (): ReversiSnapshot => ({ gameId: "rev", kind: "reversi", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["C4", "D3", "E6", "F5"], moveHistory: [], stateVersion: 0, message: "Black to move.", board: [[null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, "black", "white", null, null, null], [null, null, null, "white", "black", null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null]], score: { black: 2, white: 2 } });
 const pool = (): PoolSnapshot => ({ gameId: "pool", kind: "pool", difficulty: "hard", playerColor: "black", turn: "black", status: "active", legalMoves: ["POT:1:TM", "POT:1:TR", "POT:2:TM", "POT:2:BM", "POT:3:BM", "POT:3:BR", "SAFE:L", "SAFE:C", "SAFE:R", "SAFE:T", "SAFE:B"], moveHistory: [], stateVersion: 0, message: "Black (solids) to shoot.", cueBall: { x: 12, y: 25 }, balls: [{ id: 1, group: "solids", x: 32, y: 9 }, { id: 2, group: "solids", x: 36, y: 20 }, { id: 3, group: "solids", x: 34, y: 34 }, { id: 9, group: "stripes", x: 53, y: 13 }, { id: 10, group: "stripes", x: 54, y: 29 }, { id: 11, group: "stripes", x: 72, y: 18 }, { id: 8, group: "eight", x: 76, y: 35 }] });
@@ -118,7 +124,7 @@ describe("App", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(fetch).toHaveBeenCalledTimes(3);
   });
-  it("renders Go legal coordinates and Pass", async () => { vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: chess() }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: go() }) } as Response); render(<App />); const user = userEvent.setup(); const picker = await screen.findByRole("combobox", { name: "NEW GAME" }); await user.selectOptions(picker, "go-9"); await user.click(screen.getByRole("button", { name: "Start game" })); expect(await screen.findByRole("button", { name: /Play at A9, empty, legal move/i })).toBeEnabled(); expect(fetch).toHaveBeenLastCalledWith("/api/tools/create_game", expect.objectContaining({ body: '{"game":"go","playerColor":"black","difficulty":"medium"}' })); expect(screen.getByRole("button", { name: /pass/i })).toBeEnabled(); });
+  it("renders Go legal coordinates and Pass", async () => { vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: chess() }) } as Response).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: go() }) } as Response); render(<App />); const user = userEvent.setup(); const picker = await screen.findByRole("combobox", { name: "NEW GAME" }); await user.selectOptions(picker, "go-9"); await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "black"); await user.click(screen.getByRole("button", { name: "Start game" })); expect(await screen.findByRole("button", { name: /Play at A9, empty, legal move/i })).toBeEnabled(); expect(fetch).toHaveBeenLastCalledWith("/api/tools/create_game", expect.objectContaining({ body: '{"game":"go","playerColor":"black","difficulty":"medium"}' })); expect(screen.getByRole("button", { name: /pass/i })).toBeEnabled(); });
   it("starts standard 19x19 Go from the game chooser", async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: chess() }) } as Response)
@@ -130,6 +136,7 @@ describe("App", () => {
     expect(picker).toHaveValue("chess");
     await screen.findByRole("group", { name: "Chess board" });
     await user.selectOptions(picker, "go-19");
+    await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "black");
     expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Start game" }));
     expect(await screen.findByRole("group", { name: "19 by 19 Go board" })).toBeVisible();
@@ -146,15 +153,18 @@ describe("App", () => {
     const user = userEvent.setup();
     const picker = screen.getByRole("combobox", { name: "NEW GAME" });
     const difficulty = screen.getByRole("combobox", { name: "DIFFICULTY" });
+    const side = screen.getByRole("combobox", { name: "SIDE" });
     expect(within(difficulty).getAllByRole("option").map(option => option.textContent)).toEqual(["Easy", "Medium", "Hard"]);
     await user.selectOptions(picker, "go-13");
     await user.selectOptions(difficulty, "hard");
+    await user.selectOptions(side, "black");
     expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible();
     expect(screen.getByText("Medium difficulty")).toBeVisible();
     expect(fetch).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Start game" }));
     expect(picker).toBeDisabled();
     expect(difficulty).toBeDisabled();
+    expect(side).toBeDisabled();
     expect(screen.getByRole("button", { name: "Starting…" })).toBeDisabled();
     expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible();
     resolveStart({ ok: true, json: async () => ({ structuredContent: go(13, "hard") }) } as Response);
@@ -162,6 +172,74 @@ describe("App", () => {
     expect(screen.getByText("Hard difficulty")).toBeVisible();
     await waitFor(() => expect(screen.getByRole("button", { name: "Start game" })).toBeEnabled());
     expect(fetch).toHaveBeenCalledWith("/api/tools/create_game", expect.objectContaining({ body: '{"game":"go","playerColor":"black","difficulty":"hard","boardSize":13}' }));
+  });
+  it("keeps the SIDE draft independent from the displayed game's authoritative role until Start", async () => {
+    const user = userEvent.setup();
+    const current = go();
+    const playerMove = { actor: "player" as const, color: "black" as const, notation: "A9", ply: 1 };
+    const afterPlayer: GoSnapshot = { ...current, turn: "white", legalMoves: ["B9", "pass"], moveHistory: [playerMove], lastMove: playerMove, stateVersion: 1, message: "White to move." };
+    const gptMove = chooseStandaloneMove(afterPlayer)!;
+    const gptRecord = { actor: "gpt" as const, color: "white" as const, notation: gptMove, ply: 2 };
+    const afterGpt: GoSnapshot = { ...afterPlayer, turn: "black", legalMoves: ["C9", "pass"], moveHistory: [playerMove, gptRecord], lastMove: gptRecord, stateVersion: 2, message: "Black to move after the reply." };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterPlayer }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: afterGpt }) } as Response);
+    render(<App initialGame={current}/>);
+    const side = screen.getByRole("combobox", { name: "SIDE" });
+
+    expect(within(side).getAllByRole("option").map(option => option.textContent)).toEqual(["Black", "White"]);
+    expect(side).toHaveValue("black");
+    expect(screen.getByText("You are Black")).toBeVisible();
+
+    await user.selectOptions(side, "white");
+
+    expect(side).toHaveValue("white");
+    expect(screen.getByText("You are Black")).toBeVisible();
+    expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ draft: { game: "go-9", difficulty: "medium", side: "white" }, game: { playerColor: "black" } });
+    expect(fetch).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Play at A9, empty, legal move" }));
+    expect(await screen.findByText("Black to move after the reply.")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "SIDE" })).toHaveValue("white");
+    expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ draft: { side: "white" }, game: { playerColor: "black", stateVersion: 2 } });
+  });
+  it("opens Chess for Black with exactly one confirmed deterministic GPT move from the create snapshot", async () => {
+    const created: ChessSnapshot = { ...canonicalChessReset(0, "easy"), gameId: "new-chess-black", playerColor: "black" };
+    const gptMove = chooseStandaloneMove(created)!;
+    const opened = chessAdvance(created, "gpt", gptMove, "black", ["a7a5"], "Black to move after GPT's opening.");
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: created }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: opened }) } as Response);
+    render(<App initialGame={chess()}/>);
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole("combobox", { name: "DIFFICULTY" }), "easy");
+    await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "black");
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+
+    expect(await screen.findByText("Black to move after GPT's opening.")).toBeVisible();
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(["/api/tools/create_game", "/api/tools/play_game_move"]);
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string)).toEqual({ game: "chess", playerColor: "black", difficulty: "easy" });
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[1][1] as RequestInit).body as string)).toEqual({ gameId: "new-chess-black", actor: "gpt", move: gptMove, expectedVersion: 0, expectedResetEpoch: 0 });
+    expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ draft: { side: "black" }, game: { gameId: "new-chess-black", playerColor: "black", stateVersion: 1 } });
+  });
+  it("opens a Black-starting game for White with one GPT Black move and no state read", async () => {
+    const created: TicTacToeSnapshot = { ...tic(), gameId: "new-tic-white", difficulty: "medium", playerColor: "white" };
+    const gptMove = chooseStandaloneMove(created) as TicTacToeSnapshot["legalMoves"][number];
+    const opened = ticGptAdvance(created, gptMove);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: created }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: opened }) } as Response);
+    render(<App initialGame={chess()}/>);
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole("combobox", { name: "NEW GAME" }), "tic-tac-toe");
+    await user.selectOptions(screen.getByRole("combobox", { name: "DIFFICULTY" }), "medium");
+    await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "white");
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+
+    expect(await screen.findByText("White to move after GPT's opening.")).toBeVisible();
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(["/api/tools/create_game", "/api/tools/play_game_move"]);
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string)).toEqual({ game: "tic-tac-toe", playerColor: "white", difficulty: "medium" });
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[1][1] as RequestInit).body as string)).toEqual({ gameId: "new-tic-white", actor: "gpt", move: gptMove, expectedVersion: 0, expectedResetEpoch: 0 });
   });
   it("maps large Go columns through T while skipping I", () => { const start = { ...go(19), legalMoves: ["J19", "T1", "pass"] }; render(<App initialGame={start}/>); expect(screen.getByRole("button", { name: "Play at J19, empty, legal move" })).toBeEnabled(); expect(screen.getByRole("button", { name: "Play at T1, empty, legal move" })).toBeEnabled(); expect(screen.queryByRole("button", { name: / I19/i })).not.toBeInTheDocument(); });
   it("shows and gates a photo-import review before the player can continue", async () => {
@@ -1032,11 +1110,114 @@ describe("App", () => {
     expect(screen.getByText("GPT thinking…")).toBeVisible();
     bridge.dispose();
   });
-  it("creates every new game with black and no boardSize, preserving the active board until Start", async () => {
-    const variants: Array<[string, TicTacToeSnapshot | ConnectFourSnapshot | ReversiSnapshot | PoolSnapshot | BasketballSnapshot]> = [["tic-tac-toe", tic()], ["connect-four", four()], ["reversi", reversi()], ["pool", pool()], ["basketball", basketball()]];
-    for (const [preset, snapshot] of variants) {
-      cleanup(); vi.mocked(fetch).mockReset(); vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: snapshot }) } as Response);
-      render(<App initialGame={chess()}/>); const user = userEvent.setup(); await user.selectOptions(screen.getByRole("combobox", { name: "NEW GAME" }), preset); expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible(); await user.click(screen.getByRole("button", { name: "Start game" })); await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/tools/create_game", expect.objectContaining({ body: JSON.stringify({ game: preset, playerColor: "black", difficulty: "medium" }) }))); expect(JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string)).not.toHaveProperty("boardSize");
+  it("uses embedded tools/call for a selected-side opening without get_game_state or ui/message", async () => {
+    const postMessage = vi.fn();
+    const target = { postMessage } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const created: ChessSnapshot = { ...canonicalChessReset(0, "easy"), gameId: "embedded-black", playerColor: "black" };
+    const gptMove = chooseStandaloneMove(created)!;
+    const opened = chessAdvance(created, "gpt", gptMove, "black", ["a7a5"], "Embedded opening confirmed.");
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    const calls = (name: string) => postMessage.mock.calls.map(([request]) => request as { method?: string; params?: { name?: string; arguments?: unknown } }).filter(request => request.method === "tools/call" && request.params?.name === name);
+    render(<App bridge={bridge} initialGame={chess()}/>);
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole("combobox", { name: "DIFFICULTY" }), "easy");
+    await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "black");
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 1, method: "ui/initialize" }), "*"));
+    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    await waitFor(() => expect(calls("create_game")).toHaveLength(1));
+    expect(calls("create_game")[0]?.params?.arguments).toEqual({ game: "chess", playerColor: "black", difficulty: "easy" });
+    await respond(2, { structuredContent: created });
+    await waitFor(() => expect(calls("play_game_move")).toHaveLength(1));
+    expect(calls("play_game_move")[0]?.params?.arguments).toEqual({ gameId: "embedded-black", actor: "gpt", move: gptMove, expectedVersion: 0, expectedResetEpoch: 0 });
+    expect(calls("get_game_state")).toHaveLength(0);
+    expect(postMessage.mock.calls.filter(([request]) => (request as { method?: string }).method === "ui/message")).toHaveLength(0);
+    await respond(3, { structuredContent: opened });
+    expect(await screen.findByText("Embedded opening confirmed.")).toBeVisible();
+    bridge.dispose();
+  });
+  it("ignores a late create receipt after a newer authoritative state supersedes Start", async () => {
+    const postMessage = vi.fn();
+    const target = { postMessage } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+    const newer = { ...chess(1), message: "Newer authoritative game state." };
+    const respond = async (id: number, result: unknown) => { window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id, result } })); await Promise.resolve(); await Promise.resolve(); };
+    render(<App bridge={bridge} initialGame={chess()}/>);
+    await respond(1, { hostCapabilities: { serverTools: {}, message: {} } });
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole("combobox", { name: "NEW GAME" }), "go-9");
+    await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "black");
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 2, method: "tools/call", params: { name: "create_game", arguments: { game: "go", playerColor: "black", difficulty: "medium" } } }), "*"));
+
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: newer } } }));
+    expect(await screen.findByText("Newer authoritative game state.")).toBeVisible();
+    await respond(2, { structuredContent: go() });
+    await Promise.resolve();
+
+    expect(screen.getByText("Newer authoritative game state.")).toBeVisible();
+    expect(screen.queryByRole("group", { name: /Go board/i })).not.toBeInTheDocument();
+    expect(postMessage.mock.calls.filter(([request]) => (request as { params?: { name?: string } }).params?.name === "play_game_move")).toHaveLength(0);
+    bridge.dispose();
+  });
+  it("ignores a late opening receipt after Reset establishes a newer game epoch", async () => {
+    const created: ChessSnapshot = { ...canonicalChessReset(0, "easy"), gameId: "opening-race", playerColor: "black" };
+    const oldMove = chooseStandaloneMove(created)!;
+    const oldOpening = chessAdvance(created, "gpt", oldMove, "black", ["a7a5"], "Stale opening receipt.");
+    const reset: ChessSnapshot = { ...canonicalChessReset(1, "easy"), gameId: "opening-race", playerColor: "black", message: "New reset epoch." };
+    const newMove = chooseStandaloneMove(reset)!;
+    const newOpening = chessAdvance(reset, "gpt", newMove, "black", ["a7a5"], "New-epoch opening confirmed.");
+    let resolveOldOpening!: (response: Response) => void;
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: created }) } as Response)
+      .mockReturnValueOnce(new Promise<Response>(resolve => { resolveOldOpening = resolve; }))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reset }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: newOpening }) } as Response);
+    render(<App initialGame={chess()}/>);
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole("combobox", { name: "DIFFICULTY" }), "easy");
+    await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "black");
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(["/api/tools/create_game", "/api/tools/play_game_move"]));
+
+    await user.click(screen.getByRole("button", { name: /reset/i }));
+    await user.click(within(screen.getByRole("alertdialog", { name: "Reset this game?" })).getByRole("button", { name: "Reset game" }));
+    expect(await screen.findByText("New-epoch opening confirmed.")).toBeVisible();
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(["/api/tools/create_game", "/api/tools/play_game_move", "/api/tools/reset_game", "/api/tools/play_game_move"]);
+
+    resolveOldOpening({ ok: true, json: async () => ({ structuredContent: oldOpening }) } as Response);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.getByText("New-epoch opening confirmed.")).toBeVisible();
+    expect(screen.queryByText("Stale opening receipt.")).not.toBeInTheDocument();
+    expect(JSON.parse(window.render_game_to_text!()).game).toMatchObject({ gameId: "opening-race", resetEpoch: 1, stateVersion: 1 });
+  });
+  it("sends the chosen opening side for every preset while limiting boardSize to Go 13 and 19", async () => {
+    const variants: Array<{ preset: string; side: "black" | "white"; snapshot: ChessSnapshot | GoSnapshot | TicTacToeSnapshot | ConnectFourSnapshot | ReversiSnapshot | PoolSnapshot | BasketballSnapshot; expected: Record<string, unknown> }> = [
+      { preset: "chess", side: "white", snapshot: chess(), expected: { game: "chess", playerColor: "white", difficulty: "medium" } },
+      { preset: "tic-tac-toe", side: "black", snapshot: tic(), expected: { game: "tic-tac-toe", playerColor: "black", difficulty: "medium" } },
+      { preset: "connect-four", side: "black", snapshot: four(), expected: { game: "connect-four", playerColor: "black", difficulty: "medium" } },
+      { preset: "reversi", side: "black", snapshot: reversi(), expected: { game: "reversi", playerColor: "black", difficulty: "medium" } },
+      { preset: "pool", side: "black", snapshot: pool(), expected: { game: "pool", playerColor: "black", difficulty: "medium" } },
+      { preset: "basketball", side: "black", snapshot: basketball(), expected: { game: "basketball", playerColor: "black", difficulty: "medium" } },
+      { preset: "go-9", side: "black", snapshot: go(9), expected: { game: "go", playerColor: "black", difficulty: "medium" } },
+      { preset: "go-13", side: "black", snapshot: go(13), expected: { game: "go", playerColor: "black", difficulty: "medium", boardSize: 13 } },
+      { preset: "go-19", side: "black", snapshot: go(19), expected: { game: "go", playerColor: "black", difficulty: "medium", boardSize: 19 } },
+    ];
+    for (const { preset, side, snapshot, expected } of variants) {
+      cleanup();
+      vi.mocked(fetch).mockReset().mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: snapshot }) } as Response);
+      render(<App initialGame={chess()}/>);
+      const user = userEvent.setup();
+      await user.selectOptions(screen.getByRole("combobox", { name: "NEW GAME" }), preset);
+      await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), side);
+      expect(screen.getByRole("group", { name: "Chess board" })).toBeVisible();
+      await user.click(screen.getByRole("button", { name: "Start game" }));
+      await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+      expect(JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string)).toEqual(expected);
+      expect(vi.mocked(fetch).mock.calls[0][0]).toBe("/api/tools/create_game");
     }
   });
   it("plays an exact Mini 8-Ball pot from a selected ball and pocket", async () => {
@@ -1156,6 +1337,7 @@ describe("App", () => {
     const user = userEvent.setup();
     render(<App initialGame={{ ...chess(4), resetEpoch: 2 }}/>);
     const trigger = screen.getByRole("button", { name: /reset/i });
+    expect(trigger).toHaveAccessibleName("⟳ Reset");
 
     await user.click(trigger);
 
@@ -1165,11 +1347,31 @@ describe("App", () => {
     expect(within(dialog).getByRole("button", { name: "Keep playing" })).toHaveFocus();
     expect(screen.getByRole("button", { name: /white pawn on e2, movable source/i })).toBeDisabled();
     expect(fetch).not.toHaveBeenCalled();
-    expect(JSON.parse(window.render_game_to_text!()).resetGame).toMatchObject({ available: true, enabled: true, confirmation: { gameId: "chess-1", expectedVersion: 4, expectedResetEpoch: 2 } });
+    expect(JSON.parse(window.render_game_to_text!()).resetGame).toMatchObject({ available: true, enabled: true, label: "Reset", prompt: "Reset this game? All current progress will be cleared. Your game settings will stay the same.", confirmation: { gameId: "chess-1", expectedVersion: 4, expectedResetEpoch: 2, prompt: "Reset this game? All current progress will be cleared. Your game settings will stay the same." } });
 
     await user.click(within(dialog).getByRole("button", { name: "Keep playing" }));
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reset/i })).toHaveFocus();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("presents finished games as Try again and cancellation restores its trigger without mutation", async () => {
+    const user = userEvent.setup();
+    const finished: ChessSnapshot = { ...chess(4), resetEpoch: 2, status: "finished", winner: "black", finishReason: "ended", legalMoves: [], message: "Game ended." };
+    render(<App initialGame={finished}/>);
+    const trigger = screen.getByRole("button", { name: /try again/i });
+
+    expect(screen.queryByRole("button", { name: /reset/i })).not.toBeInTheDocument();
+    await user.click(trigger);
+
+    const dialog = screen.getByRole("alertdialog", { name: "Try again?" });
+    expect(dialog).toHaveTextContent("This restarts the same game while keeping its settings.");
+    expect(within(dialog).getByRole("button", { name: "Try again" })).toBeVisible();
+    expect(JSON.parse(window.render_game_to_text!()).resetGame).toMatchObject({ available: true, enabled: true, label: "Try again", prompt: "Try again? This restarts the same game while keeping its settings.", confirmation: { gameId: "chess-1", expectedVersion: 4, expectedResetEpoch: 2, prompt: "Try again? This restarts the same game while keeping its settings." } });
+    expect(fetch).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: "Keep playing" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /try again/i })).toHaveFocus();
     expect(fetch).not.toHaveBeenCalled();
   });
   it("resets a finished game only after a matching authoritative receipt", async () => {
@@ -1180,14 +1382,33 @@ describe("App", () => {
     vi.mocked(fetch).mockReturnValueOnce(new Promise<Response>(resolve => { resolveReset = resolve; }));
     render(<App initialGame={finished}/>);
 
-    await user.click(screen.getByRole("button", { name: /reset/i }));
-    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Reset game" }));
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+    await user.click(within(screen.getByRole("alertdialog", { name: "Try again?" })).getByRole("button", { name: "Try again" }));
 
     expect(screen.getByRole("status")).toHaveTextContent("Game ended.");
     expect(fetch).toHaveBeenCalledWith("/api/tools/reset_game", expect.objectContaining({ body: '{"gameId":"chess-1","confirmed":true,"expectedVersion":4,"expectedResetEpoch":2}' }));
     resolveReset({ ok: true, json: async () => ({ structuredContent: reset }) } as Response);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Choose a piece to begin."));
-    expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ mode: "active", resetGame: { available: true, confirmation: null }, game: { resetEpoch: 3, stateVersion: 0 } });
+    expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ mode: "active", resetGame: { available: true, label: "Reset", confirmation: null }, game: { resetEpoch: 3, stateVersion: 0 } });
+  });
+  it("continues Try again with one confirmed GPT opening when the saved side does not open", async () => {
+    const user = userEvent.setup();
+    const finished: ChessSnapshot = { ...canonicalChessReset(2, "easy"), playerColor: "black", status: "finished", finishReason: "ended", legalMoves: [], stateVersion: 4, message: "Game ended." };
+    const reset: ChessSnapshot = { ...canonicalChessReset(3, "easy"), playerColor: "black" };
+    const gptMove = chooseStandaloneMove(reset)!;
+    const opened = chessAdvance(reset, "gpt", gptMove, "black", ["a7a5"], "Try-again opening confirmed.");
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: reset }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ structuredContent: opened }) } as Response);
+    render(<App initialGame={finished}/>);
+
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+    await user.click(within(screen.getByRole("alertdialog", { name: "Try again?" })).getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("Try-again opening confirmed.")).toBeVisible();
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(["/api/tools/reset_game", "/api/tools/play_game_move"]);
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string)).toEqual({ gameId: "chess-1", confirmed: true, expectedVersion: 4, expectedResetEpoch: 2 });
+    expect(JSON.parse((vi.mocked(fetch).mock.calls[1][1] as RequestInit).body as string)).toEqual({ gameId: "chess-1", actor: "gpt", move: gptMove, expectedVersion: 0, expectedResetEpoch: 3 });
   });
   it("reconciles a corrupt direct reset receipt with one clean state read", async () => {
     const user = userEvent.setup();
@@ -1377,9 +1598,9 @@ describe("App", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledWith("/api/tools/end_game", expect.objectContaining({ body: '{"gameId":"chess-1","confirmed":true,"expectedVersion":4,"expectedResetEpoch":2}' }));
     expect(screen.queryByRole("button", { name: "End game" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /reset/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /try again/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /refresh/i })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /reset/i }).closest(".controls")).toHaveClass("controls-chess", "controls-finished");
+    expect(screen.getByRole("button", { name: /try again/i }).closest(".controls")).toHaveClass("controls-chess", "controls-finished");
     expect(JSON.parse(window.render_game_to_text!())).toMatchObject({ mode: "finished", endGame: { available: false, confirmation: null }, game: { finishReason: "ended", message: "Game ended.", stateVersion: 5 } });
   });
   it("keeps the active board when a stale end request is rejected", async () => {
