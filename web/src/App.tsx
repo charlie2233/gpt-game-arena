@@ -7,7 +7,7 @@ import { GoBoard } from "./components/GoBoard";
 import { GameChrome } from "./components/GameChrome";
 import { ConnectFourBoard, ReversiBoard, TicTacToeBoard } from "./components/SmallBoards";
 import { BasketballBoard, PoolBoard } from "./components/SportsBoards";
-import { chooseStandaloneMove, embeddedMoveDecision, embeddedMovePrompt } from "./move-strategy";
+import { chooseStandaloneMove } from "./move-strategy";
 import type { GameDifficulty, GameSnapshot, GoBoardSize, GoPositionSetup } from "./types";
 
 type GamePreset = "chess" | "tic-tac-toe" | "connect-four" | "reversi" | "pool" | "basketball" | `go-${GoBoardSize}`;
@@ -64,9 +64,6 @@ function initialHostState(): GameSnapshot | undefined {
 }
 
 const expiredSessionMessage = "This saved game session has expired. Start a new game to continue.";
-const gptPollTimeoutMs = 45_000;
-const gptPollInitialDelayMs = 750;
-const gptPollMaximumDelayMs = 2_500;
 const endGameDescription = "The board will be frozen. Reset or start a New Game afterward.";
 const endGamePrompt = `End this game? ${endGameDescription}`;
 const resetGameDescription = "All current progress will be cleared. Your game settings will stay the same.";
@@ -74,7 +71,6 @@ const resetGamePrompt = `Reset this game? ${resetGameDescription}`;
 
 type SnapshotMove = { actor: string; notation: string; ply: number };
 type ResetBarrier = { gameId: string; staleHistory: SnapshotMove[]; legacyCeiling: number };
-type PendingPoll = { accepts: (next: GameSnapshot) => boolean; finish: (next?: GameSnapshot, error?: Error) => void };
 type EndConfirmation = { gameId: string; expectedVersion: number; expectedResetEpoch: number };
 type ResetConfirmation = EndConfirmation & { baseline: GameSnapshot };
 
@@ -100,12 +96,12 @@ function compareSnapshotPosition(left: GameSnapshot, right: GameSnapshot): numbe
   return resetEpochOf(left) - resetEpochOf(right) || left.stateVersion - right.stateVersion;
 }
 
-function isConfirmedGptAdvance(previous: GameSnapshot, next: GameSnapshot): boolean {
+function isConfirmedGptAdvance(previous: GameSnapshot, next: GameSnapshot, expectedMove: string): boolean {
   if (next.gameId !== previous.gameId || resetEpochOf(next) !== resetEpochOf(previous)) return false;
   if (next.stateVersion !== previous.stateVersion + 1 || next.moveHistory.length !== previous.moveHistory.length + 1) return false;
   if (!historyStartsWith(next.moveHistory, previous.moveHistory)) return false;
   const appended = next.moveHistory[previous.moveHistory.length];
-  return appended?.actor === "gpt" && appended.color === previous.turn;
+  return appended?.actor === "gpt" && appended.color === previous.turn && appended.notation === expectedMove;
 }
 
 function isNotFoundError(reason: unknown): boolean {
@@ -127,6 +123,10 @@ function isResetDefinitelyNotApplied(reason: unknown): boolean {
 
 function isImportReviewDefinitelyNotApplied(reason: unknown): boolean {
   return reason instanceof Error && /\bIMPORT_REVIEW_NOT_APPLIED\b|^(?:invalid_input|not_found|stale_version|version_conflict|game_finished|import_review_unavailable):/i.test(reason.message);
+}
+
+function isGptMoveDefinitelyNotApplied(reason: unknown): boolean {
+  return reason instanceof Error && /\bMOVE_NOT_APPLIED\b|^(?:invalid_input|invalid_move|illegal_move|not_found|stale_version|version_conflict|game_finished|validation(?:_error)?):/i.test(reason.message);
 }
 
 function isConfirmedManualEnd(snapshot: GameSnapshot): boolean {
@@ -183,8 +183,8 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const [error, setError] = useState<string>();
   const [endConfirmation, setEndConfirmation] = useState<EndConfirmation>();
   const [resetConfirmation, setResetConfirmation] = useState<ResetConfirmation>();
-  const epoch = useRef(0); const pollTimer = useRef<number>(); const pollExpiry = useRef<number>(); const pendingPoll = useRef<PendingPoll>(); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const resetBarrier = useRef<ResetBarrier>(); const resetPending = useRef<string>(); const recoveryStarted = useRef(false); const lifecycleTimer = useRef<number>(); const endGameTrigger = useRef<HTMLButtonElement>(null); const resetGameTrigger = useRef<HTMLButtonElement>(null); const restoreConfirmationFocus = useRef<"end" | "reset">();
-  const stop = useCallback(() => { epoch.current += 1; if (pollTimer.current) window.clearTimeout(pollTimer.current); if (pollExpiry.current) window.clearTimeout(pollExpiry.current); pollTimer.current = undefined; pollExpiry.current = undefined; pendingPoll.current?.finish(); pendingPoll.current = undefined; }, []);
+  const epoch = useRef(0); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const resetBarrier = useRef<ResetBarrier>(); const resetPending = useRef<string>(); const recoveryStarted = useRef(false); const lifecycleTimer = useRef<number>(); const endGameTrigger = useRef<HTMLButtonElement>(null); const resetGameTrigger = useRef<HTMLButtonElement>(null); const restoreConfirmationFocus = useRef<"end" | "reset">();
+  const stop = useCallback(() => { epoch.current += 1; }, []);
   const commitBusy = useCallback((next: boolean) => { busyRef.current = next; setBusy(next); }, []);
   const apply = useCallback((next: GameSnapshot, version: number) => {
     if (version !== epoch.current) return;
@@ -202,63 +202,36 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
     stop(); const version = epoch.current; resetPending.current = resetGameId; commitBusy(true); setStarting(startsGame); setError(undefined); setSelected(undefined); setEndConfirmation(undefined); setResetConfirmation(undefined);
     try { const next = await run(); if (version !== epoch.current) return; apply(next, version); if (version !== epoch.current) return; await after?.(next, version); } catch (reason) { if (version === epoch.current) setError(requestErrorMessage(reason)); } finally { if (version === epoch.current) { if (resetPending.current === resetGameId) resetPending.current = undefined; commitBusy(false); setStarting(false); } }
   }, [apply, commitBusy, stop]);
-  const poll = useCallback((previous: GameSnapshot, version: number) => new Promise<GameSnapshot | undefined>((resolve, reject) => {
-    let settled = false;
-    let delay = gptPollInitialDelayMs;
-    let registered: PendingPoll;
-    const accepts = (next: GameSnapshot) => isConfirmedGptAdvance(previous, next);
-    const finish = (next?: GameSnapshot, error?: Error) => { if (settled) return; settled = true; if (pendingPoll.current === registered) pendingPoll.current = undefined; if (pollTimer.current) window.clearTimeout(pollTimer.current); if (pollExpiry.current) window.clearTimeout(pollExpiry.current); pollTimer.current = undefined; pollExpiry.current = undefined; error ? reject(error) : resolve(next); };
-    registered = { accepts, finish };
-    pendingPoll.current = registered;
-    const schedule = () => {
-      pollTimer.current = window.setTimeout(() => void check(), delay);
-      delay = Math.min(gptPollMaximumDelayMs, delay + 500);
-    };
-    const check = async (): Promise<void> => {
-      if (version !== epoch.current) return finish();
-      try { const next = await client.state(previous.gameId); if (settled || version !== epoch.current) return finish(); if (next.gameId === previous.gameId && compareSnapshotPosition(next, previous) > 0) { apply(next, version); return accepts(next) || isConfirmedManualEnd(next) || isConfirmedReset(previous, next) ? finish(next) : finish(undefined, new Error("The game changed before GPT's move was confirmed.")); } } catch { /* transient host failure: retry until deadline */ }
-      if (!settled && version === epoch.current) schedule();
-    };
-    schedule();
-    pollExpiry.current = window.setTimeout(() => finish(undefined, new Error("GPT move was not confirmed in time.")), gptPollTimeoutMs);
-  }), [apply, client]);
   const gptTurn = useCallback(async (next: GameSnapshot, version: number) => {
     if (requiresImportReview(next)) return;
     let current = next;
     for (let turns = 0; turns < 128 && current.status === "active" && current.turn !== current.playerColor; turns += 1) {
       if (version !== epoch.current) return;
       if (requiresImportReview(current)) return;
-      if (bridge.embedded) {
-        const decision = embeddedMoveDecision(current);
-        if (decision.candidateMoves.length === 0) throw new Error("No legal GPT move is available.");
-        await bridge.sendMessage(embeddedMovePrompt(current, decision));
-        if (version !== epoch.current) return;
-        const reply = await poll(current, version);
-        if (!reply || version !== epoch.current) return;
-        current = reply;
-        continue;
-      }
       const move = chooseStandaloneMove(current);
       if (!move) return;
-      const reply = await client.play(current.gameId, "gpt", move, current.stateVersion, resetEpochOf(current));
+      let reply: GameSnapshot;
+      try {
+        const directReply = await client.play(current.gameId, "gpt", move, current.stateVersion, resetEpochOf(current));
+        if (!bridge.embedded || isConfirmedGptAdvance(current, directReply, move)) reply = directReply;
+        else reply = await client.state(current.gameId);
+      } catch (reason) {
+        if (isGptMoveDefinitelyNotApplied(reason)) throw reason;
+        try { reply = await client.state(current.gameId); } catch { throw new Error("GPT move was not confirmed. Use Refresh to continue."); }
+      }
       if (version !== epoch.current) return;
-      if (reply.gameId !== current.gameId || resetEpochOf(reply) !== resetEpochOf(current) || reply.stateVersion <= current.stateVersion) throw new Error("The game service returned a non-advancing GPT state.");
+      if (bridge.embedded && !isConfirmedGptAdvance(current, reply, move)) throw new Error("GPT move was not confirmed. Use Refresh to continue.");
+      if (!bridge.embedded && (reply.gameId !== current.gameId || resetEpochOf(reply) !== resetEpochOf(current) || reply.stateVersion <= current.stateVersion)) throw new Error("The game service returned a non-advancing GPT state.");
       apply(reply, version);
       current = reply;
     }
     if (current.status === "active" && current.turn !== current.playerColor) throw new Error("GPT turn limit reached.");
-  }, [apply, bridge, client, poll]);
+  }, [apply, bridge.embedded, client]);
   useEffect(() => {
     if (lifecycleTimer.current) { window.clearTimeout(lifecycleTimer.current); lifecycleTimer.current = undefined; }
     let alive = true;
     const initEpoch = epoch.current;
     const unsubscribe = bridge.onToolResult(result => {
-      const activePoll = pendingPoll.current;
-      const resultText = result.content?.map(item => item.text).join(" ") ?? "";
-      if (activePoll && result.isError && /^MOVE_NOT_APPLIED\b/.test(resultText)) {
-        activePoll.finish(undefined, new Error("GPT move was not applied. Use Refresh to continue."));
-        return;
-      }
       const next = result.structuredContent;
       const current = gameRef.current;
       if (!isSnapshot(next)) return;
@@ -288,11 +261,7 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       setGame(next);
       setSelected(undefined);
       setError(undefined);
-      if (activePoll) {
-        if (activePoll.accepts(next) || isConfirmedManualEnd(next) || isConfirmedReset(current, next)) activePoll.finish(next);
-        else activePoll.finish(undefined, new Error("The game changed before GPT's move was confirmed."));
-      }
-      if (!activePoll && !busyRef.current && next.status === "active" && next.turn !== next.playerColor && !requiresImportReview(next)) {
+      if (!busyRef.current && next.status === "active" && next.turn !== next.playerColor && !requiresImportReview(next)) {
         void action(() => Promise.resolve(next), gptTurn);
       }
     });
