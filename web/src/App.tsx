@@ -8,7 +8,7 @@ import { GameChrome } from "./components/GameChrome";
 import { ConnectFourBoard, ReversiBoard, TicTacToeBoard } from "./components/SmallBoards";
 import { BasketballBoard, PoolBoard } from "./components/SportsBoards";
 import { chooseStandaloneMove } from "./move-strategy";
-import type { GameDifficulty, GameSnapshot, GoBoardSize, GoPositionSetup } from "./types";
+import type { Color, GameDifficulty, GameSnapshot, GoBoardSize, GoPositionSetup } from "./types";
 
 type GamePreset = "chess" | "tic-tac-toe" | "connect-four" | "reversi" | "pool" | "basketball" | `go-${GoBoardSize}`;
 const gamePresets: ReadonlyArray<{ value: GamePreset; label: string }> = [
@@ -69,15 +69,16 @@ const endGamePrompt = `End this game? ${endGameDescription}`;
 const resetGameDescription = "All current progress will be cleared. Your game settings will stay the same.";
 const resetGamePrompt = `Reset this game? ${resetGameDescription}`;
 
-type SnapshotMove = { actor: string; notation: string; ply: number };
+type SnapshotMove = { actor: "player" | "gpt"; color: Color; notation: string; ply: number };
 type ResetBarrier = { gameId: string; staleHistory: SnapshotMove[]; legacyCeiling: number };
+type PendingGptReceipt = { epoch: number; gameId: string; expectedVersion: number; expectedResetEpoch: number; move: string };
 type EndConfirmation = { gameId: string; expectedVersion: number; expectedResetEpoch: number };
 type ResetConfirmation = EndConfirmation & { baseline: GameSnapshot };
 
 function historyStartsWith(history: readonly SnapshotMove[], prefix: readonly SnapshotMove[]): boolean {
   return prefix.length <= history.length && prefix.every((move, index) => {
     const candidate = history[index];
-    return candidate?.actor === move.actor && candidate.notation === move.notation && candidate.ply === move.ply;
+    return candidate?.actor === move.actor && candidate.color === move.color && candidate.notation === move.notation && candidate.ply === move.ply;
   });
 }
 
@@ -133,6 +134,13 @@ function isConfirmedManualEnd(snapshot: GameSnapshot): boolean {
   return snapshot.status === "finished" && snapshot.finishReason === "ended";
 }
 
+function isConfirmedManualEndAdvance(previous: GameSnapshot, next: GameSnapshot): boolean {
+  return next.gameId === previous.gameId
+    && resetEpochOf(next) === resetEpochOf(previous)
+    && next.stateVersion === previous.stateVersion + 1
+    && isConfirmedManualEnd(next);
+}
+
 function sameStringList(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
@@ -183,8 +191,8 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
   const [error, setError] = useState<string>();
   const [endConfirmation, setEndConfirmation] = useState<EndConfirmation>();
   const [resetConfirmation, setResetConfirmation] = useState<ResetConfirmation>();
-  const epoch = useRef(0); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const resetBarrier = useRef<ResetBarrier>(); const resetPending = useRef<string>(); const recoveryStarted = useRef(false); const lifecycleTimer = useRef<number>(); const endGameTrigger = useRef<HTMLButtonElement>(null); const resetGameTrigger = useRef<HTMLButtonElement>(null); const restoreConfirmationFocus = useRef<"end" | "reset">();
-  const stop = useCallback(() => { epoch.current += 1; }, []);
+  const epoch = useRef(0); const gameRef = useRef<GameSnapshot | undefined>(game); const busyRef = useRef(busy); const pendingGptReceipt = useRef<PendingGptReceipt>(); const resetBarrier = useRef<ResetBarrier>(); const resetPending = useRef<string>(); const recoveryStarted = useRef(false); const lifecycleTimer = useRef<number>(); const endGameTrigger = useRef<HTMLButtonElement>(null); const resetGameTrigger = useRef<HTMLButtonElement>(null); const restoreConfirmationFocus = useRef<"end" | "reset">();
+  const stop = useCallback(() => { epoch.current += 1; pendingGptReceipt.current = undefined; }, []);
   const commitBusy = useCallback((next: boolean) => { busyRef.current = next; setBusy(next); }, []);
   const apply = useCallback((next: GameSnapshot, version: number) => {
     if (version !== epoch.current) return;
@@ -211,6 +219,8 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       const move = chooseStandaloneMove(current);
       if (!move) return;
       let reply: GameSnapshot;
+      const pending: PendingGptReceipt | undefined = bridge.embedded ? { epoch: version, gameId: current.gameId, expectedVersion: current.stateVersion, expectedResetEpoch: resetEpochOf(current), move } : undefined;
+      if (pending) pendingGptReceipt.current = pending;
       try {
         const directReply = await client.play(current.gameId, "gpt", move, current.stateVersion, resetEpochOf(current));
         if (!bridge.embedded || isConfirmedGptAdvance(current, directReply, move)) reply = directReply;
@@ -218,6 +228,8 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
       } catch (reason) {
         if (isGptMoveDefinitelyNotApplied(reason)) throw reason;
         try { reply = await client.state(current.gameId); } catch { throw new Error("GPT move was not confirmed. Use Refresh to continue."); }
+      } finally {
+        if (pendingGptReceipt.current === pending) pendingGptReceipt.current = undefined;
       }
       if (version !== epoch.current) return;
       if (bridge.embedded && !isConfirmedGptAdvance(current, reply, move)) throw new Error("GPT move was not confirmed. Use Refresh to continue.");
@@ -239,6 +251,22 @@ export function App({ bridge: suppliedBridge, initialGame }: { bridge?: GameBrid
         stop(); commitBusy(false); setStarting(false); setError(undefined); setGamePreset(presetFor(next)); setDifficultyPreset(next.difficulty); gameRef.current = next; setGame(next); return;
       }
       if (next.gameId !== current.gameId) return;
+      const pending = pendingGptReceipt.current;
+      if (pending?.epoch === epoch.current
+        && pending.gameId === current.gameId
+        && pending.expectedVersion === current.stateVersion
+        && pending.expectedResetEpoch === resetEpochOf(current)
+        && (current.legalMoves as readonly string[]).includes(pending.move)) {
+        if (isConfirmedManualEndAdvance(current, next) || isConfirmedReset(current, next)) {
+          stop();
+          commitBusy(false);
+          setStarting(false);
+          setError(undefined);
+          setSelected(undefined);
+          apply(next, epoch.current);
+        }
+        return;
+      }
       const epochComparison = resetEpochOf(next) - resetEpochOf(current);
       if (epochComparison < 0) return;
       const barrier = resetBarrier.current;
