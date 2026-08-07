@@ -13,6 +13,10 @@ import { GameStore } from "../src/game-store.js";
 import type { OperationalEvent } from "../src/telemetry.js";
 import { ToolService } from "../src/tool-service.js";
 
+function parseToolWorkflow(toolsTriggered: string | null | undefined): string[] {
+  return toolsTriggered?.split(",").map(tool => tool.trim()).filter(Boolean) ?? [];
+}
+
 describe("MCP game arena server", () => {
   it("keeps the reviewer submission manifest complete and bounded", async () => {
     const manifest = JSON.parse(await readFile(new URL("../../chatgpt-app-submission.json", import.meta.url), "utf8")) as {
@@ -29,14 +33,18 @@ describe("MCP game arena server", () => {
     expect(manifest.test_cases).toHaveLength(5);
     expect(manifest.negative_test_cases).toHaveLength(3);
     const positiveCases = manifest.test_cases ?? [];
-    for (const testCase of positiveCases.filter(({ tools_triggered }) => tools_triggered?.includes("create_game"))) {
-      const workflow = testCase.tools_triggered?.split(", ") ?? [];
-      expect(workflow).toContain("render_game");
+    for (const testCase of positiveCases) {
+      const workflow = parseToolWorkflow(testCase.tools_triggered);
+      if (!workflow.includes("create_game")) continue;
+      const renderCount = workflow.filter(tool => tool === "render_game").length;
+      expect(renderCount).toBe(1);
       expect(workflow.indexOf("create_game")).toBeLessThan(workflow.indexOf("render_game"));
       expect(testCase.expected_output).toContain("interactive board renders from the same gameId");
     }
-    const importCase = positiveCases.find(({ tools_triggered }) => tools_triggered === "import_go_position");
-    expect(importCase?.tools_triggered).toBe("import_go_position");
+    const importCase = positiveCases.find(({ tools_triggered }) => parseToolWorkflow(tools_triggered).includes("import_go_position"));
+    const importWorkflow = parseToolWorkflow(importCase?.tools_triggered);
+    expect(importWorkflow).toEqual(["import_go_position"]);
+    expect(importWorkflow.filter(tool => tool === "render_game")).toHaveLength(0);
     for (const tool of Object.values(manifest.tools ?? {})) {
       expect(Object.keys(tool.annotations ?? {}).sort()).toEqual(["destructiveHint", "openWorldHint", "readOnlyHint"]);
     }
