@@ -410,6 +410,32 @@ describe("App", () => {
     expect(postMessage.mock.calls.filter(([request]) => (request as { params?: { name?: string } }).params?.name === "get_game_state")).toHaveLength(0);
     bridge.dispose();
   });
+  it("swallows a synchronous host persistence failure without blocking the board or chooser", async () => {
+    const setWidgetState = vi.fn(() => { throw new Error("host persistence failed"); });
+    Object.defineProperty(window, "openai", { configurable: true, value: { setWidgetState } });
+    const postMessage = vi.fn();
+    const target = { postMessage } as unknown as Window;
+    const bridge = new GameBridge(target, 100_000);
+
+    render(<App bridge={bridge} initialGame={chess()}/>);
+
+    await waitFor(() => expect(setWidgetState).toHaveBeenCalled());
+    window.dispatchEvent(new MessageEvent("message", { source: target, data: { jsonrpc: "2.0", id: 1, result: validInit() } }));
+    await Promise.resolve();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /white pawn on e2, movable source/i }));
+    expect(screen.getByRole("button", { name: /empty e4, legal destination/i })).toBeEnabled();
+    await user.selectOptions(screen.getByRole("combobox", { name: "NEW GAME" }), "go-13");
+    await user.selectOptions(screen.getByRole("combobox", { name: "DIFFICULTY" }), "hard");
+    await user.selectOptions(screen.getByRole("combobox", { name: "SIDE" }), "black");
+
+    expect(screen.getByRole("combobox", { name: "NEW GAME" })).toHaveValue("go-13");
+    expect(screen.getByRole("combobox", { name: "DIFFICULTY" })).toHaveValue("hard");
+    expect(screen.getByRole("combobox", { name: "SIDE" })).toHaveValue("black");
+    expect(screen.getByRole("button", { name: "Start game" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    bridge.dispose();
+  });
   it.each([
     ["an error", { isError: true, content: [{ type: "text", text: "tool output failed" }] }],
     ["an empty object", {}],

@@ -42,7 +42,7 @@ type ChatGptHost = {
   initialState?: unknown;
   widgetState?: unknown;
   maxHeight?: unknown;
-  setWidgetState?: (state: unknown) => void | Promise<void>;
+  setWidgetState?: (state: unknown) => void;
 };
 
 function chatGptHost(): ChatGptHost | undefined {
